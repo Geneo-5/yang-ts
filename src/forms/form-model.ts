@@ -21,6 +21,7 @@ export interface FormField {
   name: string;
   path: string;
   module: string;
+  scope: "data" | "rpc-input" | "rpc-output" | "action-input" | "action-output";
   control: FormControlKind;
   yangType: string;
   label: string;
@@ -41,8 +42,21 @@ export interface FormField {
 export interface FormModel {
   module: string;
   fields: FormField[];
+  operations: FormRpcOperation[];
   /** Module-level limitations are explicit; callers should not imply full YANG validation. */
   completeness: "type-validation-with-pending-yang-constraints";
+}
+export interface FormRpcOperation {
+  kind: "rpc";
+  name: string;
+  module: string;
+  label: string;
+  help?: string;
+  hasInput: boolean;
+  hasOutput: boolean;
+  inputFields: FormField[];
+  outputFields: FormField[];
+  source: YangStatement;
 }
 export interface FormModelOptions {
   /** Imported modules available for typedef resolution. Include the complete import closure. */
@@ -196,7 +210,7 @@ function walkFields(
     const path = `${parentPath}/${name}`;
     const constraints = [...inheritedConstraints, ...constraintsOn(node)];
     const field: FormField = {
-      name, path, module: typedModule.argument, control: CONTROL_BY_TYPE[resolved.name] ?? "unsupported", yangType: resolved.name,
+      name, path, module: typedModule.argument, scope, control: CONTROL_BY_TYPE[resolved.name] ?? "unsupported", yangType: resolved.name,
       label: name,
       ...(description ? { help: description } : {}),
       ...(childOf(node, "units")?.argument ? { units: childOf(node, "units")!.argument! } : {}),
@@ -218,7 +232,21 @@ export function createFormModel(module: YangModule, options: FormModelOptions = 
   const modules = [module, ...(options.modules ?? []).filter(candidate => candidate.argument !== module.argument)];
   const fields: FormField[] = [];
   walkFields(module, module, "", modules, [], fields, "data");
-  return { module: module.argument, fields, completeness: "type-validation-with-pending-yang-constraints" };
+  const operations: FormRpcOperation[] = childrenOf(module, "rpc").map(rpc => {
+    const name = rpc.argument ?? "";
+    const prefix = `/${name}/`;
+    const description = childOf(rpc, "description")?.argument;
+    return {
+      kind: "rpc", name, module: module.argument, label: name,
+      ...(description ? { help: description } : {}),
+      hasInput: childrenOf(rpc, "input").length > 0,
+      hasOutput: childrenOf(rpc, "output").length > 0,
+      inputFields: fields.filter(field => field.scope === "rpc-input" && field.path.startsWith(`${prefix}input/`)),
+      outputFields: fields.filter(field => field.scope === "rpc-output" && field.path.startsWith(`${prefix}output/`)),
+      source: rpc,
+    };
+  });
+  return { module: module.argument, fields, operations, completeness: "type-validation-with-pending-yang-constraints" };
 }
 
 function absent(value: unknown): boolean { return value === undefined || value === null || value === ""; }

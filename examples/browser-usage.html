@@ -4,20 +4,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YANG browser parser example</title>
   <body>
-    <h1>Sysrepo oven: inspect an RPC enum</h1>
-    <p>This demo reads the oven YANG file in the browser and builds a select from the parsed AST.</p>
+    <h1>Sysrepo oven: build an RPC request</h1>
+    <p>This demo reads the oven YANG file in the browser, validates the RPC input, and previews a RESTCONF request. It does not send it.</p>
     <label for="time">Insert-food timing</label>
     <select id="time"></select>
     <pre id="result" aria-live="polite"></pre>
     <script type="module">
-      import { createFormModel, parseYang, validateFormValue } from "../dist/index.js";
+      import { createFormModel, createRestconfRpcRequest, parseYang, validateFormValue } from "../dist/index.js";
 
       const response = await fetch("../tests/fixtures/yang/sysrepo/oven.yang");
       if (!response.ok) throw new Error(`Could not load oven.yang (${response.status})`);
       const module = parseYang(await response.text());
       const form = createFormModel(module);
+      const operation = form.operations.find(item => item.name === "insert-food");
       const field = form.fields.find(item => item.path === "/insert-food/input/time");
-      if (!field || field.control !== "enum") throw new Error("Expected an enum field at insert-food/input/time");
+      if (!operation || !field || field.control !== "enum") throw new Error("Expected insert-food RPC with an enum input");
 
       const select = document.querySelector("#time");
       for (const option of field.options) {
@@ -31,7 +32,7 @@
       select.addEventListener("change", () => {
         const validation = validateFormValue(field, select.value);
         result.textContent = validation.status === "valid"
-          ? `Selected YANG enum: ${select.value}`
+          ? JSON.stringify(createRestconfRpcRequest(operation, { time: select.value }), null, 2)
           : validation.errors.map(error => error.message).join("\n")
             || `Validation needs more schema/context: ${validation.pending.map(item => `${item.kind}: ${item.expression}`).join("; ")}`;
       });

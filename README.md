@@ -9,7 +9,7 @@ const module = parseYang(`module demo { yang-version 1.1; namespace "urn:demo"; 
 console.log(module.argument); // demo
 ```
 
-The package currently parses the generic YANG statement grammar into a source-located AST and includes a **partial form helper** for field metadata and safe, local type checks. It is not a full YANG compiler or validator: module resolution, schema compilation, XPath, `must`/`when`, features and deviations are not yet implemented. See [ARCHITECTURE.md](./ARCHITECTURE.md) for scope and design, [ROADMAP.md](./ROADMAP.md) for milestones, and [TESTING.md](./TESTING.md) for validation gates and coverage policy.
+The package currently parses the generic YANG statement grammar into a source-located AST and includes a **partial form helper** for data and RPC input/output field metadata and safe, local type checks. It is not a full YANG compiler or validator: module resolution, schema compilation, XPath evaluation, `must`/`when`, features and deviations are not yet implemented. See [ARCHITECTURE.md](./ARCHITECTURE.md) for scope and design, [ROADMAP.md](./ROADMAP.md) for milestones, and [TESTING.md](./TESTING.md) for validation gates and coverage policy.
 
 ## Form helper
 
@@ -31,9 +31,30 @@ const result = validateFormValue(timing, "now");
 
 The helper currently extracts descriptions, units, defaults, required/read-only flags, enums, bits, simple types and cardinality. It resolves local typedefs; pass imported modules in `createFormModel(module, { modules })` to resolve imported typedefs. Type/range/length checks are performed locally. Pattern, leafref, identityref, binary and unresolved types are marked indeterminate; `must`, `when` and `if-feature` expressions are returned as pending with their YANG `error-message` when available. This avoids presenting partial checks as full model validation.
 
+## RPC and RESTCONF helpers
+
+`createFormModel` exposes RPCs in `form.operations`, with separate `inputFields` and `outputFields`. Helpers prepare RESTCONF paths and JSON envelopes; they never perform network requests:
+
+```ts
+import { createRestconfRpcRequest, nodeToRestconfDataPath } from "yang-browser-engine";
+
+const insertFood = form.operations.find(operation => operation.name === "insert-food")!;
+const request = createRestconfRpcRequest(insertFood, { time: "now" });
+// POST /restconf/operations/oven:insert-food
+// { "oven:input": { "time": "now" } }
+
+const uri = nodeToRestconfDataPath([
+  { module: "ietf-interfaces", name: "interfaces" },
+  { module: "ietf-interfaces", name: "interface", keys: [{ name: "name", value: "eth0" }] },
+]);
+// /restconf/data/ietf-interfaces:interfaces/interface=eth0
+```
+
+`nodeToXPath(contextModule, path)` is a separate helper for YANG XPath expressions and uses prefixes declared by the context module. RESTCONF data resource paths follow RFC 8040 URI rules; they are not XPath strings. The current helpers build paths from caller-supplied schema path segments and do not yet compile a schema or verify that nodes and list keys exist.
+
 ## Browser example
 
-After building, serve the repository root over HTTP and open [`examples/browser-usage.html`](./examples/browser-usage.html). It parses the Sysrepo oven model in the browser and uses the AST to populate the `insert-food` timing enum. The example demonstrates syntax inspection only: it does not resolve typedefs, apply augments, or evaluate `must`/`when` constraints.
+After building, serve the repository root over HTTP and open [`examples/browser-usage.html`](./examples/browser-usage.html). It parses the Sysrepo oven model in the browser, populates the `insert-food` timing enum, validates the selected value, and previews the corresponding RESTCONF RPC request. The example does not send the request, resolve typedefs, apply augments, or evaluate `must`/`when` constraints.
 
 ## Development
 
