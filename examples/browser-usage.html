@@ -5,38 +5,45 @@
   <title>YANG browser parser example</title>
   <body>
     <h1>Sysrepo oven: build an RPC request</h1>
-    <p>This demo reads the oven YANG file in the browser, validates the RPC input, and previews a RESTCONF request. It does not send it.</p>
+    <p>This demo reads the oven YANG file in the browser, validates the RPC input, and previews a RESTCONF request. It does not send it. Serve this repository over HTTP (for example <code>python3 -m http.server</code> at the repository root) and open this page at <code>http://localhost:8000/examples/browser-usage.html</code> — browsers block module imports on <code>file:</code> pages.</p>
     <label for="time">Insert-food timing</label>
     <select id="time"></select>
     <pre id="result" aria-live="polite"></pre>
     <script type="module">
       import { createFormModel, createRestconfRpcRequest, parseYang, validateFormValue } from "../dist/index.js";
 
-      const response = await fetch("../tests/fixtures/yang/sysrepo/oven.yang");
-      if (!response.ok) throw new Error(`Could not load oven.yang (${response.status})`);
-      const module = parseYang(await response.text());
-      const form = createFormModel(module);
-      const operation = form.operations.find(item => item.name === "insert-food");
-      const field = form.fields.find(item => item.path === "/insert-food/input/time");
-      if (!operation || !field || field.control !== "enum") throw new Error("Expected insert-food RPC with an enum input");
-
-      const select = document.querySelector("#time");
-      for (const option of field.options) {
-        const item = document.createElement("option");
-        item.value = option.value;
-        item.textContent = option.label;
-        if (option.description) item.title = option.description;
-        select.append(item);
-      }
       const result = document.querySelector("#result");
-      select.addEventListener("change", () => {
-        const validation = validateFormValue(field, select.value);
-        result.textContent = validation.status === "valid"
-          ? JSON.stringify(createRestconfRpcRequest(operation, { time: select.value }), null, 2)
-          : validation.errors.map(error => error.message).join("\n")
-            || `Validation needs more schema/context: ${validation.pending.map(item => `${item.kind}: ${item.expression}`).join("; ")}`;
-      });
-      select.dispatchEvent(new Event("change"));
+      // Surface every failure in the page: a silent blank page is the worst outcome.
+      const fail = message => { result.textContent = message; };
+      try {
+        if (location.protocol === "file:") throw new Error("Open this page over HTTP (see the note above); browsers block module imports on file: pages.");
+        const response = await fetch("./oven.yang");
+        if (!response.ok) throw new Error(`Could not load oven.yang (${response.status} ${response.statusText})`);
+        const module = parseYang(await response.text());
+        const form = createFormModel(module);
+        const operation = form.operations.find(item => item.name === "insert-food");
+        const field = form.fields.find(item => item.path === "/insert-food/input/time");
+        if (!operation || !field || field.control !== "enum") throw new Error("Expected insert-food RPC with an enum input");
+
+        const select = document.querySelector("#time");
+        for (const option of field.options) {
+          const item = document.createElement("option");
+          item.value = option.value;
+          item.textContent = option.label;
+          if (option.description) item.title = option.description;
+          select.append(item);
+        }
+        select.addEventListener("change", () => {
+          const validation = validateFormValue(field, select.value);
+          result.textContent = validation.status === "valid"
+            ? JSON.stringify(createRestconfRpcRequest(operation, { time: select.value }), null, 2)
+            : validation.errors.map(error => error.message).join("\n")
+              || `Validation needs more schema/context: ${validation.pending.map(item => `${item.kind}: ${item.expression}`).join("; ")}`;
+        });
+        select.dispatchEvent(new Event("change"));
+      } catch (error) {
+        fail(error instanceof Error ? error.message : String(error));
+      }
     </script>
   </body>
 </html>
