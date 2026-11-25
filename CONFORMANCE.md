@@ -8,9 +8,9 @@ Last updated: 2026-11-26, after a full source review and the closure of the Stag
 
 | Area | Status | Evidence | Notes |
 | --- | --- | --- | --- |
-| Statement grammar, arguments, comments, adjacent-string concatenation, source locations | partial | `tests/parser.test.ts` | Open: quoted `";"`/`"{"` end the argument (token `kind` not checked); double-quoted escapes drop the backslash (`\n` → `n`); multi-line string indentation/trailing whitespace not stripped (§6.1.3); empty-string arguments are dropped; several arguments without `+` are joined instead of rejected. |
+| Statement grammar, arguments, comments, adjacent-string concatenation, source locations | implemented | `tests/parser.test.ts`, `tests/stage7-p1.test.ts` | RFC 7950 §6.1.3 (2026-11-26): quoted arguments may contain `;`/`{`/`}`; escapes `\n \t \" \\` transformed, any other character after a backslash rejected; multi-line double-quoted strings strip trailing whitespace and continuation-line indentation up to the opening quote's column (tabs count as 8 spaces); empty-string arguments kept; quoted strings concatenate only with `+`; unquoted word lists (e.g. `key a b c`) still join into one argument. |
 | Real-world fixture corpus | implemented | `tests/yang-fixtures.test.ts` | Sysrepo oven, RFC 8343 interfaces, RFC 8344 IP augments, IETF interface extensions with `when`/`if:type`. |
-| Malformed-syntax diagnostics with line/column | partial | `tests/parser.test.ts` | End-of-input errors report the keyword (or line 1) instead of the end of input; no nesting-depth limit. |
+| Malformed-syntax diagnostics with line/column | implemented | `tests/parser.test.ts`, `tests/stage7-p1.test.ts` | End-of-input errors report the end of the source (string, unterminated block, missing `;`/`{`, missing keyword); statement nesting capped at depth 200 (2026-11-26). |
 
 ## Module resolution (RFC 7950 §5.1–§5.6)
 
@@ -77,7 +77,7 @@ Last updated: 2026-11-26, after a full source review and the closure of the Stag
 - **Deviations on operations** and **`augment` inside `uses`**: not supported.
 - **XPath beyond 1.0 semantics** (e.g. full XML Schema datatypes in comparisons): the evaluator is XPath 1.0; conversions are IEEE-754 per XPath where applicable.
 - **No transport**: RESTCONF requests are constructed/validated but never sent by this package.
-- **Untrusted-module resource limits**: budgets cover loading only. Grouping expansion, XPath evaluation, regex execution and parser nesting depth are unbounded.
+- **Untrusted-module resource limits**: budgets cover loading only, plus a parser nesting-depth cap of 200. Grouping expansion, XPath evaluation and regex execution are unbounded.
 - **Real-browser testing**: all suites run under Node with `@xmldom/xmldom`; no browser run exists yet.
 
 ## Migration and versioning policy

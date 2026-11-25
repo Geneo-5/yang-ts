@@ -3948,6 +3948,7 @@ var YangEngine = (() => {
   };
 
   // src/yang/parser.ts
+  var MAX_STATEMENT_DEPTH = 200;
   function tokenize(input) {
     const out = [];
     let i = 0, line = 1, column = 1;
@@ -3978,22 +3979,84 @@ var YangEngine = (() => {
         continue;
       }
       const start = { offset: i, line, column };
-      if (c === "'" || c === '"') {
-        const quote = c;
+      if (c === "'") {
         advance(c);
         let value2 = "";
-        while (i < input.length && input[i] !== quote) {
-          if (quote === '"' && input[i] === "\\" && i + 1 < input.length) {
-            advance(input[i]);
-            value2 += input[i];
-            advance(input[i]);
-          } else {
-            value2 += input[i];
-            advance(input[i]);
-          }
+        while (i < input.length && input[i] !== "'") {
+          value2 += input[i];
+          advance(input[i]);
         }
-        if (input[i] !== quote) throw new YangSyntaxError("Unterminated string", start);
-        advance(quote);
+        if (input[i] !== "'") throw new YangSyntaxError("Unterminated string", start);
+        advance("'");
+        out.push({ ...start, value: value2, kind: "string" });
+        continue;
+      }
+      if (c === '"') {
+        const openColumn = column;
+        advance(c);
+        let raw = "";
+        let lineText = "";
+        let trailing = "";
+        let sawNonWs = false;
+        let continuation = false;
+        let contColumn = 1;
+        while (i < input.length && input[i] !== '"') {
+          const ch = input[i];
+          if (ch === "\n") {
+            raw += lineText + "\n";
+            lineText = "";
+            trailing = "";
+            sawNonWs = false;
+            continuation = true;
+            contColumn = 1;
+            advance(ch);
+            continue;
+          }
+          if (ch === "\\") {
+            const next = input[i + 1];
+            if (next !== "n" && next !== "t" && next !== '"' && next !== "\\") {
+              throw new YangSyntaxError(`The backslash must be followed by n, t, '"' or ''`, { offset: i, line, column });
+            }
+            lineText += trailing + ch + next;
+            trailing = "";
+            sawNonWs = true;
+            advance(ch + next);
+            continue;
+          }
+          const isWhitespace = /\s/.test(ch);
+          if (isWhitespace && !sawNonWs && continuation) {
+            if (contColumn <= openColumn) {
+              contColumn += ch === "	" ? 8 : 1;
+              advance(ch);
+              continue;
+            }
+          }
+          if (isWhitespace) {
+            trailing += ch;
+            contColumn += ch === "	" ? 8 : 1;
+            advance(ch);
+            continue;
+          }
+          lineText += trailing + ch;
+          trailing = "";
+          sawNonWs = true;
+          contColumn += 1;
+          advance(ch);
+        }
+        raw += lineText + trailing;
+        if (input[i] !== '"') throw new YangSyntaxError("Unterminated string", start);
+        advance('"');
+        let value2 = "";
+        for (let j = 0; j < raw.length; j++) {
+          const ch = raw[j];
+          if (ch !== "\\") {
+            value2 += ch;
+            continue;
+          }
+          const next = raw[j + 1];
+          value2 += next === "n" ? "\n" : next === "t" ? "	" : next === '"' ? '"' : "\\";
+          j++;
+        }
         out.push({ ...start, value: value2, kind: "string" });
         continue;
       }
@@ -4010,42 +4073,47 @@ var YangEngine = (() => {
       if (!value) throw new YangSyntaxError(`Unexpected character '${c}'`, start);
       out.push({ ...start, value, kind: "word" });
     }
-    return out;
+    return { tokens: out, eof: { offset: i, line, column } };
   }
   function parseYang(source) {
-    const tokens = tokenize(source);
+    const { tokens, eof } = tokenize(source);
     let index = 0;
     const peek = () => tokens[index];
     const take = () => tokens[index++];
-    function statement() {
-      const key = take();
-      if (!key || key.kind !== "word") throw new YangSyntaxError("Expected statement keyword", key ?? { offset: source.length, line: 1, column: 1 });
-      const argumentParts = [];
-      while (peek() && peek().value !== ";" && peek().value !== "{") {
-        const part = take();
-        if (part.kind === "symbol") throw new YangSyntaxError("Unexpected symbol in statement argument", part);
-        argumentParts.push({ value: part.value, kind: part.kind });
+    function statement(depth = 0) {
+      if (depth > MAX_STATEMENT_DEPTH) {
+        throw new YangSyntaxError("Statement nesting too deep (possible infinite recursion)", tokens[index] ?? eof);
       }
+      const key = take();
+      if (!key || key.kind !== "word") throw new YangSyntaxError("Expected statement keyword", key ?? eof);
+      const argumentParts = [];
+      while (peek() && peek().kind !== "symbol") argumentParts.push(take());
       let argument = "";
-      for (let i = 0; i < argumentParts.length; i++) {
-        const part = argumentParts[i];
-        if (part.value === "+" && part.kind === "word") continue;
-        let value = part.value;
-        while (part.kind === "string" && argumentParts[i + 1]?.value === "+" && argumentParts[i + 2]?.kind === "string") {
-          value += argumentParts[i + 2].value;
-          i += 2;
+      let hasArgument = false;
+      let lastKind;
+      let concatenate = false;
+      for (const part of argumentParts) {
+        if (part.kind === "word" && part.value === "+") {
+          concatenate = true;
+          continue;
         }
-        argument += (argument ? " " : "") + value;
+        if (hasArgument && !concatenate && (part.kind === "string" || lastKind === "string")) {
+          throw new YangSyntaxError("Expected '+' between adjacent strings", part);
+        }
+        argument = !hasArgument ? part.value : concatenate ? argument + part.value : `${argument} ${part.value}`;
+        hasArgument = true;
+        lastKind = part.kind;
+        concatenate = false;
       }
       const end = take();
-      if (!end || end.value !== ";" && end.value !== "{") throw new YangSyntaxError("Expected ';' or '{'", end ?? key);
+      if (!end || end.kind !== "symbol" || end.value !== ";" && end.value !== "{") throw new YangSyntaxError("Expected ';' or '{'", end ?? eof);
       const children = [];
       if (end.value === "{") {
-        while (peek() && peek().value !== "}") children.push(statement());
+        while (peek() && peek().value !== "}") children.push(statement(depth + 1));
         const close = take();
-        if (!close) throw new YangSyntaxError("Unterminated statement block", key);
+        if (!close) throw new YangSyntaxError("Unterminated statement block", eof);
       }
-      return { keyword: key.value, ...argument ? { argument } : {}, children, location: { offset: key.offset, line: key.line, column: key.column } };
+      return { keyword: key.value, ...hasArgument ? { argument } : {}, children, location: { offset: key.offset, line: key.line, column: key.column } };
     }
     const root = statement();
     if (peek()) throw new YangSyntaxError("Unexpected content after module", peek());

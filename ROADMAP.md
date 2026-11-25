@@ -110,8 +110,8 @@ New stage collecting the review findings by priority. Each item is closed by a f
 - [x] `maxDepth` enforced (Stage 1).
 
 **P1 — correctness of secondary paths**
+- [x] Parser: string tokens vs `;`/`{`, escapes, indentation stripping, empty arguments (Stage 0) — closed 2026-11-26 by regressions in `tests/stage7-p1.test.ts` against RFC 7950 §6.1.3: quoted arguments compare token kinds; escapes `\n \t \" \\` transformed, other backslashes rejected; multi-line double-quoted strings strip trailing whitespace and indentation up to the opening quote's column (tabs = 8 spaces); empty-string arguments kept distinguishable; adjacent quoted strings without `+` rejected while unquoted word lists (`key a b c`) still join with spaces; end-of-input errors report the end of the source; statement nesting capped at depth 200.
 - [ ] Submodule compilation context (Stage 2).
-- [ ] Parser: string tokens vs `;`/`{`, escapes, indentation stripping, empty arguments (Stage 0).
 - [ ] Validate on the accessible tree (defaults, config/state) (Stage 5).
 - [ ] `FormField` restriction descriptor; `[*]` path mismatch; leaf-list cross-references (Stage 5).
 - [ ] `evaluateCandidates` location, entry targeting and non-mutation (Stage 5).
