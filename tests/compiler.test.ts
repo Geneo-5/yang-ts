@@ -135,6 +135,24 @@ describe("semantic compilation foundation", () => {
     expect(schema.diagnostics).toEqual([]);
   });
 
+  it("compiles notification payloads and applies notification augments", async () => {
+    const base = parseYang(`module base { namespace "urn:base"; prefix b;
+      notification alarm { leaf severity { type string; } }
+    }`);
+    const extension = parseYang(`module extension { namespace "urn:extension"; prefix e;
+      import base { prefix b; }
+      augment /b:alarm { leaf source { type string; } }
+    }`);
+    const moduleSet = await resolveModuleSet([base, extension], { async loadModule() { return undefined; } });
+    const schema = compileYangModules(moduleSet);
+    const alarm = schema.operations.find(operation => operation.kind === "notification");
+    expect(alarm?.data).toMatchObject([
+      { kind: "leaf", name: "severity", path: "/alarm/severity", config: false, module: "base" },
+      { kind: "leaf", name: "source", path: "/alarm/source", config: false, module: "extension" },
+    ]);
+    expect(schema.diagnostics).toEqual([]);
+  });
+
   it("validates list keys against effective children introduced by uses", async () => {
     const module = parseYang(`module keyed {
       namespace "urn:keyed"; prefix k;

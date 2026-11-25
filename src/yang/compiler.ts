@@ -31,6 +31,7 @@ export interface CompiledOperation {
   path: string;
   schemaPath: readonly { module: string; name: string }[];
   source: YangStatement;
+  data: CompiledSchemaNode[];
   input: CompiledSchemaNode[];
   output: CompiledSchemaNode[];
 }
@@ -382,7 +383,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     return result;
   };
   const pendingAugmentActions: Array<{ module: YangModule; statement: YangStatement; parentPath: string; schemaPath: readonly { module: string; name: string }[] }> = [];
-  const operationAugments: Array<{ module: YangModule; statement: YangStatement; target: Array<{ module: YangModule; name: string }> }> = [];
+  const operationAugments: Array<{ module: YangModule; statement: YangStatement; target: Array<{ module: YangModule; name: string }>; scope: "input" | "output" | "data" }> = [];
   const augments = modules.flatMap(module => [module, ...submodulesFor(module)].flatMap(source =>
     childrenOf(source, "augment").map(statement => ({ module, source, statement })),
   ));
@@ -397,8 +398,15 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       const target = findTarget(path);
       if (!target) {
         const last = path[path.length - 1];
-        if (last && (last.name === "input" || last.name === "output")) {
-          operationAugments.push({ module: item.module, statement: item.statement, target: path });
+        const notificationTarget = path.length === 1 && path[0] && [...modules.flatMap(module => [module, ...submodulesFor(module)])].some(source =>
+          childrenOf(source, "notification").some(notification => notification.argument === last?.name)
+            && canonicalModule(source).argument === last?.module.argument,
+        );
+        if (last && (last.name === "input" || last.name === "output" || notificationTarget)) {
+          operationAugments.push({
+            module: item.module, statement: item.statement, target: path,
+            scope: last.name === "input" || last.name === "output" ? last.name : "data",
+          });
           pending.splice(index, 1);
           madeProgress = true;
         }
@@ -516,9 +524,13 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     const compileScope = (scope: YangStatement | undefined, name: "input" | "output") => scope
       ? dataChildren(scope).flatMap(child => makeNode(child, module, `${operationPath}/${name}`, true))
       : [];
+    const data = statement.keyword === "notification"
+      ? dataChildren(statement).flatMap(child => makeNode(child, module, operationPath, false))
+      : [];
     operations.push({
       kind: statement.keyword, name: statement.argument ?? "", module: module.argument, path: operationPath, source: statement,
       schemaPath: [...parentSchemaPath, { module: module.argument, name: statement.argument ?? "" }],
+      data,
       input: compileScope(childOf(statement, "input"), "input"), output: compileScope(childOf(statement, "output"), "output"),
     });
   };
@@ -542,19 +554,23 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     compileOperation(action.module, action.statement, action.parentPath, action.schemaPath);
   }
   for (const augment of operationAugments) {
-    const targetSchemaPath = augment.target.slice(0, -1).map(part => ({ module: part.module.argument, name: part.name }));
+    const targetSchemaPath = (augment.scope === "data" ? augment.target : augment.target.slice(0, -1))
+      .map(part => ({ module: part.module.argument, name: part.name }));
     const operation = operations.find(candidate => candidate.schemaPath.length === targetSchemaPath.length
+      && (augment.scope !== "data" || candidate.kind === "notification")
       && candidate.schemaPath.every((part, index) => part.module === targetSchemaPath[index]?.module && part.name === targetSchemaPath[index]?.name));
     if (!operation) {
       report("unresolved-augment", `Augment target '${augment.statement.argument ?? ""}' was not found`, augment.module, augment.statement);
       continue;
     }
-    const scope = augment.target[augment.target.length - 1]!.name as "input" | "output";
+    const scope = augment.scope;
     const targetNodes = operation[scope];
-    const additions = augment.statement.children.flatMap(child => makeNode(child, augment.module, `${operation.path}/${scope}`, true, [], childrenOf(augment.statement, "when"), childrenOf(augment.statement, "if-feature").map(feature => ({ module: augment.module.argument, expression: feature.argument ?? "", source: feature })), augment.module));
+    const targetPath = scope === "data" ? operation.path : `${operation.path}/${scope}`;
+    const inheritedConfig = scope !== "data";
+    const additions = augment.statement.children.flatMap(child => makeNode(child, augment.module, targetPath, inheritedConfig, [], childrenOf(augment.statement, "when"), childrenOf(augment.statement, "if-feature").map(feature => ({ module: augment.module.argument, expression: feature.argument ?? "", source: feature })), augment.module));
     for (const addition of additions) {
       if (targetNodes.some(child => child.module === addition.module && child.name === addition.name)) {
-        report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${operation.path}/${scope}'`, augment.module, addition.source);
+        report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${targetPath}'`, augment.module, addition.source);
       } else targetNodes.push(addition);
     }
     checkDuplicates(targetNodes, augment.module);
