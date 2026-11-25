@@ -216,4 +216,45 @@ describe("stage 7 P0 correctness regressions", () => {
       expect(result.pending.some(item => item.kind === "unsupported")).toBe(true);
     }
   });
+
+  it("enforces ModuleSetBudget.maxDepth on import and include chains", async () => {
+    const { parseYang, resolveModuleSet } = await import("../src/index.js");
+    const loader = {
+      async loadModule(name: string) {
+        const sources: Record<string, string> = {
+          mid: `module mid { namespace "urn:mid"; prefix m; import deep { prefix d; } }`,
+          deep: `module deep { namespace "urn:deep"; prefix d; import deeper { prefix e; } }`,
+          deeper: `module deeper { namespace "urn:deeper"; prefix e; }`,
+        };
+        return sources[name] ?? undefined;
+      },
+      async loadSubmodule(name: string) {
+        const sources: Record<string, string> = {
+          part: `submodule part { belongs-to nestinc { prefix n; } include part2; }`,
+          part2: `submodule part2 { belongs-to nestinc { prefix n; } }`,
+        };
+        return sources[name] ?? undefined;
+      },
+    };
+    const importRoot = parseYang(`module nestbase { namespace "urn:nb"; prefix n; import mid { prefix m; } }`);
+    const includeRoot = parseYang(`module nestinc { namespace "urn:ni"; prefix n; include part; }`);
+
+    // maxDepth 1: direct dependencies load, one level deeper is refused.
+    const limited = await resolveModuleSet([importRoot], loader, { budget: { maxDepth: 1 } });
+    expect(limited.modules.map(module => module.argument)).toEqual(["mid", "nestbase"]);
+    expect(limited.diagnostics).toHaveLength(1);
+    expect(limited.diagnostics[0]).toMatchObject({ code: "budget-exceeded" });
+    expect(limited.diagnostics[0]?.message).toMatch(/maxDepth 1/);
+
+    // Without the budget the full closure resolves.
+    const unlimited = await resolveModuleSet([importRoot], loader, {});
+    expect(unlimited.modules.map(module => module.argument)).toEqual(["deep", "deeper", "mid", "nestbase"]);
+    expect(unlimited.diagnostics).toEqual([]);
+
+    // Include chains count against the same depth budget.
+    const includes = await resolveModuleSet([includeRoot], loader, { budget: { maxDepth: 1 } });
+    expect(includes.submodules.map(submodule => submodule.argument)).toEqual(["part"]);
+    expect(includes.diagnostics).toHaveLength(1);
+    expect(includes.diagnostics[0]).toMatchObject({ code: "budget-exceeded" });
+  });
 });

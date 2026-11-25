@@ -4153,6 +4153,12 @@ var YangEngine = (() => {
     const submoduleLoads = /* @__PURE__ */ new Map();
     const moduleKey = (module) => `${module.argument}@${revisionOf(module) ?? ""}`;
     const report = (code, message, owner, statement) => diagnostics.push({ code, message, sourceModule: owner.argument, sourceLocation: statement.location });
+    const reportBudget = (message, owner, statement) => {
+      if (violationReported) return;
+      violationReported = true;
+      report("budget-exceeded", message, owner, statement);
+    };
+    const depthExceeded = (depth) => budget.maxDepth !== void 0 && depth > budget.maxDepth;
     const loadModule = (name2, pinned, owner, statement) => {
       const queryKey = `${name2}@${pinned ?? "*"}`;
       const existing = moduleLoads.get(queryKey);
@@ -4214,6 +4220,10 @@ var YangEngine = (() => {
           report("include-cycle", `Submodule include cycle: ${[...stack, name2].join(" -> ")}`, owner, include);
           continue;
         }
+        if (depthExceeded(stack.length + 1)) {
+          reportBudget(`Submodule include chain depth ${stack.length + 1} exceeds maxDepth ${budget.maxDepth} while resolving '${name2}'`, owner, include);
+          continue;
+        }
         const revision = childOf(include, "revision-date")?.argument;
         const submodule = await loadSubmodule(name2, revision, owner, include);
         if (!submodule) continue;
@@ -4236,6 +4246,10 @@ var YangEngine = (() => {
           const revision = childOf(imported, "revision-date")?.argument;
           if (name2 === module.argument || stack.some((active) => active.startsWith(`${name2}@`))) {
             report("import-cycle", `Module import cycle: ${[...stack, key, `${name2}@${revision ?? ""}`].join(" -> ")}`, module, imported);
+            continue;
+          }
+          if (depthExceeded(stack.length + 1)) {
+            reportBudget(`Import chain depth ${stack.length + 1} exceeds maxDepth ${budget.maxDepth} while resolving '${name2}'`, module, imported);
             continue;
           }
           const dependency = await loadModule(name2, revision, module, imported);

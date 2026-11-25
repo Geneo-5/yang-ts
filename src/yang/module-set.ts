@@ -157,6 +157,15 @@ export async function resolveModuleSet(roots: readonly YangModule[], loader: Yan
   const report = (code: ModuleSetDiagnostic["code"], message: string, owner: YangModule, statement: YangStatement) =>
     diagnostics.push({ code, message, sourceModule: owner.argument, sourceLocation: statement.location });
 
+  /** One budget-exceeded violation switches the resolver into refusing mode. */
+  const reportBudget = (message: string, owner: YangModule, statement: YangStatement): void => {
+    if (violationReported) return;
+    violationReported = true;
+    report("budget-exceeded", message, owner, statement);
+  };
+  const depthExceeded = (depth: number): boolean =>
+    budget.maxDepth !== undefined && depth > budget.maxDepth;
+
   const loadModule = (name: string, pinned: string | undefined, owner: YangModule, statement: YangStatement): Promise<YangModule | undefined> => {
     const queryKey = `${name}@${pinned ?? "*"}`;
     const existing = moduleLoads.get(queryKey);
@@ -206,6 +215,12 @@ export async function resolveModuleSet(roots: readonly YangModule[], loader: Yan
     for (const include of childrenOf(current, "include")) {
       const name = include.argument ?? "";
       if (stack.includes(name)) { report("include-cycle", `Submodule include cycle: ${[...stack, name].join(" -> ")}`, owner, include); continue; }
+      // Include depth: the direct includes of a root sit at depth 1
+      // (RFC 7950 section 5.1.2 chains count below the root module).
+      if (depthExceeded(stack.length + 1)) {
+        reportBudget(`Submodule include chain depth ${stack.length + 1} exceeds maxDepth ${budget.maxDepth} while resolving '${name}'`, owner, include);
+        continue;
+      }
       const revision = childOf(include, "revision-date")?.argument;
       const submodule = await loadSubmodule(name, revision, owner, include);
       if (!submodule) continue;
@@ -229,6 +244,11 @@ export async function resolveModuleSet(roots: readonly YangModule[], loader: Yan
         const revision = childOf(imported, "revision-date")?.argument;
         if (name === module.argument || stack.some(active => active.startsWith(`${name}@`))) {
           report("import-cycle", `Module import cycle: ${[...stack, key, `${name}@${revision ?? ""}`].join(" -> ")}`, module, imported);
+          continue;
+        }
+        // Import depth: a root's direct imports sit at depth 1.
+        if (depthExceeded(stack.length + 1)) {
+          reportBudget(`Import chain depth ${stack.length + 1} exceeds maxDepth ${budget.maxDepth} while resolving '${name}'`, module, imported);
           continue;
         }
         const dependency = await loadModule(name, revision, module, imported);
