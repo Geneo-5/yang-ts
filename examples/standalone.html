@@ -3895,6 +3895,7 @@ var YangEngine = (() => {
   __export(index_exports, {
     YANG_FUNCTION_NAMESPACE: () => YANG_FUNCTION_NAMESPACE,
     YangSyntaxError: () => YangSyntaxError,
+    accessibleDataRoot: () => accessibleDataRoot,
     buildAccessibleTree: () => buildAccessibleTree,
     canonicalFormOf: () => canonicalFormOf,
     capabilities: () => capabilities,
@@ -5229,10 +5230,8 @@ var YangEngine = (() => {
         if (rootNode.kind === "choice" || rootNode.kind === "case") continue;
         if (!scope.includeState && !rootNode.config) continue;
         if (top.localName !== rootNode.name || top.namespaceURI !== rootNode.namespace) continue;
-        const copy = document2.createElementNS(rootNode.namespace, rootNode.name);
-        copyScope(rootNode.children, top, copy, scope, document2);
-        document2.appendChild(copy);
-        contextNode = copy;
+        contextNode = accessibleDataRoot(rootNode, top, scope, document2);
+        document2.appendChild(contextNode);
       }
       if (!contextNode) throw new Error(`Instance root <${top.localName}> does not match any root of the compiled schema`);
       return { document: document2, contextNode: document2 };
@@ -5253,6 +5252,11 @@ var YangEngine = (() => {
   }
   function matchingElements(parent, namespace, name2) {
     return Array.from(parent.childNodes).filter((child) => isElement(child) && child.localName === name2 && child.namespaceURI === namespace);
+  }
+  function accessibleDataRoot(rootNode, source, scope, document2) {
+    const copy = document2.createElementNS(rootNode.namespace, rootNode.name);
+    copyScope(rootNode.children, source, copy, scope, document2);
+    return copy;
   }
   function copyScope(nodes, source, target, scope, document2) {
     for (const node of nodes) {
@@ -5755,35 +5759,39 @@ var YangEngine = (() => {
         for (const entry of elementsOf(element, child)) checkLeafrefs(entry, child);
       }
     }
-    function checkInstanceIdentifiers(element, schemaNode) {
+    function checkInstanceIdentifiers(element, schemaNode, store) {
       if (schemaNode.resolvedType === "instance-identifier" && schemaNode.kind === "leaf") {
         const value = element.textContent ?? "";
         const requireInstance = !requireInstanceDisabled(schemaNode);
         const parsed = parseInstanceIdentifier(value, requireInstance);
         if (!parsed.ok) {
           issue("instance-identifier-invalid", schemaNode, `instance-identifier '${schemaNode.path}' is not a valid instance-identifier: ${parsed.reason}`);
-        } else if (requireInstance && !resolvesInstanceIdentifier(instance, parsed.steps)) {
+        } else if (requireInstance && !resolvesInstanceIdentifier(store, parsed.steps)) {
           issue("instance-identifier-dangling", schemaNode, `instance-identifier of '${schemaNode.path}' does not resolve in the instance`);
         }
       }
       for (const child of schemaNode.children) {
         if (child.kind === "choice" || child.kind === "case") {
-          checkInstanceIdentifiers(element, child);
+          checkInstanceIdentifiers(element, child, store);
           continue;
         }
-        for (const entry of elementsOf(element, child)) checkInstanceIdentifiers(entry, child);
+        for (const entry of elementsOf(element, child)) checkInstanceIdentifiers(entry, child, store);
       }
     }
-    const top = instance.documentElement;
-    if (!top) return { status: indeterminate ? "indeterminate" : "valid", issues };
+    const rawTop = instance.documentElement;
+    if (!rawTop) return { status: indeterminate ? "indeterminate" : "valid", issues };
     for (const root of schema.roots) {
       if (root.kind === "choice" || root.kind === "case") continue;
       if (!includeState && !root.config) continue;
-      const present = top.localName === root.name && top.namespaceURI === root.namespace ? [top] : elementsOf(top, root);
+      const present = rawTop.localName === root.name && rawTop.namespaceURI === root.namespace ? [rawTop] : elementsOf(rawTop, root);
       for (const entry of present) {
-        checkLeafrefs(entry, root);
-        checkInstanceIdentifiers(entry, root);
-        visitElement(entry, root);
+        const holder = instance.implementation.createDocument(null, "", null);
+        holder.appendChild(holder.importNode(entry, true));
+        const accessible = buildAccessibleTree(schema, holder, { context: includeState ? "datastore-state" : "datastore-config" });
+        const dataRoot = accessible.document.documentElement;
+        checkLeafrefs(dataRoot, root);
+        checkInstanceIdentifiers(dataRoot, root, accessible.document);
+        visitElement(dataRoot, root);
       }
     }
     return { status: issues.length ? "invalid" : indeterminate ? "indeterminate" : "valid", issues };

@@ -2,6 +2,7 @@ import { CompiledSchemaNode, CompiledYangSchema, moduleNamespacePrefixes } from 
 import { childOf } from "../yang/parser.js";
 import { createConstraintEvaluator } from "../xpath/evaluate-constraints.js";
 import { createLeafrefResolver } from "../xpath/yang-functions.js";
+import { buildAccessibleTree } from "../xpath/accessible-tree.js";
 
 export type ValidationIssueCode =
   | "too-few-elements"
@@ -227,33 +228,42 @@ export function validateDataTree(
     }
   }
 
-  function checkInstanceIdentifiers(element: Element, schemaNode: CompiledSchemaNode): void {
+  function checkInstanceIdentifiers(element: Element, schemaNode: CompiledSchemaNode, store: Document): void {
     if (schemaNode.resolvedType === "instance-identifier" && schemaNode.kind === "leaf") {
       const value = element.textContent ?? "";
       const requireInstance = !requireInstanceDisabled(schemaNode);
       const parsed = parseInstanceIdentifier(value, requireInstance);
       if (!parsed.ok) {
         issue("instance-identifier-invalid", schemaNode, `instance-identifier '${schemaNode.path}' is not a valid instance-identifier: ${parsed.reason}`);
-      } else if (requireInstance && !resolvesInstanceIdentifier(instance, parsed.steps)) {
+      } else if (requireInstance && !resolvesInstanceIdentifier(store, parsed.steps)) {
         issue("instance-identifier-dangling", schemaNode, `instance-identifier of '${schemaNode.path}' does not resolve in the instance`);
       }
     }
     for (const child of schemaNode.children) {
-      if (child.kind === "choice" || child.kind === "case") { checkInstanceIdentifiers(element, child); continue; }
-      for (const entry of elementsOf(element, child)) checkInstanceIdentifiers(entry, child);
+      if (child.kind === "choice" || child.kind === "case") { checkInstanceIdentifiers(element, child, store); continue; }
+      for (const entry of elementsOf(element, child)) checkInstanceIdentifiers(entry, child, store);
     }
   }
 
-  const top = instance.documentElement;
-  if (!top) return { status: indeterminate ? "indeterminate" : "valid", issues };
+  // Validate the accessible tree (RFC 7950 §6.4.1) instead of the raw document:
+  // defaults are injected and `config false` state data is hidden in the config
+  // context, so mandatory, unique, leafref and must/when semantics match the
+  // datastore being checked. Every matching root becomes its own datastore
+  // document, keeping absolute-path anchors at the data root.
+  const rawTop = instance.documentElement;
+  if (!rawTop) return { status: indeterminate ? "indeterminate" : "valid", issues };
   for (const root of schema.roots) {
     if (root.kind === "choice" || root.kind === "case") continue;
     if (!includeState && !root.config) continue;
-    const present = top.localName === root.name && top.namespaceURI === root.namespace ? [top] : elementsOf(top, root);
+    const present = rawTop.localName === root.name && rawTop.namespaceURI === root.namespace ? [rawTop] : elementsOf(rawTop, root);
     for (const entry of present) {
-      checkLeafrefs(entry, root);
-      checkInstanceIdentifiers(entry, root);
-      visitElement(entry, root);
+      const holder = instance.implementation.createDocument(null, "", null);
+      holder.appendChild(holder.importNode(entry, true));
+      const accessible = buildAccessibleTree(schema, holder, { context: includeState ? "datastore-state" : "datastore-config" });
+      const dataRoot = accessible.document.documentElement!;
+      checkLeafrefs(dataRoot, root);
+      checkInstanceIdentifiers(dataRoot, root, accessible.document);
+      visitElement(dataRoot, root);
     }
   }
   return { status: issues.length ? "invalid" : indeterminate ? "indeterminate" : "valid", issues };

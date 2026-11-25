@@ -58,10 +58,8 @@ export function buildAccessibleTree(
       if (rootNode.kind === "choice" || rootNode.kind === "case") continue;
       if (!scope.includeState && !rootNode.config) continue;
       if (top.localName !== rootNode.name || top.namespaceURI !== rootNode.namespace) continue;
-      const copy = document.createElementNS(rootNode.namespace, rootNode.name);
-      copyScope(rootNode.children, top, copy, scope, document);
-      document.appendChild(copy);
-      contextNode = copy;
+      contextNode = accessibleDataRoot(rootNode, top, scope, document);
+      document.appendChild(contextNode);
     }
     if (!contextNode) throw new Error(`Instance root <${top.localName}> does not match any root of the compiled schema`);
     return { document, contextNode: document };
@@ -92,6 +90,17 @@ function matchingElements(parent: Element, namespace: string, name: string): Ele
 }
 
 interface ScopeOptions { includeState: boolean; defaults: boolean }
+
+/**
+ * Accessible copy of one data root: the root element with the schema-visible
+ * content copied under `scope` (state filter, with-defaults injection). Used
+ * by buildAccessibleTree and by whole-datastore validation passes.
+ */
+export function accessibleDataRoot(rootNode: CompiledSchemaNode, source: Element, scope: ScopeOptions, document: Document): Element {
+  const copy = document.createElementNS(rootNode.namespace, rootNode.name);
+  copyScope(rootNode.children, source, copy, scope, document);
+  return copy;
+}
 
 /**
  * Copy the schema-node slice of `source` visible under `target`. Choice and

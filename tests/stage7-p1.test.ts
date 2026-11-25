@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  childOf, compileYangModules, moduleNamespacePrefixes, parseYang, resolveModuleSet, YangSyntaxError,
+  childOf, compileYangModules, moduleNamespacePrefixes, parseYang, resolveModuleSet, validateDataTree, YangSyntaxError,
 } from "../src/index.js";
 import type { CompiledSchemaNode, CompiledYangSchema } from "../src/index.js";
+import { DOMParser } from "@xmldom/xmldom";
+
+const xml = (text: string) => new DOMParser().parseFromString(text, "application/xml");
 
 /** Builds a module wrapping the given inner statements. */
 const wrap = (inner: string, indent = "        ") => `module sample {\n${indent}namespace "urn:sample";\n${indent}prefix s;\n${indent}${inner}\n}`;
@@ -179,5 +182,79 @@ describe("Stage 7 P1 – parser string tokens (RFC 7950 §6.1.3)", () => {
     let nested = `container depth0 { }`;
     for (let depth = 1; depth < 300; depth++) nested = `container depth${depth} { ${nested} }`;
     expect(() => parseYang(wrap(nested))).toThrow(/nesting/i);
+  });
+});
+
+describe("Stage 7 P1 – validation over the accessible tree", () => {
+  const compileData = async (model: string) => {
+    const resolved = await resolveModuleSet([parseYang(model)], { async loadModule() { return undefined; } });
+    const schema = compileYangModules(resolved);
+    expect(schema.diagnostics).toEqual([]);
+    return schema;
+  };
+
+  const defaultsModel = `module defaults {
+    namespace "urn:defaults"; prefix d;
+    container box {
+      leaf mode { type enumeration { enum auto; enum manual; } default auto; }
+      leaf mode-ref { type leafref { path "../mode"; } }
+      must "mode = 'auto'";
+    }
+  }`;
+
+  it("injects declared defaults into must and leafref evaluation", async () => {
+    const schema = await compileData(defaultsModel);
+    // `mode` is absent: with-defaults content makes the must true and the
+    // leafref value 'auto' resolvable (RFC 7950 §7.6.1, §6.4.1).
+    const result = validateDataTree(schema, xml(
+      `<box xmlns="urn:defaults"><mode-ref>auto</mode-ref></box>`,
+    ));
+    expect(result).toMatchObject({ status: "valid", issues: [] });
+    // An explicit non-default value keeps the must unmet and… the mode-ref leafref (mode=manual value) no longer resolves.
+    const contradicted = validateDataTree(schema, xml(
+      `<box xmlns="urn:defaults"><mode>manual</mode><mode-ref>manual</mode-ref></box>`,
+    ));
+    expect(contradicted.status).toBe("invalid");
+    expect(contradicted.issues.map(issue => issue.code)).toEqual(["must-unmet"]);
+  });
+
+  const stateModel = `module flagged {
+    namespace "urn:flagged"; prefix f;
+    container box {
+      leaf name { type string; }
+      container state {
+        config false;
+        leaf oper-status { type string; mandatory true; }
+      }
+    }
+  }`;
+
+  it("hides config false state data when validating the config datastore", async () => {
+    const schema = await compileData(stateModel);
+    const configOnly = validateDataTree(schema, xml(
+      `<box xmlns="urn:flagged"><name>x</name></box>`,
+    ), { includeState: false });
+    expect(configOnly).toMatchObject({ status: "valid", issues: [] });
+    // State data participating again when validating the operational datastore.
+    const withState = validateDataTree(schema, xml(
+      `<box xmlns="urn:flagged"><name>x</name><state/></box>`,
+    ), { includeState: true });
+    expect(withState.issues.map(issue => issue.code)).toEqual(["missing-mandatory"]);
+  });
+
+  it("does not mutate the caller's document while probing when-gated nodes", async () => {
+    const model = `module gated {
+      namespace "urn:gated"; prefix g;
+      container box {
+        leaf flag { type boolean; when "../name = 'y'"; }
+        leaf name { type string; }
+      }
+    }`;
+    const schema = await compileData(model);
+    const document = xml(`<box xmlns="urn:gated"><name>x</name></box>`);
+    const before = Array.from(document.documentElement!.childNodes).map(child => child.nodeName).sort().join(",");
+    validateDataTree(schema, document);
+    const after = Array.from(document.documentElement!.childNodes).map(child => child.nodeName).sort().join(",");
+    expect(after).toBe(before);
   });
 });
