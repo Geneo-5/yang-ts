@@ -80,7 +80,12 @@ export function compileYangXPath(
   const evaluationOptions = (options: YangXPathEvaluationOptions) => ({
     node: options.node,
     namespaces,
-    ...(options.functions ? { functions: options.functions } : {}),
+    functions: {
+      // RFC 7950 section 10.1: current() returns the original context node even
+      // inside predicates, where the evaluator's own contextNode has advanced.
+      current: () => options.node,
+      ...(options.functions ?? {}),
+    },
     allowAnyNamespaceForNoPrefix: false,
   });
   const evaluate = (options: YangXPathEvaluationOptions) => parsed.evaluate(evaluationOptions(options));

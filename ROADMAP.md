@@ -56,7 +56,7 @@ Exit: RFC-linked positive/negative type tests, including inherited restrictions 
 
 - Compatibility spike selected `xpath@0.0.36` as the XPath 1.0 evaluator candidate and verified YANG current-module QName qualification, list predicates/relative paths over a YANG-shaped tree, and custom functions; see `XPATH_SPIKE.md`. Full accessible-tree construction and YANG functions are still unimplemented.
 - Implement XPath 1.0 axes, predicates, coercions, node-set comparisons, and the YANG-specific root/context/namespace rules.
-- Add the RFC 7950 function library: `current`, `re-match`, `derived-from`, `derived-from-or-self`, `deref`, `enum-value` and `bit-is-set`.
+- Add the RFC 7950 function library: `current`, `re-match`, `derived-from`, `derived-from-or-self`, `enum-value` and `bit-is-set` are implemented over the compiled schema (`createYangFunctionLibrary`); `current` is bound by the XPath adapter to the original evaluation context node because the evaluator extends its context inside predicates. `deref` still needs the accessible data tree.
 - Model the five accessible-tree contexts (datastore config, state, notification, RPC/action input, output) and default nodes.
 
 Exit: section-linked tests plus focused cases from the checked-in `if:type` conditions and `must` expressions.
