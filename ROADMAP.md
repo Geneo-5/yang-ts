@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2 and Stage 4 are complete; Stage 3 is in progress with its restriction validation mostly done; Stage 5 is in progress with constraint evaluation and structural data-tree validation done; Stage 6 is pending. Last updated: 2026-11 (Stage 5 structural validation added).
+This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2 and Stage 4 are complete; Stage 3 is in progress with its restriction validation mostly done; Stage 5 is in progress with constraint evaluation and structural data-tree validation done; Stage 6 is pending. Last updated: 2026-11 (Stage 5 structural validation and contextual candidate evaluation added).
 
 ## Stage 0 — Parser foundation (complete)
 
