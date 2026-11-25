@@ -43,6 +43,26 @@ describe("semantic compilation foundation", () => {
     expect(schema.diagnostics).toEqual([]);
   });
 
+  it("compiles RPC and notification declarations from included submodules", async () => {
+    const module = parseYang(`module operations { namespace "urn:operations"; prefix o; include operations-extra; }`);
+    const moduleSet = await resolveModuleSet([module], {
+      async loadModule() { return undefined; },
+      async loadSubmodule(name) {
+        return name === "operations-extra" ? `submodule operations-extra {
+          belongs-to operations { prefix o; }
+          rpc reset { input { leaf mode { type string; } } output { leaf done { type boolean; } } }
+          notification changed { leaf id { type string; } }
+        }` : undefined;
+      },
+    });
+    const schema = compileYangModules(moduleSet);
+    expect(schema.operations.map(operation => [operation.kind, operation.name])).toEqual([
+      ["rpc", "reset"], ["notification", "changed"],
+    ]);
+    expect(schema.operations[0]?.input[0]).toMatchObject({ path: "/reset/input/mode", module: "operations" });
+    expect(schema.diagnostics).toEqual([]);
+  });
+
   it("compiles oven data and RPC schema nodes with source-linked type statements", () => {
     const module = fixture("sysrepo/oven.yang");
     return resolveModuleSet([module], { async loadModule() { return undefined; } }).then(moduleSet => {

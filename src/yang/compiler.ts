@@ -466,15 +466,21 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   roots.forEach(node => refreshConfig(node, true));
 
   const operations: CompiledOperation[] = [];
-  for (const module of modules) for (const statement of module.children) {
-    if (statement.keyword !== "rpc" && statement.keyword !== "action" && statement.keyword !== "notification") continue;
+  const compileOperation = (module: YangModule, statement: YangStatement, parentPath = "") => {
+    if (statement.keyword !== "rpc" && statement.keyword !== "action" && statement.keyword !== "notification") return;
+    const operationPath = `${parentPath}/${statement.argument ?? ""}`;
     const compileScope = (scope: YangStatement | undefined, name: "input" | "output") => scope
-      ? dataChildren(scope).flatMap(child => makeNode(child, module, `/${statement.argument}/${name}`, true))
+      ? dataChildren(scope).flatMap(child => makeNode(child, module, `${operationPath}/${name}`, true))
       : [];
     operations.push({
       kind: statement.keyword, name: statement.argument ?? "", module: module.argument, source: statement,
       input: compileScope(childOf(statement, "input"), "input"), output: compileScope(childOf(statement, "output"), "output"),
     });
+  };
+  for (const module of modules) {
+    for (const source of [module, ...submodulesFor(module)]) {
+      for (const statement of source.children) compileOperation(module, statement);
+    }
   }
   const identities: CompiledIdentity[] = [];
   for (const module of modules) {
