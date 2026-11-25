@@ -62,6 +62,33 @@ describe("data-tree structural validation", () => {
     expect(duplicated.issues.map(item => item.code)).toEqual(["too-many-elements", "too-few-elements"]);
   });
 
+  it("validates instance-identifier syntax and resolution", async () => {
+    const schema = await compileModule(`module refs {
+      namespace "urn:refs"; prefix r;
+      container refs {
+        list item {
+          key name; leaf name { type string; }
+          leaf target { type instance-identifier; }
+          leaf free { type instance-identifier { require-instance false; } }
+        }
+      }
+    }`);
+    const doc = (target: string, free: string) => instance(
+      `<refs xmlns="urn:refs"><item><name>a</name><target>${target}</target><free>${free}</free></item></refs>`);
+
+    const valid = validateDataTree(schema, doc("/refs/item[name='a']", "count(/refs/item)"));
+    expect(valid.issues).toEqual([]);
+
+    const dangling = validateDataTree(schema, doc("/refs/item[name='missing']", "count(/refs/item)"));
+    expect(dangling.issues.map(item => item.code)).toEqual(["instance-identifier-dangling"]);
+
+    const invalid = validateDataTree(schema, doc("refs/item", "count(/refs/item)"));
+    expect(invalid.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
+
+    const emptyFreeForm = validateDataTree(schema, doc("/refs/item[name='a']", " "));
+    expect(emptyFreeForm.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
+  });
+
   it("detects dangling leafrefs and unmet must constraints", async () => {
     const routed = compileYangModules(await resolveModuleSet([parseYang(`module routing {
       namespace "urn:routing"; prefix r;

@@ -1,4 +1,5 @@
 import { CompiledSchemaNode, CompiledYangSchema } from "../yang/compiler.js";
+import { childOf } from "../yang/parser.js";
 import { createConstraintEvaluator } from "../xpath/evaluate-constraints.js";
 import { createLeafrefResolver } from "../xpath/yang-functions.js";
 
@@ -11,6 +12,8 @@ export type ValidationIssueCode =
   | "missing-choice"
   | "unique-violation"
   | "leafref-dangling"
+  | "instance-identifier-invalid"
+  | "instance-identifier-dangling"
   | "must-unmet"
   | "when-unexpected-node";
 
@@ -154,14 +157,36 @@ export function validateDataTree(
     }
   }
 
+  // require-instance lives on the `type` statement (refine copies land on the node's properties).
+  const requireInstanceDisabled = (node: CompiledSchemaNode): boolean =>
+    (node.type ? childOf(node.type, "require-instance")?.argument : undefined) === "false"
+    || node.properties["require-instance"]?.[0]?.argument === "false";
+
   function checkLeafrefs(element: Element, schemaNode: CompiledSchemaNode): void {
-    if (schemaNode.resolvedType === "leafref" && schemaNode.properties["require-instance"]?.[0]?.argument !== "false"
+    if (schemaNode.resolvedType === "leafref" && !requireInstanceDisabled(schemaNode)
       && resolveLeafref(schemaNode, element)?.length === 0) {
       issue("leafref-dangling", schemaNode, `leafref '${schemaNode.path}' does not resolve in the instance`);
     }
     for (const child of schemaNode.children) {
       if (child.kind === "choice" || child.kind === "case") { checkLeafrefs(element, child); continue; }
       for (const entry of elementsOf(element, child)) checkLeafrefs(entry, child);
+    }
+  }
+
+  function checkInstanceIdentifiers(element: Element, schemaNode: CompiledSchemaNode): void {
+    if (schemaNode.resolvedType === "instance-identifier" && schemaNode.kind === "leaf") {
+      const value = element.textContent ?? "";
+      const requireInstance = !requireInstanceDisabled(schemaNode);
+      const parsed = parseInstanceIdentifier(value, requireInstance);
+      if (!parsed.ok) {
+        issue("instance-identifier-invalid", schemaNode, `instance-identifier '${schemaNode.path}' is not a valid instance-identifier: ${parsed.reason}`);
+      } else if (requireInstance && !resolvesInstanceIdentifier(instance, parsed.steps)) {
+        issue("instance-identifier-dangling", schemaNode, `instance-identifier of '${schemaNode.path}' does not resolve in the instance`);
+      }
+    }
+    for (const child of schemaNode.children) {
+      if (child.kind === "choice" || child.kind === "case") { checkInstanceIdentifiers(element, child); continue; }
+      for (const entry of elementsOf(element, child)) checkInstanceIdentifiers(entry, child);
     }
   }
 
@@ -173,8 +198,153 @@ export function validateDataTree(
     const present = top.localName === root.name && top.namespaceURI === root.namespace ? [top] : elementsOf(top, root);
     for (const entry of present) {
       checkLeafrefs(entry, root);
+      checkInstanceIdentifiers(entry, root);
       visitElement(entry, root);
     }
   }
   return { status: issues.length ? "invalid" : indeterminate ? "indeterminate" : "valid", issues };
+}
+
+/** One node step of an RFC 7950 instance-identifier (section 9.13): a node
+ *  name plus key/value predicates; a `.` predicate key addresses leaf-lists. */
+interface IdentifierStep {
+  name: string;
+  predicates: { key: string; value: string }[];
+}
+
+type ParsedIdentifier =
+  | { ok: true; steps: IdentifierStep[] }
+  | { ok: false; reason: string };
+
+type ParsedStep =
+  | { ok: true; step: IdentifierStep }
+  | { ok: false; reason: string };
+
+/**
+ * Parse the instance-identifier lexical form: a root-anchored path of node
+ * names with `[key = value]` or `[. = value]` predicates. Namespace prefixes
+ * are optional and match instance elements by local name. Values may be
+ * quoted; unquoted values stop at path/predicate delimiters. With
+ * `require-instance false` any non-empty XPath expression is accepted.
+ */
+function parseInstanceIdentifier(value: string, requireInstance: boolean): ParsedIdentifier {
+  if (!requireInstance) {
+    return value.trim().length > 0 ? { ok: true, steps: [] } : { ok: false, reason: "empty expression" };
+  }
+  if (!value.startsWith("/")) return { ok: false, reason: "must start with '/'" };
+  const segments = splitTopLevel(value);
+  if (!segments) return { ok: false, reason: "unbalanced brackets or quotes" };
+  const steps: IdentifierStep[] = [];
+  for (const segment of segments.slice(1)) {
+    const parsed = parseStep(segment);
+    if (!parsed.ok) return parsed;
+    steps.push(parsed.step);
+  }
+  if (!steps.length) return { ok: false, reason: "path has no node steps" };
+  return { ok: true, steps };
+}
+
+/** Split on `/` outside brackets and quotes, keeping empty head before the leading slash. */
+function splitTopLevel(value: string): string[] | undefined {
+  const parts: string[] = [];
+  let current = "";
+  let depth = 0;
+  let quote: string | null = null;
+  for (const ch of value) {
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; current += ch; continue; }
+    if (ch === "[") { depth++; current += ch; continue; }
+    if (ch === "]") { depth--; if (depth < 0) return undefined; current += ch; continue; }
+    if (ch === "/" && depth === 0) { parts.push(current); current = ""; continue; }
+    current += ch;
+  }
+  if (quote || depth !== 0) return undefined;
+  parts.push(current);
+  return parts;
+}
+
+function parseStep(segment: string): ParsedStep {
+  const bracketStart = segment.indexOf("[");
+  const name = bracketStart >= 0 ? segment.slice(0, bracketStart) : segment;
+  const localName = name.includes(":") ? name.slice(name.indexOf(":") + 1) : name;
+  if (!/^[\w.-]+$/.test(localName)) return { ok: false, reason: `invalid node name '${name}'` };
+  const predicates: { key: string; value: string }[] = [];
+  let rest = segment.slice(localName.length).replace(/^[^[]*/, "");
+  while (rest.length) {
+    if (!rest.startsWith("[")) return { ok: false, reason: `malformed predicate in '${segment}'` };
+    const end = closingBracket(rest);
+    if (end < 0) return { ok: false, reason: "unbalanced brackets" };
+    const predicate = parsePredicate(rest.slice(1, end));
+    if (!predicate.ok) return predicate;
+    predicates.push(predicate.keyValue);
+    rest = rest.slice(end + 1);
+  }
+  return { ok: true, step: { name: localName, predicates } };
+}
+
+/** Index (within a string starting at `[`) of the matching `]`, honoring quotes. */
+function closingBracket(text: string): number {
+  let quote: string | null = null;
+  for (let index = 1; index < text.length; index++) {
+    const ch = text[index]!;
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') { quote = ch; continue; }
+    if (ch === "]") return index;
+  }
+  return -1;
+}
+
+type ParsedPredicate =
+  | { ok: true; keyValue: { key: string; value: string } }
+  | { ok: false; reason: string };
+
+function parsePredicate(text: string): ParsedPredicate {
+  const match = text.match(
+    /^\s*(?:[\w.-]+:)?([\w.-]+|\.)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^"'[\]/]*)\s*$/,
+  );
+  if (!match) return { ok: false, reason: `malformed predicate '[${text}]'` };
+  const raw = match[2] ?? "";
+  const quoted = raw.length > 1 && ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'")));
+  const value = quoted ? raw.slice(1, -1).replace(/\\(.)/g, "$1") : raw.trim();
+  return { ok: true, keyValue: { key: match[1]!, value } };
+}
+
+/** Resolve parsed steps against the instance document, local names only. */
+function resolvesInstanceIdentifier(instance: Document, steps: IdentifierStep[]): boolean {
+  let current: Element | undefined = instance.documentElement;
+  if (!current) return false;
+  const first = steps[0]!;
+  if (current.localName !== first.name) return false;
+  if (!matchPredicates(current, first.predicates)) return false;
+  for (const step of steps.slice(1)) {
+    const next = Array.from(current.childNodes).find(child => child.nodeType === 1 &&
+      (child as Element).localName === step.name) as Element | undefined;
+    if (!next) return false;
+    current = next;
+    if (!current) return false;
+    if (!matchPredicates(current, step.predicates)) return false;
+  }
+  return true;
+}
+
+function matchPredicates(element: Element, predicates: { key: string; value: string }[]): boolean {
+  // A list entry identifier must carry all of the entry's keys; a bare node
+  // without predicates matches any entry.
+  for (const predicate of predicates) {
+    if (predicate.key === ".") {
+      if ((element.textContent ?? "") !== predicate.value) return false;
+      continue;
+    }
+    const key = Array.from(element.childNodes).find(child => child.nodeType === 1 &&
+      (child as Element).localName === predicate.key) as Element | undefined;
+    if (!key || (key.textContent ?? "") !== predicate.value) return false;
+  }
+  return true;
 }

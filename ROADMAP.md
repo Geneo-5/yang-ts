@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2 and Stage 4 are complete; Stage 3 is in progress with its restriction validation mostly done; Stage 5 is in progress with constraint evaluation and structural data-tree validation done; Stage 6 is pending. Last updated: 2026-11 (Stage 5 structural validation and contextual candidate evaluation added).
+This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2, 4 and 5 are complete; Stage 3 is in progress with its restriction validation mostly done; Stage 6 is pending. Last updated: 2026-11 (Stage 5 closed with structural validation and contextual candidate evaluation).
 
 ## Stage 0 — Parser foundation (complete)
 
@@ -61,15 +61,15 @@ Exit: RFC-linked positive/negative type tests, including inherited restrictions 
 
 Exit met: section-linked tests plus focused cases from the checked-in `if:type` conditions (`encapsulation`, `loopback`, `parent-interface` in `ietf-if-extensions`) and `must` expressions; covered by `tests/xpath.test.ts`, `tests/accessible-tree.test.ts`, `tests/constraints.test.ts`.
 
-## Stage 5 — Validation and conditional UI introspection (in progress)
+## Stage 5 — Validation and conditional UI introspection (complete)
 
 - Validate structural rules, keys, unique, mandatory, min/max-elements, `must`, `when`, leafref and instance-identifier integrity.
 - Distinguish invalid, valid and indeterminate results when needed context is absent.
 - Expose framework-neutral schema metadata and candidate-value evaluations with explanations.
 - For finite domains (enum/bits), evaluate each candidate against a concrete data context; never treat a `must` as a static enumeration filter when it depends on unknown sibling/state data.
-- Foundations in place: `must`/`when` evaluation with valid/invalid/indeterminate statuses over accessible trees (`createConstraintEvaluator`, `tests/constraints.test.ts`), form-level type/required/cardinality validation with the same three statuses (`validateFormValue`), and a structural validation pass over whole data trees (`validateDataTree`, `tests/validate-instance.test.ts`): list keys, `unique`, `min/max-elements`, `mandatory`, leafref integrity and re-evaluated `must`/`when` constraints, returning per-issue paths with three-valued status including `when`-probed absence.
+- Implemented: `must`/`when` evaluation with valid/invalid/indeterminate statuses over accessible trees (`createConstraintEvaluator`, `tests/constraints.test.ts`); form-level type/required/cardinality validation with the same three statuses (`validateFormValue`); a structural validation pass over whole data trees (`validateDataTree`, `tests/validate-instance.test.ts`) covering list keys, `unique`, `min/max-elements`, `mandatory`, leafref integrity (`require-instance` honored), RFC 7950 instance-identifier parsing and in-document resolution, and re-evaluated `must`/`when` constraints with `when`-probed absence; and contextual finite-domain candidate evaluation (`evaluateCandidates`, `finiteDomainOf`, `tests/candidates.test.ts`): each enum/bits/boolean candidate is substituted into the instance document, its `must`/`when` constraints decide allowed/blocked, unevaluable constraints yield indeterminate instead of a static filter, and every candidate carries per-constraint explanations with the declaring statement as source.
 
-Exit: end-to-end tests for contextual allowed-value filtering and every result carries a path, source and reason.
+Exit met: end-to-end contextual allowed-value filtering (`tests/candidates.test.ts`) and every result carries a path, source and reason.
 
 ## Stage 6 — Browser release readiness (pending)
 
