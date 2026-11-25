@@ -168,6 +168,27 @@ describe("semantic compilation foundation", () => {
     expect(schema.operations.some(operation => operation.name === "invalid")).toBe(false);
   });
 
+  it("reports missing required and repeated singleton YANG type statements", async () => {
+    const module = parseYang(`module malformed { namespace "urn:malformed"; prefix m;
+      leaf missing-type;
+      leaf duplicate-type { type string; type uint8; }
+      leaf decimal { type decimal64; }
+      leaf reference { type leafref; }
+      leaf choices { type enumeration; }
+    }`);
+    const moduleSet = await resolveModuleSet([module], { async loadModule() { return undefined; } });
+    const schema = compileYangModules(moduleSet);
+    const cardinality = schema.diagnostics.filter(diagnostic => diagnostic.code === "invalid-statement-cardinality");
+    expect(cardinality).toHaveLength(5);
+    expect(cardinality.map(diagnostic => diagnostic.message)).toEqual(expect.arrayContaining([
+      "Statement 'type' is required under 'leaf'",
+      "Statement 'type' may appear at most once under 'leaf'",
+      "Statement 'fraction-digits' is required for type 'decimal64'",
+      "Statement 'path' is required for type 'leafref'",
+      "Statement 'enum' is required for type 'enumeration'",
+    ]));
+  });
+
   it("validates list keys against effective children introduced by uses", async () => {
     const module = parseYang(`module keyed {
       namespace "urn:keyed"; prefix k;

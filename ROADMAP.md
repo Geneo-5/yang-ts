@@ -30,6 +30,7 @@ Exit: complete dependency closures for oven and the interface fixture set; tests
 - Apply augments and deviations; evaluate `if-feature` expressions to create a feature-specific effective schema.
 - Preserve source locations and provenance on every compiled node.
 - Implemented foundation: data/RPC/notification schema nodes (including top-level declarations in included submodules), effective list-key checks after `uses` expansion and matching `config` inheritance, simple typedef-chain resolution, use-site grouping instantiation and `refine`, QName-based augment paths, explicit and shorthand choice cases, `must`/`when` provenance, feature filtering, and RFC 7950 deviations (`not-supported`, `add`, `replace`, `delete`) with property checks.
+- Cardinality diagnostics now cover singleton duplicates, required module/type statements and required substatements of the `decimal64`, `leafref`, `enumeration`, `bits`, `union` and `identityref` built-in types.
 - Implemented submodule QName behavior for augments, groupings, typedefs and `if-feature`: imports resolve in the declaring submodule context, while definitions and enabled feature IDs are associated with the `belongs-to` module.
 - Implemented nested action compilation from data nodes, grouping instantiations and augments, with schema paths and compiled input/output trees.
 - Implemented augments targeting RPC/action `input` and `output` nodes and notification content, including operation path matching across module namespaces; invalid target and child statement kinds now produce diagnostics.

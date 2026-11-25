@@ -47,7 +47,7 @@ export interface CompilerDiagnostic {
     "uses-cycle" | "augment-conflict" | "invalid-key" | "unresolved-type" | "typedef-cycle" |
     "unresolved-feature" | "invalid-feature-expression" | "unresolved-deviation" | "invalid-deviation" |
     "unresolved-refine" | "invalid-refine" | "unresolved-identity" | "identity-cycle" |
-    "invalid-augment-target" | "invalid-augment-child";
+    "invalid-augment-target" | "invalid-augment-child" | "invalid-statement-cardinality";
   message: string;
   module: string;
   source: YangStatement;
@@ -102,6 +102,54 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   const roots: CompiledSchemaNode[] = [];
   const report = (code: CompilerDiagnostic["code"], message: string, module: YangModule, source: YangStatement) =>
     diagnostics.push({ code, message, module: module.argument, source });
+  const singletonChildren: Readonly<Record<string, readonly string[]>> = {
+    module: ["yang-version", "namespace", "prefix", "organization", "contact", "description", "reference"],
+    submodule: ["yang-version", "belongs-to", "organization", "contact", "description", "reference"],
+    "belongs-to": ["prefix"], "leaf": ["type", "units", "default", "config", "mandatory", "status", "description", "reference", "when"],
+    "leaf-list": ["type", "units", "config", "min-elements", "max-elements", "ordered-by", "status", "description", "reference", "when"],
+    typedef: ["type", "units", "default", "status", "description", "reference"],
+    type: ["range", "length", "path", "require-instance", "fraction-digits"],
+    container: ["presence", "config", "status", "description", "reference", "when"],
+    list: ["key", "config", "min-elements", "max-elements", "ordered-by", "status", "description", "reference", "when"],
+    choice: ["default", "config", "mandatory", "status", "description", "reference", "when"],
+    case: ["status", "description", "reference", "when"],
+    rpc: ["input", "output", "status", "description", "reference"],
+    action: ["input", "output", "status", "description", "reference"],
+    notification: ["status", "description", "reference"],
+    enum: ["value", "status", "description", "reference"], bit: ["position", "status", "description", "reference"],
+    augment: ["when", "description", "reference"],
+  };
+  const requiredChildren: Readonly<Record<string, readonly string[]>> = {
+    module: ["namespace", "prefix"], submodule: ["belongs-to"], typedef: ["type"],
+    leaf: ["type"], "leaf-list": ["type"], "belongs-to": ["prefix"],
+  };
+  const validateCardinality = (root: YangModule): void => {
+    const visit = (statement: YangStatement): void => {
+      for (const keyword of singletonChildren[statement.keyword] ?? []) {
+        const occurrences = childrenOf(statement, keyword);
+        if (occurrences.length > 1) for (const duplicate of occurrences.slice(1)) {
+          report("invalid-statement-cardinality", `Statement '${keyword}' may appear at most once under '${statement.keyword}'`, root, duplicate);
+        }
+      }
+      for (const keyword of requiredChildren[statement.keyword] ?? []) if (childrenOf(statement, keyword).length === 0) {
+        report("invalid-statement-cardinality", `Statement '${keyword}' is required under '${statement.keyword}'`, root, statement);
+      }
+      if (statement.keyword === "type") {
+        const typeName = statement.argument;
+        const required = typeName === "decimal64" ? "fraction-digits"
+          : typeName === "leafref" ? "path"
+          : typeName === "enumeration" ? "enum"
+          : typeName === "bits" ? "bit"
+          : typeName === "union" ? "type"
+          : typeName === "identityref" ? "base" : undefined;
+        if (required && childrenOf(statement, required).length === 0) {
+          report("invalid-statement-cardinality", `Statement '${required}' is required for type '${typeName}'`, root, statement);
+        }
+      }
+      statement.children.forEach(visit);
+    };
+    visit(root);
+  };
   const checkDuplicates = (nodes: readonly CompiledSchemaNode[], owner: YangModule) => {
     const seen = new Set<string>();
     for (const node of nodes) {
@@ -113,6 +161,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   const submodulesFor = (module: YangModule): YangModule[] => moduleSet.submodules.filter(submodule =>
     childOf(submodule, "belongs-to")?.argument === module.argument,
   );
+  for (const module of modules) for (const source of [module, ...submodulesFor(module)]) validateCardinality(source);
   const parentModuleFor = (context: YangModule): YangModule => {
     const parentName = childOf(context, "belongs-to")?.argument;
     return parentName ? modules.find(module => module.argument === parentName) ?? context : context;
