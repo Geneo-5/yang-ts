@@ -292,6 +292,35 @@ function base64OctetLength(value: string): number | undefined {
   return value.length / 4 * 3 - padding;
 }
 
+// RFC 7950 section 9.4.6 patterns are implicitly-anchored XML Schema
+// regular expressions. JavaScript regexes agree on the common subset, but not
+// on backreferences, `(?`-prefixed groups or character-class subtraction, where
+// JavaScript silently accepts and misinterprets the syntax; such patterns stay
+// pending instead of being evaluated with the wrong rules.
+const patternCache = new Map<string, RegExp | undefined>();
+function compilePattern(pattern: string): RegExp | undefined {
+  const cached = patternCache.get(pattern);
+  if (cached !== undefined) return cached;
+  if (patternCache.has(pattern)) return undefined;
+  let compiled: RegExp | undefined;
+  if (!/\\\d|\(\?/.test(pattern) && !hasCharacterClassSubtraction(pattern)) {
+    try { compiled = new RegExp(`^(?:${pattern})$`); } catch { compiled = undefined; }
+  }
+  patternCache.set(pattern, compiled);
+  return compiled;
+}
+function hasCharacterClassSubtraction(pattern: string): boolean {
+  let inside = false;
+  for (let index = 0; index < pattern.length; index++) {
+    const character = pattern[index]!;
+    if (inside && character === "\\") { index++; continue; }
+    if (character === "[") inside = true;
+    else if (character === "]") inside = false;
+    else if (inside && character === "-" && pattern[index + 1] === "[") return true;
+  }
+  return false;
+}
+
 interface EffectiveIntervalConstraint { expression: string; minimum: bigint; maximum: bigint; }
 function inheritedIntervals(
   layers: YangStatement[], keyword: "range" | "length", minimum: bigint, maximum: bigint, decimalDigits?: number,
@@ -391,6 +420,13 @@ function validateType(field: FormField, value: unknown, errors: FormError[]): bo
     for (const constraint of inheritedIntervals(fieldTypeLayers.get(field) ?? [], "length", 0n, (1n << 64n) - 1n)) {
       if (!inIntervals(length, constraint.expression, undefined, [constraint.minimum, constraint.maximum])) { errors.push({ code: "constraint.length", message: `${field.label} has a length outside ${constraint.expression}.` }); return false; }
     }
+    if (typeof value === "string") {
+      for (const layer of fieldTypeLayers.get(field) ?? []) for (const patternStatement of childrenOf(layer, "pattern")) {
+        const pattern = compilePattern(patternStatement.argument ?? "");
+        if (!pattern) continue;
+        if (!pattern.test(value)) { errors.push({ code: "constraint.pattern", message: `${field.label} does not match pattern '${patternStatement.argument ?? ""}'.` }); return false; }
+      }
+    }
     return true;
   }
   if (intBounds(field.yangType)) {
@@ -466,10 +502,15 @@ export function validateFormValue(field: FormField, value: unknown): FormValidat
     result = validateType(field, value, errors);
   }
   const hasPattern = (fieldTypeLayers.get(field) ?? []).some(layer => childrenOf(layer, "pattern").length > 0);
-  const unsupportedConstraint = hasPattern
+  const unsupportedPattern = hasPattern && (field.yangType !== "string"
+    || (fieldTypeLayers.get(field) ?? []).some(layer => childrenOf(layer, "pattern")
+      .some(patternStatement => !compilePattern(patternStatement.argument ?? ""))));
+  const unsupportedConstraint = unsupportedPattern
     || ["leafref", "identityref", "instance-identifier"].includes(field.yangType);
   const pending = [...field.constraints];
-  if (hasPattern) pending.push({ kind: "unsupported", expression: "pattern requires XML Schema regular-expression evaluation", source: field.source });
+  if (unsupportedPattern) {
+    pending.push({ kind: "unsupported", expression: "pattern requires XML Schema regular-expression evaluation", source: field.source });
+  }
   if (["leafref", "identityref", "instance-identifier"].includes(field.yangType)) {
     pending.push({ kind: "unsupported", expression: `${field.yangType} requires cross-reference/schema validation`, source: field.source });
   }

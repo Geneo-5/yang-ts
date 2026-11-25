@@ -64,12 +64,19 @@ describe("form helper", () => {
     expect(validateFormValue(field, undefined).errors[0]?.code).toBe("constraint.min-elements");
   });
 
-  it("reports pattern constraints as indeterminate instead of using incompatible JavaScript regex rules", () => {
-    const module = parseYang(`module check { namespace "urn:check"; prefix c; leaf name { type string { pattern '[a-z]+'; } } }`);
-    const field = createFormModel(module).fields[0]!;
-    expect(validateFormValue(field, "valid")).toMatchObject({
-      status: "indeterminate", pending: [{ kind: "unsupported", expression: "pattern requires XML Schema regular-expression evaluation" }],
-    });
+  it("evaluates pattern restrictions with an anchored regex and pends unsafe patterns", () => {
+    const module = parseYang(`module check { namespace "urn:check"; prefix c;
+      typedef hostname { type string { pattern "[a-z]+(-[a-z]+)*"; } }
+      leaf name { type hostname; }
+      leaf subnet { type string { pattern "[a-z]-[a-z-[aeiou]]"; } }
+    }`);
+    const fields = createFormModel(module).fields;
+    expect(validateFormValue(fields[0]!, "mgmt-lan").status).toBe("valid");
+    expect(validateFormValue(fields[0]!, "MGMT").errors[0]?.code).toBe("constraint.pattern");
+    expect(validateFormValue(fields[0]!, "-lan").errors[0]?.code).toBe("constraint.pattern");
+    const subnet = validateFormValue(fields[1]!, "b-x");
+    expect(subnet.status).toBe("indeterminate");
+    expect(subnet.pending).toEqual([expect.objectContaining({ kind: "unsupported" })]);
   });
 
   it("validates decimal64 precision and declared ranges", () => {
