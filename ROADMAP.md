@@ -32,7 +32,7 @@ Exit: complete dependency closures for oven and the interface fixture set; tests
 - Implemented foundation: data/RPC/notification schema nodes (including top-level declarations in included submodules), effective list-key checks after `uses` expansion and matching `config` inheritance, simple typedef-chain resolution, use-site grouping instantiation and `refine`, QName-based augment paths, explicit and shorthand choice cases, `must`/`when` provenance, feature filtering, and RFC 7950 deviations (`not-supported`, `add`, `replace`, `delete`) with property checks.
 - Implemented submodule QName behavior for augments, groupings, typedefs and `if-feature`: imports resolve in the declaring submodule context, while definitions and enabled feature IDs are associated with the `belongs-to` module.
 - Implemented nested action compilation from data nodes, grouping instantiations and augments, with schema paths and compiled input/output trees.
-- Implemented augments targeting RPC/action `input` and `output` nodes and notification content, including operation path matching across module namespaces.
+- Implemented augments targeting RPC/action `input` and `output` nodes and notification content, including operation path matching across module namespaces; invalid target and child statement kinds now produce diagnostics.
 - Remaining: submodule-aware expression contexts and other edge cases, statement legality/cardinality, complete type restrictions and broader negative coverage.
 
 Exit: the interface base plus all fixture augment modules compile into an inspectable effective tree; invalid paths and unresolved names are diagnostics, not silent skips.

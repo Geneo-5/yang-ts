@@ -46,7 +46,8 @@ export interface CompilerDiagnostic {
   code: "duplicate-node" | "unresolved-prefix" | "unresolved-augment" | "unresolved-grouping" |
     "uses-cycle" | "augment-conflict" | "invalid-key" | "unresolved-type" | "typedef-cycle" |
     "unresolved-feature" | "invalid-feature-expression" | "unresolved-deviation" | "invalid-deviation" |
-    "unresolved-refine" | "invalid-refine" | "unresolved-identity" | "identity-cycle";
+    "unresolved-refine" | "invalid-refine" | "unresolved-identity" | "identity-cycle" |
+    "invalid-augment-target" | "invalid-augment-child";
   message: string;
   module: string;
   source: YangStatement;
@@ -383,6 +384,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     return result;
   };
   const pendingAugmentActions: Array<{ module: YangModule; statement: YangStatement; parentPath: string; schemaPath: readonly { module: string; name: string }[] }> = [];
+  const pendingAugmentNotifications: Array<{ module: YangModule; statement: YangStatement; parentPath: string; schemaPath: readonly { module: string; name: string }[] }> = [];
   const operationAugments: Array<{ module: YangModule; statement: YangStatement; target: Array<{ module: YangModule; name: string }>; scope: "input" | "output" | "data" }> = [];
   const augments = modules.flatMap(module => [module, ...submodulesFor(module)].flatMap(source =>
     childrenOf(source, "augment").map(statement => ({ module, source, statement })),
@@ -415,11 +417,33 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       const augmentWhen = childrenOf(item.statement, "when");
       const augmentFeatures = childrenOf(item.statement, "if-feature").map(feature => ({ module: item.module.argument, expression: feature.argument ?? "", source: feature }));
       if (options.enabledFeatures && !featureRequirementsEnabled(augmentFeatures)) { pending.splice(index, 1); madeProgress = true; continue; }
-      const additions = normalizeChoiceChildren(item.statement.children.flatMap(child => makeNode(child, item.module, target.path, target.config, [], augmentWhen, augmentFeatures, item.module)), target);
-      for (const action of childrenOf(item.statement, "action")) pendingAugmentActions.push({
-        module: item.module, statement: action, parentPath: target.path,
-        schemaPath: path.map(part => ({ module: part.module.argument, name: part.name })),
+      if (!["container", "list", "choice", "case"].includes(target.kind)) {
+        report("invalid-augment-target", `Node '${target.path}' of kind '${target.kind}' cannot be augmented`, item.module, item.statement);
+        pending.splice(index, 1); madeProgress = true; continue;
+      }
+      const isAllowedAugmentChild = (keyword: string): boolean => {
+        if (target.kind === "choice") return ["case", "anydata", "anyxml", "choice", "container", "leaf", "leaf-list", "list", "uses"].includes(keyword);
+        if (target.kind === "container" || target.kind === "list") return ["action", "notification", "choice", "container", "leaf", "leaf-list", "list", "uses"].includes(keyword);
+        return ["choice", "container", "leaf", "leaf-list", "list", "uses"].includes(keyword);
+      };
+      const augmentChildren = item.statement.children.filter(child => {
+        if (isAllowedAugmentChild(child.keyword)) return true;
+        if (DATA_KINDS.has(child.keyword as SchemaNodeKind) || child.keyword === "uses" || child.keyword === "action" || child.keyword === "notification") {
+          report("invalid-augment-child", `Statement '${child.keyword}' cannot be added to a '${target.kind}' node`, item.module, child);
+        }
+        return false;
       });
+      const additions = normalizeChoiceChildren(augmentChildren.flatMap(child => makeNode(child, item.module, target.path, target.config, [], augmentWhen, augmentFeatures, item.module)), target);
+      if (target.kind === "container" || target.kind === "list") {
+        for (const action of childrenOf(item.statement, "action")) pendingAugmentActions.push({
+          module: item.module, statement: action, parentPath: target.path,
+          schemaPath: path.map(part => ({ module: part.module.argument, name: part.name })),
+        });
+        for (const notification of childrenOf(item.statement, "notification")) pendingAugmentNotifications.push({
+          module: item.module, statement: notification, parentPath: target.path,
+          schemaPath: path.map(part => ({ module: part.module.argument, name: part.name })),
+        });
+      }
       for (const addition of additions) {
         if (target.children.some(child => child.module === addition.module && child.name === addition.name)) {
           report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${target.path}'`, item.module, addition.source);
@@ -553,6 +577,9 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   for (const action of pendingAugmentActions) {
     compileOperation(action.module, action.statement, action.parentPath, action.schemaPath);
   }
+  for (const notification of pendingAugmentNotifications) {
+    compileOperation(notification.module, notification.statement, notification.parentPath, notification.schemaPath);
+  }
   for (const augment of operationAugments) {
     const targetSchemaPath = (augment.scope === "data" ? augment.target : augment.target.slice(0, -1))
       .map(part => ({ module: part.module.argument, name: part.name }));
@@ -567,7 +594,15 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     const targetNodes = operation[scope];
     const targetPath = scope === "data" ? operation.path : `${operation.path}/${scope}`;
     const inheritedConfig = scope !== "data";
-    const additions = augment.statement.children.flatMap(child => makeNode(child, augment.module, targetPath, inheritedConfig, [], childrenOf(augment.statement, "when"), childrenOf(augment.statement, "if-feature").map(feature => ({ module: augment.module.argument, expression: feature.argument ?? "", source: feature })), augment.module));
+    const allowedChildren = new Set(["choice", "container", "leaf", "leaf-list", "list", "uses"]);
+    const augmentChildren = augment.statement.children.filter(child => {
+      if (allowedChildren.has(child.keyword)) return true;
+      if (DATA_KINDS.has(child.keyword as SchemaNodeKind) || child.keyword === "uses" || child.keyword === "action" || child.keyword === "notification") {
+        report("invalid-augment-child", `Statement '${child.keyword}' cannot be added to an operation parameter node`, augment.module, child);
+      }
+      return false;
+    });
+    const additions = augmentChildren.flatMap(child => makeNode(child, augment.module, targetPath, inheritedConfig, [], childrenOf(augment.statement, "when"), childrenOf(augment.statement, "if-feature").map(feature => ({ module: augment.module.argument, expression: feature.argument ?? "", source: feature })), augment.module));
     for (const addition of additions) {
       if (targetNodes.some(child => child.module === addition.module && child.name === addition.name)) {
         report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${targetPath}'`, augment.module, addition.source);

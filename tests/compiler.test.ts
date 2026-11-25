@@ -153,6 +153,21 @@ describe("semantic compilation foundation", () => {
     expect(schema.diagnostics).toEqual([]);
   });
 
+  it("diagnoses illegal augment targets and child statement kinds", async () => {
+    const base = parseYang(`module base { namespace "urn:base"; prefix b;
+      container system { leaf name { type string; } choice mode { leaf auto { type empty; } } }
+    }`);
+    const extension = parseYang(`module extension { namespace "urn:extension"; prefix e; import base { prefix b; }
+      augment /b:system/b:name { leaf detail { type string; } }
+      augment /b:system/b:mode { action invalid { input { leaf value { type string; } } } }
+    }`);
+    const moduleSet = await resolveModuleSet([base, extension], { async loadModule() { return undefined; } });
+    const schema = compileYangModules(moduleSet);
+    expect(schema.diagnostics.map(diagnostic => diagnostic.code)).toContain("invalid-augment-target");
+    expect(schema.diagnostics.map(diagnostic => diagnostic.code)).toContain("invalid-augment-child");
+    expect(schema.operations.some(operation => operation.name === "invalid")).toBe(false);
+  });
+
   it("validates list keys against effective children introduced by uses", async () => {
     const module = parseYang(`module keyed {
       namespace "urn:keyed"; prefix k;
