@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2 and 4–5 are complete; Stage 3 is complete with its boundary corpus; Stage 6 is pending. Last updated: 2026-11 (Stage 3 closed with the boundary corpus; form cross-reference validation added).
+This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2 and 3–5 are complete; Stage 6 is in progress with resource budgets and cancellation done. Last updated: 2026-11 (Stage 6 started: module-set budgets and cancellation).
 
 ## Stage 0 — Parser foundation (complete)
 
@@ -75,12 +75,13 @@ Exit met: section-linked tests plus focused cases from the checked-in `if:type` 
 
 Exit met: end-to-end contextual allowed-value filtering (`tests/candidates.test.ts`) and every result carries a path, source and reason.
 
-## Stage 6 — Browser release readiness (pending)
+## Stage 6 — Browser release readiness (in progress)
 
 - Verify package exports and bundles in current browsers; no Node built-ins, Python, native wrapper or backend.
 - Test workers/cancellation/resource budgets for large or untrusted module sets.
 - Publish a conformance matrix with implemented/partial/unsupported/untested status and a migration/versioning policy.
 - Add optional YANG Library/RESTCONF loading adapters without coupling them into the compiler core.
+- Implemented: `resolveModuleSet` accepts `ModuleSetConstraints` (`tests/module-budgets.test.ts`) — an explicit host-owned `AbortSignal` and a `ModuleSetBudget` (max loader-loaded modules and submodules, import/include depth via the loader budget, total loader-reported source characters, wall-clock deadline) that refuse all further loads after the first violation and record a single `cancelled`/`budget-exceeded` diagnostic; unconstrained resolution is unchanged. The deadline is also recorded when the resolution finishes past it.
 
 Exit: browser smoke suite, bundle audit, full fixture corpus, documented known gaps and a repeatable release workflow.
 

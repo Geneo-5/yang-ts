@@ -11,10 +11,40 @@ export interface YangModuleLoader {
 
 export interface ModuleSetDiagnostic {
   code: "missing-module" | "missing-submodule" | "ambiguous-revision" | "invalid-document" |
-    "unexpected-document" | "missing-revision" | "include-cycle" | "import-cycle" | "invalid-belongs-to";
+    "unexpected-document" | "missing-revision" | "include-cycle" | "import-cycle" | "invalid-belongs-to" |
+    "cancelled" | "budget-exceeded";
   message: string;
   sourceModule: string;
   sourceLocation: YangStatement["location"];
+}
+
+/**
+ * Resource budget for untrusted module sets (Stage 6 browser readiness):
+ * once any limit is reached, further loads are refused and a single
+ * `budget-exceeded`/`cancelled` diagnostic is recorded.
+ */
+export interface ModuleSetBudget {
+  /**
+   * Maximum number of modules fetched through the loader. Roots arrive
+   * pre-parsed from the caller and do not count against this limit.
+   */
+  maxModules?: number;
+  maxSubmodules?: number;
+  /** Maximum import/include chain depth below the roots. */
+  maxDepth?: number;
+  /**
+   * Total characters of text documents handed over by the loader. Payloads
+   * supplied as parsed ASTs cannot be measured before parsing and are not counted.
+   */
+  maxSourceCharacters?: number;
+  /** Wall-clock budget in milliseconds over the whole resolution. */
+  deadlineMs?: number;
+}
+
+export interface ModuleSetConstraints {
+  budget?: ModuleSetBudget;
+  /** Host-owned cancellation (AbortController.signal in the browser). */
+  signal?: AbortSignal;
 }
 
 export interface YangModuleSet {
@@ -69,10 +99,57 @@ function selectDocument(
 }
 
 /** Resolve a transitive module and submodule closure without depending on browser transport APIs. */
-export async function resolveModuleSet(roots: readonly YangModule[], loader: YangModuleLoader): Promise<YangModuleSet> {
+export async function resolveModuleSet(roots: readonly YangModule[], loader: YangModuleLoader, constraints: ModuleSetConstraints = {}): Promise<YangModuleSet> {
+  const budget = constraints.budget ?? {};
+  const startedAt = Date.now();
+  let sourceCharacters = 0;
+  let violationReported = false;
+  const diagnostics: ModuleSetDiagnostic[] = [];
+
+  /** Decide whether another load may run: refuses all loads after the first violation. */
+  const guard = (kind: "module" | "submodule", name: string, owner: YangModule, statement: YangStatement): boolean => {
+    if (violationReported) return false;
+    if (constraints.signal?.aborted) {
+      violationReported = true;
+      diagnostics.push({ code: "cancelled", message: `Resolution was cancelled while loading ${kind} '${name}'`, sourceModule: owner.argument, sourceLocation: statement.location });
+      return false;
+    }
+    const { deadlineMs } = budget;
+    if (deadlineMs !== undefined && Date.now() - startedAt > deadlineMs) {
+      violationReported = true;
+      diagnostics.push({ code: "budget-exceeded", message: `Resolution exceeded the ${deadlineMs} ms deadline while loading ${kind} '${name}'`, sourceModule: owner.argument, sourceLocation: statement.location });
+      return false;
+    }
+    if (kind === "module" && budget.maxModules !== undefined && moduleLoads.size + submodules.size >= budget.maxModules) {
+      violationReported = true;
+      diagnostics.push({ code: "budget-exceeded", message: `Module budget ${budget.maxModules} reached while loading '${name}'`, sourceModule: owner.argument, sourceLocation: statement.location });
+      return false;
+    }
+    if (kind === "submodule" && budget.maxSubmodules !== undefined && submodules.size >= budget.maxSubmodules) {
+      violationReported = true;
+      diagnostics.push({ code: "budget-exceeded", message: `Submodule budget ${budget.maxSubmodules} reached while loading '${name}'`, sourceModule: owner.argument, sourceLocation: statement.location });
+      return false;
+    }
+    return true;
+  };
+  const trackSource = (document: YangDocument | readonly YangDocument[] | undefined): void => {
+    for (const item of (document === undefined ? [] : Array.isArray(document) ? document : [document])) {
+      if (typeof item === "string") sourceCharacters += item.length;
+    }
+    const { maxSourceCharacters } = budget;
+    if (maxSourceCharacters !== undefined && sourceCharacters > maxSourceCharacters && !violationReported) {
+      violationReported = true;
+      diagnostics.push({
+        code: "budget-exceeded",
+        message: `Source budget ${maxSourceCharacters} characters exceeded (${sourceCharacters} loaded)`,
+        sourceModule: (roots[0] ?? { argument: "" }).argument,
+        sourceLocation: roots[0]?.location ?? { offset: 0, line: 1, column: 1 },
+      });
+    }
+  };
+
   const modules = new Map<string, YangModule>();
   const submodules = new Map<string, YangModule>();
-  const diagnostics: ModuleSetDiagnostic[] = [];
   const moduleLoads = new Map<string, Promise<YangModule | undefined>>();
   const submoduleLoads = new Map<string, Promise<YangModule | undefined>>();
 
@@ -85,9 +162,11 @@ export async function resolveModuleSet(roots: readonly YangModule[], loader: Yan
     const existing = moduleLoads.get(queryKey);
     if (existing) return existing;
     const task = (async () => {
+      if (!guard("module", name, owner, statement)) return undefined;
       let result: YangDocument | readonly YangDocument[] | undefined;
       try { result = await loader.loadModule(name, pinned); }
       catch (error) { report("invalid-document", `Failed loading module '${name}': ${String(error)}`, owner, statement); return undefined; }
+      trackSource(result);
       const selected = selectDocument(normalizedDocuments(result), name, "module", pinned, owner, statement, diagnostics);
       if (!selected) {
         if (result === undefined || normalizedDocuments(result).length === 0) report("missing-module", `Module '${name}' was not found`, owner, statement);
@@ -104,10 +183,12 @@ export async function resolveModuleSet(roots: readonly YangModule[], loader: Yan
     const existing = submoduleLoads.get(queryKey);
     if (existing) return existing;
     const task = (async () => {
+      if (!guard("submodule", name, owner, statement)) return undefined;
       if (!loader.loadSubmodule) { report("missing-submodule", `No submodule loader is configured for '${name}'`, owner, statement); return undefined; }
       let result: YangDocument | readonly YangDocument[] | undefined;
       try { result = await loader.loadSubmodule(name, pinned); }
       catch (error) { report("invalid-document", `Failed loading submodule '${name}': ${String(error)}`, owner, statement); return undefined; }
+      trackSource(result);
       const selected = selectDocument(normalizedDocuments(result), name, "submodule", pinned, owner, statement, diagnostics);
       if (!selected && (result === undefined || normalizedDocuments(result).length === 0)) report("missing-submodule", `Submodule '${name}' was not found`, owner, statement);
       if (selected && childOf(selected, "belongs-to")?.argument !== owner.argument) {
@@ -168,6 +249,15 @@ export async function resolveModuleSet(roots: readonly YangModule[], loader: Yan
       continue;
     }
     await processModule(root, []);
+  }
+  if (!violationReported && budget.deadlineMs !== undefined && Date.now() - startedAt > budget.deadlineMs) {
+    violationReported = true;
+    diagnostics.push({
+      code: "budget-exceeded",
+      message: `Resolution exceeded the ${budget.deadlineMs} ms deadline`,
+      sourceModule: (roots[0] ?? { argument: "" }).argument,
+      sourceLocation: roots[0]?.location ?? { offset: 0, line: 1, column: 1 },
+    });
   }
   return {
     roots: [...roots].filter(module => module.keyword === "module"),
