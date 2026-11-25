@@ -123,3 +123,41 @@ function applyDefaults(node: CompiledSchemaNode, present: number, target: Elemen
     target.appendChild(copy);
   }
 }
+
+function matchSchemaChild(nodes: readonly CompiledSchemaNode[], element: Element): CompiledSchemaNode | undefined {
+  for (const node of nodes) {
+    if (node.kind === "choice" || node.kind === "case") {
+      const nested = matchSchemaChild(node.children, element);
+      if (nested) return nested;
+      continue;
+    }
+    if (node.name === element.localName && node.namespace === element.namespaceURI) return node;
+  }
+  return undefined;
+}
+
+/**
+ * Map an instance element (for example inside a datastore accessible tree) to
+ * its compiled schema node by walking namespace/name segments from the root.
+ * Built trees sit under a synthetic wrapper whose children are schema roots.
+ */
+export function schemaNodeForElement(schema: CompiledYangSchema, element: Element): CompiledSchemaNode | undefined {
+  // The instance-document element chain stops at its root: the synthetic
+  // wrapper is not schema (datastore trees attach copies under documentElement;
+  // operation trees use the wrapper as the context node itself).
+  const segment = (node: Element): Element[] => {
+    const parent = node.parentNode;
+    if (!isElement(parent) || parent === parent.ownerDocument.documentElement) return [node];
+    return [...segment(parent), node];
+  };
+  const chain = segment(element);
+  let schemaNode = schema.roots.find(root =>
+    root.name === chain[0]!.localName && root.namespace === chain[0]!.namespaceURI);
+  if (!schemaNode) return undefined;
+  for (const child of chain.slice(1)) {
+    const next = matchSchemaChild(schemaNode.children, child);
+    if (!next) return undefined;
+    schemaNode = next;
+  }
+  return schemaNode;
+}

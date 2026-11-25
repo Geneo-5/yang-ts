@@ -1,7 +1,9 @@
-import { XPathFunction } from "xpath";
+import { XPathFunction, XPathResult } from "xpath";
 import { YangModule, YangStatement } from "../yang/ast.js";
 import { childOf, childrenOf } from "../yang/parser.js";
-import { CompiledYangSchema, isIdentityDerivedFrom } from "../yang/compiler.js";
+import { CompiledSchemaNode, CompiledYangSchema, isIdentityDerivedFrom } from "../yang/compiler.js";
+import { schemaNodeForElement } from "./accessible-tree.js";
+import { compileYangXPath } from "./xpath.js";
 
 /** Namespace the RFC 7950 section 10 function library is registered under as well as unprefixed. */
 export const YANG_FUNCTION_NAMESPACE = "urn:ietf:params:xml:ns:yang:1";
@@ -15,14 +17,24 @@ export interface YangXPathFunctionOptions {
   prefixModules?: Readonly<Record<string, string>>;
 }
 
-interface Argument {
-  stringValue(): string;
-}
+type Argument = XPathResult;
+
+/** Custom-function signature matching the evaluator's runtime behavior. */
+type XFpFunction = (context: { contextNode: Node }, ...args: Argument[]) => string | number | boolean | Node | Node[] | Argument;
 
 const requireString = (value: Argument | undefined, name: string): string => {
   if (!value) throw new Error(`Function ${name} is missing an argument`);
   return value.stringValue();
 };
+
+/** Extract element members from a node-set argument, whatever wrapper the evaluator supplies. */
+function nodeSetMembers(item: Argument | undefined): Node[] {
+  if (!item) throw new Error("Function is missing an argument");
+  const set = item as unknown as { toArray?: () => Node[]; first?: () => Node | null };
+  if (typeof set.toArray === "function") return set.toArray();
+  if (typeof set.first === "function") return [set.first()!].filter(Boolean);
+  return [];
+}
 
 /** Build the RFC 7950 section 10 function library for evaluation against compiled schemas. */
 export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Record<string, XPathFunction> {
@@ -40,6 +52,23 @@ export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Re
     return nativeModule(module) ? `${module}:${value}` : undefined;
   };
   const positions = collectOptionPositions(schema.modules);
+  // LeafRef path expressions are compiled lazily per module-instantiated path.
+  const leafrefCache = new Map<string, ReturnType<typeof compileYangXPath>>();
+  const compileLeafrefPath = (owner: YangModule, path: string) => {
+    const key = `${owner.argument}:${path}`;
+    const cached = leafrefCache.get(key);
+    if (cached) return cached;
+    const prefixModules: Record<string, string> = {};
+    for (const importNode of childrenOf(owner, "import")) {
+      const prefix = childOf(importNode, "prefix")?.argument;
+      const namespace = childOf(schema.modules.find(candidate => candidate.argument === importNode.argument) ?? owner, "namespace")?.argument;
+      if (prefix && namespace) prefixModules[prefix] = namespace;
+    }
+    const namespace = childOf(owner, "namespace")?.argument ?? "";
+    const compiled = compileYangXPath(path, namespace, prefixModules);
+    leafrefCache.set(key, compiled);
+    return compiled;
+  };
   // Note: `current` cannot live here. RFC 7950 section 10.1 requires the
   // original context node even inside predicates, and the redoable evaluator
   // extends the context per step; the XPath adapter binds it per evaluation.
@@ -52,6 +81,24 @@ export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Re
         const baseId = qualifiedBase(requireString(base, "derived-from"));
         return Boolean(baseId && isIdentityDerivedFrom(schema, value, baseId));
       });
+    },
+    // RFC 7950 section 10.5: follow leafref paths from built accessible trees.
+    deref: (context, item) => {
+      const nodes = nodeSetMembers(item);
+      if (!nodes.length) throw new Error("deref requires a non-empty node set");
+      const target = nodes[0]!;
+      if (target.nodeType !== 1) return item;
+      const schemaNode = schemaNodeForElement(schema, target as Element);
+      const pathStatement = schemaNode?.type && childOf(schemaNode.type, "path");
+      if (!schemaNode || schemaNode.resolvedType !== "leafref" || !pathStatement?.argument) return item;
+      const owner = schema.modules.find(module => module.argument === schemaNode.module);
+      if (!owner) return item;
+      // The path reaches every candidate leaf; only the one whose value equals
+      // the leafref value is the node the leafref actually points to.
+      const value = (target as Element).textContent ?? "";
+      return compileLeafrefPath(owner, pathStatement.argument)
+        .select({ node: target })
+        .filter(child => child.nodeType === 1 && (child as unknown as Element).textContent === value);
     },
     "derived-from-or-self": (context, item, ...bases) => {
       const value = qualifiedValue(requireString(item, "derived-from-or-self"));
@@ -90,8 +137,6 @@ export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Re
   for (const [name, implementation] of Object.entries(library)) registered[name] = implementation;
   return registered;
 }
-
-type XFpFunction = (context: { contextNode: Node }, ...args: Argument[]) => string | number | boolean | Node;
 
 /** Compile an XML Schema pattern to an anchored JavaScript regex over the shared subset. */
 const xsdPatternCache = new Map<string, RegExp | undefined>();

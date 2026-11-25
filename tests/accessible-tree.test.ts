@@ -1,6 +1,6 @@
 import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
-import { buildAccessibleTree, compileYangModules, compileYangXPath, parseYang, resolveModuleSet } from "../src/index.js";
+import { buildAccessibleTree, compileYangModules, compileYangXPath, createYangFunctionLibrary, parseYang, resolveModuleSet } from "../src/index.js";
 
 const schema = compileYangModules(await resolveModuleSet([
   parseYang(`module system {
@@ -78,5 +78,30 @@ describe("RFC 7950 accessible tree construction", () => {
   it("rejects operation contexts without compilable targets", () => {
     expect(() => buildAccessibleTree(schema, datatree(`<x/>`), { context: "rpc-input", operation: "missing" })).toThrow(/missing/);
     expect(() => buildAccessibleTree(schema, datatree(`<x/>`), { context: "rpc-input" })).toThrow(/requires an operation name/);
+  });
+
+  it("works with deref following leafref paths over the datastore tree", async () => {
+    const refs = compileYangModules(await resolveModuleSet([
+      parseYang(`module refs {
+        namespace "urn:refs"; prefix r;
+        container pool {
+          leaf chosen { type leafref { path "../node/name"; } }
+          list node { key name; leaf name { type string; } leaf value { type string; } }
+        }
+      }`),
+    ], { async loadModule() { return undefined; } }));
+    const tree = buildAccessibleTree(refs, datatree(`<pool xmlns="urn:refs">
+      <chosen>n2</chosen>
+      <node><name>n1</name><value>a</value></node>
+      <node><name>n2</name><value>b</value></node>
+    </pool>`), { context: "datastore-state" });
+    const library = createYangFunctionLibrary({ schema: refs, module: "refs" });
+    const evaluate = (expression: string) => compileYangXPath(expression, "urn:refs").evaluateBoolean({ node: tree.contextNode, functions: library });
+    // deref(pool/chosen) yields the <name> leaf the leafref points at; the
+    // value leaf of the referenced node accompanies it through the relative step.
+    expect(evaluate("string(deref(pool/chosen)) = 'n2'")).toBe(true);
+    expect(evaluate("string(deref(pool/chosen)/../value) = 'b'")).toBe(true);
+    // Non-leafref arguments come back unchanged.
+    expect(evaluate("count(deref(pool/node)) = 2")).toBe(true);
   });
 });
