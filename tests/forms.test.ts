@@ -124,6 +124,19 @@ describe("form helper", () => {
     expect(validateFormValue(flags, ["read", "write"]).status).toBe("valid");
   });
 
+  it("validates union values against members in declaration order", () => {
+    const module = parseYang(`module unions { namespace "urn:unions"; prefix u;
+      leaf value { type union {
+        type uint16 { range "1..10"; }
+        type enumeration { enum automatic; }
+      } }
+    }`);
+    const field = createFormModel(module).fields[0]!;
+    expect(validateFormValue(field, "7").status).toBe("valid");
+    expect(validateFormValue(field, "automatic").status).toBe("valid");
+    expect(validateFormValue(field, "20")).toMatchObject({ status: "invalid", errors: [{ code: "type.union" }] });
+  });
+
   it("resolves imported typedefs only when their dependency module is supplied", () => {
     const interfaces = parseYang(readFileSync(fileURLToPath(new URL("./fixtures/yang/standard/ietf/RFC/ietf-interfaces@2018-02-20.yang", import.meta.url)), "utf8"));
     const yangTypes = parseYang(readFileSync(fileURLToPath(new URL("./fixtures/yang/standard/ietf/RFC/ietf-yang-types@2013-07-15.yang", import.meta.url)), "utf8"));

@@ -237,6 +237,7 @@ function walkFields(
       options: optionsFromType(resolved), constraints, source: node, unresolvedType: resolved.unresolved,
     };
     fieldTypeLayers.set(field, resolved.layers);
+    fieldResolvedTypes.set(field, resolved);
     fields.push(field);
   }
 }
@@ -327,7 +328,27 @@ function inIntervals(value: bigint, expression: string, decimalDigits?: number, 
 }
 
 function validateType(field: FormField, value: unknown, errors: FormError[]): boolean | undefined {
-  if (field.unresolvedType || field.control === "unsupported") return undefined;
+  if (field.unresolvedType || (field.control === "unsupported" && field.yangType !== "union")) return undefined;
+  if (field.yangType === "union") {
+    const resolved = fieldResolvedTypes.get(field);
+    if (!resolved?.unionTypes?.length) return undefined;
+    let indeterminate = false;
+    for (const member of resolved.unionTypes) {
+      const candidate: FormField = {
+        ...field, yangType: member.name, control: CONTROL_BY_TYPE[member.name] ?? "unsupported",
+        options: optionsFromType(member), unresolvedType: member.unresolved,
+      };
+      fieldTypeLayers.set(candidate, member.layers);
+      fieldResolvedTypes.set(candidate, member);
+      const branchErrors: FormError[] = [];
+      const result = validateType(candidate, value, branchErrors);
+      if (result === true) return true;
+      if (result === undefined) indeterminate = true;
+    }
+    if (indeterminate) return undefined;
+    errors.push({ code: "type.union", message: `${field.label} does not match any member type.` });
+    return false;
+  }
   if (field.yangType === "boolean") {
     if (value === true || value === false || value === "true" || value === "false") return true;
     errors.push({ code: "type.boolean", message: `${field.label} must be true or false.` }); return false;
@@ -390,6 +411,7 @@ function validateType(field: FormField, value: unknown, errors: FormError[]): bo
 
 // Keep the parsed type chain out of the serializable/UI-facing field object.
 const fieldTypeLayers = new WeakMap<FormField, YangStatement[]>();
+const fieldResolvedTypes = new WeakMap<FormField, ResolvedType>();
 
 /** Validate requiredness and the built-in type/restrictions we can evaluate safely. */
 export function validateFormValue(field: FormField, value: unknown): FormValidationResult {
