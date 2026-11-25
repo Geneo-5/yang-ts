@@ -73,6 +73,8 @@ For collection/resource operations, `createRestconfGetRequest` prepares GET, `cr
 
 Every RESTCONF request builder accepts an optional `RestconfQueryParameters` record after the RESTCONF root argument. Values are URL-encoded; standard parameters such as `content`, `depth`, `fields`, and `filter` can be passed along with server extensions. The helper leaves method/parameter compatibility to the caller and server (for example, `insert` and `point` apply to ordered-by-user list or leaf-list edits).
 
+RFC 8527 NMDA datastore resources are available through `nodeToRestconfDatastorePath` and `createRestconfDatastoreRequest`. Use the namespace-qualified identities `ietf-datastores:operational`, `ietf-datastores:running`, and `ietf-datastores:intended`; custom datastore identities can also be passed module-qualified. `createRestconfNmdaProbeRequest()` prepares a `HEAD /restconf/ds/ietf-datastores:operational` capability probe. On operational datastore GETs, `{ "with-origin": true }` emits the presence-only `?with-origin` flag; `false` omits it. The helper exposes datastore requests and does not discover server capabilities or enforce whether a datastore is writable. NMDA server support is advertised through the operational datastore resource and YANG Library as specified by [RFC 8527](https://datatracker.ietf.org/doc/html/rfc8527).
+
 ## Browser example
 
 After building, serve the repository root over HTTP and open [`examples/browser-usage.html`](./examples/browser-usage.html). It parses the Sysrepo oven model in the browser, populates the `insert-food` timing enum, validates the selected value, and previews the corresponding RESTCONF RPC request. The example does not send the request, resolve typedefs, apply augments, or evaluate `must`/`when` constraints.

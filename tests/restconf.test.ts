@@ -3,8 +3,9 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   createFormModel, createRestconfAddRequest, createRestconfDeleteRequest, createRestconfGetRequest,
-  createRestconfRpcRequest, createRestconfSetRequest, createRestconfUpdateRequest,
-  nodeToRestconfDataPath, nodeToXPath, parseYang, readRestconfData, readRestconfRpcOutput, restconfRpcPath,
+  createRestconfDatastoreRequest, createRestconfNmdaProbeRequest, createRestconfRpcRequest,
+  createRestconfSetRequest, createRestconfUpdateRequest, nodeToRestconfDataPath,
+  nodeToRestconfDatastorePath, nodeToXPath, parseYang, readRestconfData, readRestconfRpcOutput, restconfRpcPath,
 } from "../src/index.js";
 
 const oven = parseYang(readFileSync(fileURLToPath(new URL("./fixtures/yang/sysrepo/oven.yang", import.meta.url)), "utf8"));
@@ -93,7 +94,7 @@ describe("RPC form and RESTCONF helpers", () => {
       body: { "ietf-interfaces:interface": { enabled: false } },
     });
     expect(createRestconfUpdateRequest(instance, { module: "ietf-interfaces", name: "interface", data: { enabled: false } }, "/restconf", { test: "one & two" }).path)
-      .toBe("/restconf/data/ietf-interfaces:interfaces/interface=eth0?test=one+%26+two");
+      .toBe("/restconf/data/ietf-interfaces:interfaces/interface=eth0?test=one%20%26%20two");
     expect(createRestconfDeleteRequest(instance)).toEqual({
       method: "DELETE", path: "/restconf/data/ietf-interfaces:interfaces/interface=eth0",
       headers: { Accept: "application/yang-data+json" },
@@ -103,5 +104,26 @@ describe("RPC form and RESTCONF helpers", () => {
     expect(() => createRestconfDeleteRequest([])).toThrow(/requires a target/);
     expect(() => createRestconfSetRequest([], { module: "m", name: "n", data: {} })).toThrow(/requires a target/);
     expect(() => createRestconfUpdateRequest([], { module: "m", name: "n", data: {} })).toThrow(/requires a target/);
+  });
+
+  it("supports RFC 8527 datastore resources, with-origin and NMDA probing", () => {
+    const path = [{ module: "ietf-interfaces", name: "interfaces" }];
+    expect(nodeToRestconfDatastorePath("ietf-datastores:operational")).toBe("/restconf/ds/ietf-datastores:operational");
+    expect(nodeToRestconfDatastorePath("ietf-datastores:running", path)).toBe("/restconf/ds/ietf-datastores:running/ietf-interfaces:interfaces");
+    expect(nodeToRestconfDatastorePath("ietf-datastores:intended", path, "/api/restconf/")).toBe("/api/restconf/ds/ietf-datastores:intended/ietf-interfaces:interfaces");
+    expect(createRestconfNmdaProbeRequest()).toMatchObject({
+      method: "HEAD", path: "/restconf/ds/ietf-datastores:operational",
+    });
+    expect(createRestconfDatastoreRequest("GET", "ietf-datastores:operational", path, undefined, { "with-origin": true }))
+      .toMatchObject({ method: "GET", path: "/restconf/ds/ietf-datastores:operational/ietf-interfaces:interfaces?with-origin" });
+    expect(createRestconfDatastoreRequest("PUT", "ietf-datastores:running", path, {
+      module: "ietf-interfaces", name: "interfaces", data: { interface: [] },
+    })).toMatchObject({
+      method: "PUT", path: "/restconf/ds/ietf-datastores:running/ietf-interfaces:interfaces",
+      body: { "ietf-interfaces:interfaces": { interface: [] } },
+    });
+    expect(() => createRestconfDatastoreRequest("GET", "ietf-datastores:running", [], undefined, { "with-origin": true }))
+      .toThrow(/requires the operational datastore/);
+    expect(() => nodeToRestconfDatastorePath("operational")).toThrow(/module-qualified/);
   });
 });
