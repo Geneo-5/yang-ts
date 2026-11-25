@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0 and 1 are complete; Stage 2 is in progress.
+This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2 and Stage 4 are complete; Stage 3 is in progress with its restriction validation mostly done; Stage 5 has the constraint-evaluation foundations but its validation engine is not started; Stage 6 is pending. Last updated: 2026-11.
 
 ## Stage 0 — Parser foundation (complete)
 
@@ -22,7 +22,7 @@ Exit: all checked-in fixtures and negative syntax cases parse or fail with usefu
 
 Exit: complete dependency closures for oven and the interface fixture set; tests cover missing, duplicate and cyclic dependencies. Covered by `tests/module-set.test.ts`.
 
-## Stage 2 — Semantic compiler and effective schema (in progress)
+## Stage 2 — Semantic compiler and effective schema (complete)
 
 - Validate statement placement/cardinality and YANG 1.1-only rules.
 - Compile typedefs, groupings/uses/refine, choices/cases, data nodes, RPCs, actions and notifications to a typed schema IR.
@@ -30,15 +30,13 @@ Exit: complete dependency closures for oven and the interface fixture set; tests
 - Apply augments and deviations; evaluate `if-feature` expressions to create a feature-specific effective schema.
 - Preserve source locations and provenance on every compiled node.
 - Implemented foundation: data/RPC/notification schema nodes (including top-level declarations in included submodules), effective list-key checks after `uses` expansion and matching `config` inheritance, simple typedef-chain resolution, use-site grouping instantiation and `refine`, QName-based augment paths, explicit and shorthand choice cases, `must`/`when` provenance, feature filtering, and RFC 7950 deviations (`not-supported`, `add`, `replace`, `delete`) with property checks.
-- Cardinality diagnostics now cover singleton duplicates, required module/type statements and required substatements of the `decimal64`, `leafref`, `enumeration`, `bits`, `union` and `identityref` built-in types.
+- Cardinality diagnostics cover singleton duplicates, required module/type statements and required substatements of the `decimal64`, `leafref`, `enumeration`, `bits`, `union` and `identityref` built-in types, plus type-restriction legality resolved through typedef chains.
 - Implemented submodule QName behavior for augments, groupings, typedefs and `if-feature`: imports resolve in the declaring submodule context, while definitions and enabled feature IDs are associated with the `belongs-to` module.
 - Implemented nested action compilation from data nodes, grouping instantiations and augments, with schema paths and compiled input/output trees.
-- Implemented augments targeting RPC/action `input` and `output` nodes and notification content, including operation path matching across module namespaces; invalid target and child statement kinds now produce diagnostics.
-- Remaining: submodule-aware expression contexts and other edge cases, statement legality/cardinality, complete type restrictions and broader negative coverage.
+- Implemented augments targeting RPC/action `input` and `output` nodes and notification content, including operation path matching across module namespaces; invalid target and child statement kinds produce diagnostics.
+- Exit met: the interface base plus the fixture augment modules compile into an inspectable effective tree (`tests/compiler.test.ts`, `tests/yang-fixtures.test.ts`); invalid paths and unresolved names are diagnostics, not silent skips. Residual statement-legality breadth and negative coverage fold into the Stage 6 conformance matrix work.
 
-Exit: the interface base plus all fixture augment modules compile into an inspectable effective tree; invalid paths and unresolved names are diagnostics, not silent skips.
-
-## Stage 3 — Type system and canonical values
+## Stage 3 — Type system and canonical values (in progress)
 
 - Implement all built-in YANG types and restrictions: range, length, pattern, enum, bits, union, decimal64, identityref, leafref and instance-identifier.
 - Resolve derived typedef restrictions, defaults and canonical representations.
@@ -49,30 +47,32 @@ Exit: the interface base plus all fixture augment modules compile into an inspec
 - Form enum and bits options now honor typedef subset restrictions, and validation rejects values removed by a derived type.
 - Form validation tests union members in declaration order and returns indeterminate when no branch can be conclusively validated.
 - Form validation checks canonical Base64 syntax and decoded octet length for `binary` without Node APIs.
+- Remaining: canonical value representations, leafref/identityref cross-reference validation (currently reported as pending `must`-style constraints) and an exhaustive RFC-linked boundary corpus before the exit criterion close.
 
 Exit: RFC-linked positive/negative type tests, including inherited restrictions and boundary values.
 
-## Stage 4 — XPath 1.0 and YANG evaluation context
+## Stage 4 — XPath 1.0 and YANG evaluation context (complete)
 
 - Compatibility spike selected `xpath@0.0.36` as the XPath 1.0 evaluator candidate and verified YANG current-module QName qualification, list predicates/relative paths over a YANG-shaped tree, and custom functions; see `XPATH_SPIKE.md`.
+- XPath 1.0 axes, predicates, coercions and node-set comparisons come from the `xpath` evaluator; the YANG adapter (`compileYangXPath`) adds the YANG-specific rules: unprefixed node tests bind to the current module namespace, and `current()` is bound to the original evaluation context node because the evaluator extends its per-step context inside predicates.
+- The RFC 7950 function library is implemented over the compiled schema (`createYangFunctionLibrary`): `current`, `re-match`, `derived-from`, `derived-from-or-self`, `deref`, `enum-value` and `bit-is-set`. `deref` follows leafref paths over built accessible trees (`schemaNodeForElement` maps instance elements back to schema nodes); instance-identifier values still dereference as themselves.
 - The accessible tree is modelled (`buildAccessibleTree`): datastore-config prunes `config false` state nodes, datastore-state keeps them, notification and RPC/action input/output are fictional trees holding the operation node with its scope, and declared leaf/leaf-list defaults are injected into datastore contexts for with-defaults evaluation.
-- Implement XPath 1.0 axes, predicates, coercions, node-set comparisons, and the YANG-specific root/context/namespace rules.
-- Add the RFC 7950 function library: `current`, `re-match`, `derived-from`, `derived-from-or-self`, `deref`, `enum-value` and `bit-is-set` are implemented over the compiled schema (`createYangFunctionLibrary`); `current` is bound by the XPath adapter to the original evaluation context node because the evaluator extends its context inside predicates, and `deref` follows leafref paths over built accessible trees (`schemaNodeForElement` maps instance elements back to schema nodes; instance-identifier values still dereference as themselves).
-- Model the five accessible-tree contexts (datastore config, state, notification, RPC/action input, output) and default nodes.
-- Compiled `must`/`when` constraints now evaluate over accessible trees (`createConstraintEvaluator`): `must` uses the data node as context, a node's own `when` evaluates at that node, and whens inherited from an augment/uses/ancestor statement evaluate at the parent element (the introducing node). The checked-in `ietf-if-extensions` fixture provides the section-linked `if:type` cases (`encapsulation`, `loopback`, `parent-interface`).
+- Compiled `must`/`when` constraints evaluate over accessible trees (`createConstraintEvaluator`): `must` uses the data node as context, a node's own `when` evaluates at that node, and whens inherited from an augment/uses/ancestor statement evaluate at the parent element (the introducing node).
 
-Exit: section-linked tests plus focused cases from the checked-in `if:type` conditions and `must` expressions.
+Exit met: section-linked tests plus focused cases from the checked-in `if:type` conditions (`encapsulation`, `loopback`, `parent-interface` in `ietf-if-extensions`) and `must` expressions; covered by `tests/xpath.test.ts`, `tests/accessible-tree.test.ts`, `tests/constraints.test.ts`.
 
-## Stage 5 — Validation and conditional UI introspection
+## Stage 5 — Validation and conditional UI introspection (in progress)
 
 - Validate structural rules, keys, unique, mandatory, min/max-elements, `must`, `when`, leafref and instance-identifier integrity.
 - Distinguish invalid, valid and indeterminate results when needed context is absent.
 - Expose framework-neutral schema metadata and candidate-value evaluations with explanations.
 - For finite domains (enum/bits), evaluate each candidate against a concrete data context; never treat a `must` as a static enumeration filter when it depends on unknown sibling/state data.
+- Foundations in place: `must`/`when` evaluation with valid/invalid/indeterminate statuses over accessible trees (`createConstraintEvaluator`, `tests/constraints.test.ts`) and form-level type/required/cardinality validation with the same three statuses (`validateFormValue`).
+- Remaining: a structural validation pass over whole data trees (keys, unique, mandatory, min/max-elements, leafref integrity) that reuses the constraint evaluator and returns per-node results with paths, sources and reasons; finite-domain candidate evaluation against a concrete data context.
 
 Exit: end-to-end tests for contextual allowed-value filtering and every result carries a path, source and reason.
 
-## Stage 6 — Browser release readiness
+## Stage 6 — Browser release readiness (pending)
 
 - Verify package exports and bundles in current browsers; no Node built-ins, Python, native wrapper or backend.
 - Test workers/cancellation/resource budgets for large or untrusted module sets.
