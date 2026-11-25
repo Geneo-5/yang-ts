@@ -8,7 +8,7 @@ RFC 7950 uses XPath 1.0 semantics, with YANG-specific namespace resolution, an a
 
 ## Package boundaries
 
-- `yang/`: source tokenizer, statement AST, parser and module dependency resolver; next: semantic checks and schema IR.
+- `yang/`: source tokenizer, statement AST, parser, module dependency resolver and initial semantic compiler/IR.
 - `xpath/` (planned): XPath 1.0 expression AST/evaluator, YANG function library and RFC-defined context adapters.
 - `types/` (planned): builtin and derived types, canonicalization, restrictions, unions, identity graph and leafref paths.
 - `features/` (planned): feature expression evaluation, deviations and effective schema views.
@@ -22,7 +22,7 @@ The intended target is YANG 1.1 (RFC 7950), not a claim of compliance today. The
 
 The parser milestone covers parsing source into a location-bearing generic statement AST. A small form helper now derives field metadata and validates selected local type restrictions, but it does not compile schema nodes, resolve augments/features/deviations, evaluate XPath or fully validate data. Each semantic milestone needs RFC-directed fixtures, explicit unsupported-feature diagnostics and interoperability comparisons; “recognized syntax” must never be reported as “implemented semantics.”
 
-The current Stage 1 resolver accepts parsed roots plus an injected async loader, resolves import/include closures and revision selection, and returns source-located diagnostics. It does not fetch from RESTCONF/YANG Library itself, merge submodule statements into a compiled module, or compile augment targets; those remain later edge-adapter/compiler responsibilities.
+The current Stage 1 resolver accepts parsed roots plus an injected async loader, resolves import/include closures and revision selection, and returns source-located diagnostics. Stage 2 now creates a source-linked schema tree, expands groupings, resolves builtin/simple derived types and applies QName-based augments. The compiler is still partial: feature filtering, deviations, refine, full submodule semantics, statement legality and identity resolution remain unimplemented; no full RFC conformance is claimed.
 
 Candidate values are contextual. A finite enumeration can be filtered when constraints can be evaluated over a complete, concrete data context; arbitrary `must` expressions can depend on sibling/ancestor/other-module values, missing nodes, defaults or state data. The API must therefore report `allowed`, `rejected`, or `indeterminate` with reasons, rather than promise that every possible value set can always be statically enumerated.
 

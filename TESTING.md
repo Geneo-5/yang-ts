@@ -12,13 +12,13 @@ npm run build
 npm audit --omit=dev
 ```
 
-The source parser and module resolver are covered. The upstream fixtures prove parsing and retention of imports, augment paths and `if:type`-dependent `when` statements; the resolver tests prove dependency closures and diagnostics, but not semantic application of augments.
+The source parser, module resolver and an initial semantic compiler pass are covered. The upstream fixtures prove parsing and retention of imports, augment paths and `if:type`-dependent `when` statements; compiler tests also assert schema trees, typedef/grouping resolution and augment application. Feature filtering, deviations, refine and full statement validation remain uncovered.
 
 ## Test layers to add with the roadmap
 
 1. **Lexer/parser** — every statement form, comments, escaped and concatenated strings, whitespace, malformed delimiters, unterminated strings/comments, and precise line/column diagnostics. Parse the real fixture corpus on every change.
 2. **Module set** — imports/includes with pinned and unpinned revisions, submodules, multiple revisions, missing dependencies, duplicate modules, and cycle diagnostics. Assert the exact resolved dependency closure. Implemented partially by `tests/module-set.test.ts`; malformed metadata and richer submodule corpus remain.
-3. **Semantic compiler** — statement legality/cardinality, namespaces/prefixes, typedef inheritance, uses/refine, choice/case, augment path resolution, feature gates and deviations. Check both compiled tree shape and source provenance.
+3. **Semantic compiler** — statement legality/cardinality, namespaces/prefixes, typedef inheritance, uses/refine, choice/case, augment path resolution, feature gates and deviations. Check both compiled tree shape and source provenance. Initial tree, grouping, typedef and augment cases live in `tests/compiler.test.ts`.
 4. **Types** — boundaries and canonical values for every built-in type and restriction; enum/bit numbering; union branch selection; exact 64-bit and decimal parsing; derived restrictions and defaults.
 5. **XPath** — XPath 1.0 parser/evaluator behavior, YANG name resolution, axes/predicates/coercions, node-set comparison, all YANG functions, `current()`, absent nodes, defaults, and each accessible-tree context. Include RFC examples and focused predicates from `ietf-if-extensions`.
 6. **Constraints** — `must`, `when`, leafref, instance-identifier, mandatory, choices, keys, unique and cardinality. Test true/false/indeterminate separately and test dependency ordering/cycle reporting for `when`.

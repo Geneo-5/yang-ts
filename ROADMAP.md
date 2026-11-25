@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stage 0 is complete and Stage 1 (module set and dependency resolution) is in progress.
+This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0 and 1 are complete; Stage 2 is in progress.
 
 ## Stage 0 — Parser foundation (complete)
 
@@ -11,24 +11,26 @@ This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers.
 
 Exit: all checked-in fixtures and negative syntax cases parse or fail with useful source locations; build and tests pass.
 
-## Stage 1 — Module set and dependency resolution (in progress)
+## Stage 1 — Module set and dependency resolution (complete)
 
 - Load modules by name and optional revision using an injected asynchronous loader.
 - Resolve `import`, `include`, `belongs-to`, revision-date and submodule relationships.
 - Detect missing modules, ambiguous revisions and import/include cycles with source-located diagnostics.
 - Produce a stable module-set object independent of RESTCONF or the browser's fetch API.
 - Current implementation resolves import closures, selects newest unpinned revisions, honors `revision-date`, includes submodules, and reports missing/ambiguous/cyclic dependencies.
-- Remaining: ensure ordering/diagnostic determinism under repeated roots, strengthen malformed module metadata checks, and add submodule fixture provenance before declaring the stage complete.
+- Output ordering is stable by module name and revision; diagnostics retain the dependency statement location.
 
-Exit: complete dependency closures for oven and the interface fixture set; tests cover missing, duplicate and cyclic dependencies. Current tests now exercise those closures and key failure cases; Stage 1 remains open for the listed hardening.
+Exit: complete dependency closures for oven and the interface fixture set; tests cover missing, duplicate and cyclic dependencies. Covered by `tests/module-set.test.ts`.
 
-## Stage 2 — Semantic compiler and effective schema
+## Stage 2 — Semantic compiler and effective schema (in progress)
 
 - Validate statement placement/cardinality and YANG 1.1-only rules.
 - Compile typedefs, groupings/uses/refine, choices/cases, data nodes, RPCs, actions and notifications to a typed schema IR.
 - Resolve identities, prefixes and namespaces.
 - Apply augments and deviations; evaluate `if-feature` expressions to create a feature-specific effective schema.
 - Preserve source locations and provenance on every compiled node.
+- Implemented foundation: data/RPC/action/notification schema nodes, list-key checks, simple typedef-chain resolution, grouping expansion, QName-based augment paths, and `must`/`when`/`if-feature` source retention.
+- Remaining: `refine`, identity resolution, feature-expression filtering, deviations, complete action/submodule semantics, statement legality/cardinality, and broader negative coverage.
 
 Exit: the interface base plus all fixture augment modules compile into an inspectable effective tree; invalid paths and unresolved names are diagnostics, not silent skips.
 
