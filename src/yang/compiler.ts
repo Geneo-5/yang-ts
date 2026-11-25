@@ -17,6 +17,7 @@ export interface CompiledSchemaNode {
   must: readonly YangStatement[];
   whenConstraints: readonly YangStatement[];
   ifFeatures: readonly string[];
+  featureRequirements: readonly { module: string; expression: string }[];
   source: YangStatement;
   children: CompiledSchemaNode[];
 }
@@ -30,7 +31,8 @@ export interface CompiledOperation {
 }
 export interface CompilerDiagnostic {
   code: "duplicate-node" | "unresolved-prefix" | "unresolved-augment" | "unresolved-grouping" |
-    "uses-cycle" | "augment-conflict" | "invalid-key" | "unresolved-type" | "typedef-cycle";
+    "uses-cycle" | "augment-conflict" | "invalid-key" | "unresolved-type" | "typedef-cycle" |
+    "unresolved-feature" | "invalid-feature-expression";
   message: string;
   module: string;
   source: YangStatement;
@@ -40,6 +42,11 @@ export interface CompiledYangSchema {
   operations: CompiledOperation[];
   diagnostics: CompilerDiagnostic[];
   modules: readonly YangModule[];
+}
+
+export interface YangCompilerOptions {
+  /** Feature identifiers use the declaring module name, e.g. `ietf-interfaces:arbitrary-names`. */
+  enabledFeatures?: ReadonlySet<string>;
 }
 
 const DATA_KINDS = new Set<SchemaNodeKind>(["container", "list", "leaf", "leaf-list", "choice", "case", "anydata", "anyxml"]);
@@ -66,7 +73,7 @@ function dataChildren(node: YangStatement): YangStatement[] {
 }
 
 /** Compile data trees and apply schema-node augments; type and expression statements remain source-linked for later passes. */
-export function compileYangModules(moduleSet: YangModuleSet): CompiledYangSchema {
+export function compileYangModules(moduleSet: YangModuleSet, options: YangCompilerOptions = {}): CompiledYangSchema {
   const diagnostics: CompilerDiagnostic[] = [];
   const modules = moduleSet.modules;
   const roots: CompiledSchemaNode[] = [];
@@ -98,6 +105,64 @@ export function compileYangModules(moduleSet: YangModuleSet): CompiledYangSchema
     "binary", "bits", "boolean", "decimal64", "empty", "enumeration", "identityref", "instance-identifier",
     "int8", "int16", "int32", "int64", "leafref", "string", "uint8", "uint16", "uint32", "uint64", "union",
   ]);
+  const featureCache = new Map<string, boolean>();
+  const featureExists = (module: YangModule, name: string) => [module, ...submodulesFor(module)].some(source =>
+    childrenOf(source, "feature").some(feature => feature.argument === name),
+  );
+  const evaluateFeature = (moduleName: string, expression: string, source: YangStatement): boolean => {
+    const cacheKey = `${moduleName}:${expression}`;
+    if (featureCache.has(cacheKey)) return featureCache.get(cacheKey)!;
+    const context = modules.find(module => module.argument === moduleName);
+    if (!context) return false;
+    const tokens = expression.match(/[A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?|[()]/g) ?? [];
+    if (tokens.join("") !== expression.replace(/\s+/g, "")) {
+      report("invalid-feature-expression", `Invalid if-feature expression '${expression}'`, context, source);
+      featureCache.set(cacheKey, false);
+      return false;
+    }
+    let index = 0;
+    const peek = () => tokens[index];
+    const primary = (): boolean => {
+      if (peek() === "not") { index++; return !primary(); }
+      if (peek() === "(") {
+        index++;
+        const value = disjunction();
+        if (peek() !== ")") throw new Error("Missing closing parenthesis");
+        index++;
+        return value;
+      }
+      const token = tokens[index++];
+      if (!token || token === "and" || token === "or" || token === ")") throw new Error("Expected feature identifier");
+      const resolved = resolveQName(context, token, modules);
+      if (!resolved || !featureExists(resolved.module, resolved.name)) {
+        report("unresolved-feature", `Feature '${token}' could not be resolved`, context, source);
+        return false;
+      }
+      return Boolean(options.enabledFeatures?.has(`${resolved.module.argument}:${resolved.name}`));
+    };
+    const conjunction = (): boolean => {
+      let value = primary();
+      while (peek() === "and") { index++; const right = primary(); value = value && right; }
+      return value;
+    };
+    const disjunction = (): boolean => {
+      let value = conjunction();
+      while (peek() === "or") { index++; const right = conjunction(); value = value || right; }
+      return value;
+    };
+    try {
+      const value = disjunction();
+      if (index !== tokens.length) throw new Error("Unexpected token");
+      featureCache.set(cacheKey, value);
+      return value;
+    } catch {
+      report("invalid-feature-expression", `Invalid if-feature expression '${expression}'`, context, source);
+      featureCache.set(cacheKey, false);
+      return false;
+    }
+  };
+  const featureRequirementsEnabled = (requirements: readonly { module: string; expression: string; source: YangStatement }[]) =>
+    requirements.every(requirement => evaluateFeature(requirement.module, requirement.expression, requirement.source));
   const resolveType = (owner: YangModule, type: YangStatement, stack: readonly string[] = []): { name?: string; chain: YangStatement[] } => {
     const typeName = type.argument ?? "";
     if (builtinTypes.has(typeName)) return { name: typeName, chain: [] };
@@ -128,7 +193,8 @@ export function compileYangModules(moduleSet: YangModuleSet): CompiledYangSchema
 
   const makeNode = (
     statement: YangStatement, owner: YangModule, parentPath: string, inheritedConfig: boolean,
-    groupingStack: readonly string[] = [], inheritedWhen: readonly YangStatement[] = [], inheritedFeatures: readonly string[] = [],
+    groupingStack: readonly string[] = [], inheritedWhen: readonly YangStatement[] = [],
+    inheritedFeatures: readonly { module: string; expression: string; source: YangStatement }[] = [],
   ): CompiledSchemaNode[] => {
     if (statement.keyword === "uses") {
       const resolved = resolveQName(owner, statement.argument ?? "", modules);
@@ -137,19 +203,22 @@ export function compileYangModules(moduleSet: YangModuleSet): CompiledYangSchema
       if (groupingStack.includes(groupingId)) { report("uses-cycle", `Grouping uses cycle: ${[...groupingStack, groupingId].join(" -> ")}`, owner, statement); return []; }
       const grouping = findGrouping(resolved.module, resolved.name);
       if (!grouping) { report("unresolved-grouping", `Grouping '${statement.argument ?? ""}' was not found`, owner, statement); return []; }
-      const features = [...inheritedFeatures, ...childrenOf(statement, "if-feature").map(item => item.argument ?? "")];
+      const features = [...inheritedFeatures, ...childrenOf(statement, "if-feature").map(item => ({ module: owner.argument, expression: item.argument ?? "", source: item }))];
+      if (options.enabledFeatures && !featureRequirementsEnabled(features)) return [];
       const when = [...inheritedWhen, ...childrenOf(statement, "when")];
       return dataChildren(grouping).flatMap(child => makeNode(child, resolved.module, parentPath, inheritedConfig, [...groupingStack, groupingId], when, features));
     }
     if (!DATA_KINDS.has(statement.keyword as SchemaNodeKind)) return [];
     const kind = statement.keyword as SchemaNodeKind;
     const name = statement.argument ?? "";
+    const nodeFeatureRequirements = [...inheritedFeatures, ...childrenOf(statement, "if-feature").map(item => ({ module: owner.argument, expression: item.argument ?? "", source: item }))];
+    if (options.enabledFeatures && !featureRequirementsEnabled(nodeFeatureRequirements)) return [];
     const path = `${parentPath}/${name}`;
     const configStatement = childOf(statement, "config")?.argument;
     const config = configStatement === "false" ? false : configStatement === "true" ? true : inheritedConfig;
     const keys = (childOf(statement, "key")?.argument ?? "").split(/\s+/).filter(Boolean);
     const nodeWhen = [...inheritedWhen, ...childrenOf(statement, "when")];
-    const nodeFeatures = [...inheritedFeatures, ...childrenOf(statement, "if-feature").map(item => item.argument ?? "")];
+    const nodeFeatures = nodeFeatureRequirements.map(requirement => requirement.expression);
     const typeStatement = childOf(statement, "type");
     const resolvedType = typeStatement ? resolveType(owner, typeStatement) : undefined;
     if (typeStatement && !resolvedType?.name) report("unresolved-type", `Type '${typeStatement.argument ?? ""}' could not be resolved`, owner, typeStatement);
@@ -162,13 +231,14 @@ export function compileYangModules(moduleSet: YangModuleSet): CompiledYangSchema
       must: childrenOf(statement, "must"),
       whenConstraints: nodeWhen,
       ifFeatures: nodeFeatures,
+      featureRequirements: nodeFeatureRequirements.map(({ module, expression }) => ({ module, expression })),
       source: statement, children: [],
     };
     if (kind === "list") {
       const directLeafNames = new Set(statement.children.filter(child => child.keyword === "leaf").map(child => child.argument));
       for (const key of keys) if (!directLeafNames.has(key)) report("invalid-key", `List key '${key}' is not a direct leaf of '${path}'`, owner, statement);
     }
-    node.children = dataChildren(statement).flatMap(child => makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatures));
+    node.children = dataChildren(statement).flatMap(child => makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatureRequirements));
     checkDuplicates(node.children, owner);
     return [node];
   };
@@ -208,7 +278,8 @@ export function compileYangModules(moduleSet: YangModuleSet): CompiledYangSchema
       const target = findTarget(path);
       if (!target) continue;
       const augmentWhen = childrenOf(item.statement, "when");
-      const augmentFeatures = childrenOf(item.statement, "if-feature").map(feature => feature.argument ?? "");
+      const augmentFeatures = childrenOf(item.statement, "if-feature").map(feature => ({ module: item.module.argument, expression: feature.argument ?? "", source: feature }));
+      if (options.enabledFeatures && !featureRequirementsEnabled(augmentFeatures)) { pending.splice(index, 1); madeProgress = true; continue; }
       const additions = item.statement.children.flatMap(child => makeNode(child, item.module, target.path, target.config, [], augmentWhen, augmentFeatures));
       for (const addition of additions) {
         if (target.children.some(child => child.module === addition.module && child.name === addition.name)) {

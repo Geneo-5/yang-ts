@@ -55,4 +55,18 @@ describe("semantic compilation foundation", () => {
     const statistics = findNode(interfaceList?.children ?? [], "statistics");
     expect(statistics?.children.some((node: any) => node.name === "in-pkts-64-octets")).toBe(true);
   });
+
+  it("filters if-feature expressions when the caller supplies enabled features", async () => {
+    const interfaces = fixture("standard/ietf/RFC/ietf-interfaces@2018-02-20.yang");
+    const types = fixture("standard/ietf/RFC/ietf-yang-types@2013-07-15.yang");
+    const moduleSet = await resolveModuleSet([interfaces, types], { async loadModule(name) { return name === "ietf-yang-types" ? types : undefined; } });
+    const disabled = compileYangModules(moduleSet, { enabledFeatures: new Set() });
+    const enabled = compileYangModules(moduleSet, { enabledFeatures: new Set(["ietf-interfaces:if-mib"]) });
+    expect(findNode(disabled.roots, "admin-status")).toBeUndefined();
+    expect(findNode(enabled.roots, "admin-status")).toMatchObject({
+      featureRequirements: [{ module: "ietf-interfaces", expression: "if-mib" }],
+    });
+    expect(disabled.diagnostics).toEqual([]);
+    expect(enabled.diagnostics).toEqual([]);
+  });
 });

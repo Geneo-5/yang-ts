@@ -9,7 +9,7 @@ const module = parseYang(`module demo { yang-version 1.1; namespace "urn:demo"; 
 console.log(module.argument); // demo
 ```
 
-The package parses the generic YANG statement grammar into a source-located AST, resolves module import/include closures through an injected async loader, and has an **initial semantic compiler** for source-linked data schema trees, groupings, typedef names, and augments. It also includes a **partial form helper** for data and RPC input/output field metadata and safe, local type checks. It is not a full YANG compiler or validator: complete RFC 7950 semantics, XPath evaluation and contextual `must`/`when` validation remain in progress. See [ARCHITECTURE.md](./ARCHITECTURE.md) for scope and design, [ROADMAP.md](./ROADMAP.md) for milestones, and [TESTING.md](./TESTING.md) for validation gates and coverage policy.
+The package parses the generic YANG statement grammar into a source-located AST, resolves module import/include closures through an injected async loader, and has an **initial semantic compiler** for source-linked schema trees, grouping and typedef expansion, augments, and optional `if-feature` filtering. It also includes a **partial form helper** for data and RPC input/output field metadata and safe, local type checks. It is not a full YANG compiler or validator: complete RFC 7950 semantics, XPath evaluation and contextual `must`/`when` validation remain in progress. See [ARCHITECTURE.md](./ARCHITECTURE.md) for scope and design, [ROADMAP.md](./ROADMAP.md) for milestones, and [TESTING.md](./TESTING.md) for validation gates and coverage policy.
 
 ## Module dependencies
 
@@ -32,6 +32,18 @@ moduleSet.diagnostics;  // Missing, ambiguous, cyclic, or malformed dependencies
 ```
 
 The loader is transport-neutral, so browser applications can supply bundled modules, IndexedDB, or their own fetch/YANG Library integration. Unpinned imports select the newest available revision; pinned `revision-date` imports require that exact revision.
+
+For a feature-specific effective tree, pass enabled feature identities to `compileYangModules`:
+
+```ts
+import { compileYangModules } from "yang-browser-engine";
+
+const schema = compileYangModules(moduleSet, {
+  enabledFeatures: new Set(["ietf-interfaces:if-mib", "ietf-if-extensions:loopback"]),
+});
+```
+
+Feature-expression evaluation supports `not`, `and`, `or`, parentheses, and imported prefixes. Omitting `enabledFeatures` retains all feature-gated nodes and records their requirements in the IR.
 
 ## Form helper
 
