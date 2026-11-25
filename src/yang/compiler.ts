@@ -302,11 +302,20 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       deviations: [],
       source: statement, children: [],
     };
-    if (kind === "list") {
-      const directLeafNames = new Set(statement.children.filter(child => child.keyword === "leaf").map(child => child.argument));
-      for (const key of keys) if (!directLeafNames.has(key)) report("invalid-key", `List key '${key}' is not a direct leaf of '${path}'`, owner, statement);
-    }
     node.children = normalizeChoiceChildren(dataChildren(statement).flatMap(child => makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatureRequirements)), node);
+    if (kind === "list") {
+      for (const key of keys) {
+        const resolvedKey = resolveQName(instantiatingModule, key, modules);
+        const keyLeaf = resolvedKey && node.children.find(child =>
+          child.kind === "leaf" && child.name === resolvedKey.name && child.module === resolvedKey.module.argument,
+        );
+        if (!keyLeaf) {
+          report("invalid-key", `List key '${key}' is not a direct leaf of '${path}'`, owner, statement);
+        } else if (keyLeaf.config !== node.config) {
+          report("invalid-key", `List key '${key}' must have the same config value as its list`, owner, keyLeaf.source);
+        }
+      }
+    }
     checkDuplicates(node.children, owner);
     return [node];
   };

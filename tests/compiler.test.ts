@@ -63,6 +63,21 @@ describe("semantic compilation foundation", () => {
     expect(schema.diagnostics).toEqual([]);
   });
 
+  it("validates list keys against effective children introduced by uses", async () => {
+    const module = parseYang(`module keyed {
+      namespace "urn:keyed"; prefix k;
+      grouping record-key { leaf id { type string; } }
+      container root {
+        list records { key "id"; uses record-key; leaf value { type string; } }
+        list invalid { key "id"; leaf id { type string; config false; } }
+      }
+    }`);
+    const moduleSet = await resolveModuleSet([module], { async loadModule() { return undefined; } });
+    const schema = compileYangModules(moduleSet);
+    expect(schema.diagnostics.filter(diagnostic => diagnostic.code === "invalid-key")).toHaveLength(1);
+    expect(schema.diagnostics.find(diagnostic => diagnostic.code === "invalid-key")?.message).toContain("same config value");
+  });
+
   it("compiles oven data and RPC schema nodes with source-linked type statements", () => {
     const module = fixture("sysrepo/oven.yang");
     return resolveModuleSet([module], { async loadModule() { return undefined; } }).then(moduleSet => {
