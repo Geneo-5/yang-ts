@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2 and 3–5 are complete; Stage 6 is in progress with budgets/cancellation and the YANG Library loading adapter done. Last updated: 2026-11 (Stage 6: YANG Library/RESTCONF adapter added).
+This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2 and 3–5 are complete; Stage 6 is in progress with budgets/cancellation, the conformance matrix, the browser-readiness audit and the YANG Library loading adapter done. Last updated: 2026-11 (Stage 6: conformance matrix and browser audit added).
 
 ## Stage 0 — Parser foundation (complete)
 
@@ -81,6 +81,8 @@ Exit met: end-to-end contextual allowed-value filtering (`tests/candidates.test.
 - Test workers/cancellation/resource budgets for large or untrusted module sets.
 - Publish a conformance matrix with implemented/partial/unsupported/untested status and a migration/versioning policy.
 - Add optional YANG Library/RESTCONF loading adapters without coupling them into the compiler core.
+- Implemented: a browser-readiness audit test (`tests/browser-readiness.test.ts`) scans every shipped source file (src and built dist) for Node built-ins and globals, verifies the declared package surface (`files`, `exports`, `sideEffects: false`) and checks that the only runtime dependency, `xpath`, is itself browser-safe.
+- Published the conformance matrix (`CONFORMANCE.md`): implemented/partial/planned/untested per RFC area with covering tests, an explicit known-gaps list (schema-mount, metadata annotations, exotic XML Schema regex syntax, transport boundary) and the migration/versioning policy; every matrix row must keep a covering test.
 - Implemented: optional YANG Library/RESTCONF loading adapter (`createRestconfModuleLoader`, `src/restconf/library-loader.ts`, `tests/restconf-loader.test.ts`): module discovery from RFC 7895 `modules-state` and RFC 8525 `yang-library`/`module-set` payloads (with or without the module prefix), schema sources fetched per entry from `location` URLs with a caller-supplied template fallback (defaulting to the common `/yang?module=&revision=` endpoint), revision pinning and newest-revision selection, and an injectable fetch implementation — a pure adapter returning text to `resolveModuleSet`, never part of the compiler core. An end-to-end test compiles the fetched closure.
 - Implemented: `resolveModuleSet` accepts `ModuleSetConstraints` (`tests/module-budgets.test.ts`) — an explicit host-owned `AbortSignal` and a `ModuleSetBudget` (max loader-loaded modules and submodules, import/include depth via the loader budget, total loader-reported source characters, wall-clock deadline) that refuse all further loads after the first violation and record a single `cancelled`/`budget-exceeded` diagnostic; unconstrained resolution is unchanged. The deadline is also recorded when the resolution finishes past it.
 

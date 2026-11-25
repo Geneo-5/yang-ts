@@ -21,7 +21,8 @@
     "ARCHITECTURE.md",
     "ROADMAP.md",
     "TESTING.md",
-    "XPATH_SPIKE.md"
+    "XPATH_SPIKE.md",
+    "CONFORMANCE.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
