@@ -105,6 +105,25 @@ describe("form helper", () => {
     expect(validateFormValue(ratio, "5.01").status).toBe("invalid");
   });
 
+  it("filters inherited enum and bits options through typedef restrictions", () => {
+    const module = parseYang(`module subsets { namespace "urn:subsets"; prefix s;
+      typedef full-mode { type enumeration { enum safe; enum normal; enum debug; } }
+      typedef limited-mode { type full-mode { enum safe; enum normal; } }
+      typedef full-flags { type bits { bit read; bit write; bit admin; } }
+      typedef limited-flags { type full-flags { bit read; bit write; } }
+      leaf mode { type limited-mode; }
+      leaf flags { type limited-flags; }
+    }`);
+    const fields = createFormModel(module).fields;
+    const mode = fields.find(field => field.name === "mode")!;
+    const flags = fields.find(field => field.name === "flags")!;
+    expect(mode.options.map(option => option.value)).toEqual(["safe", "normal"]);
+    expect(flags.options.map(option => option.value)).toEqual(["read", "write"]);
+    expect(validateFormValue(mode, "debug").status).toBe("invalid");
+    expect(validateFormValue(flags, ["admin"]).status).toBe("invalid");
+    expect(validateFormValue(flags, ["read", "write"]).status).toBe("valid");
+  });
+
   it("resolves imported typedefs only when their dependency module is supplied", () => {
     const interfaces = parseYang(readFileSync(fileURLToPath(new URL("./fixtures/yang/standard/ietf/RFC/ietf-interfaces@2018-02-20.yang", import.meta.url)), "utf8"));
     const yangTypes = parseYang(readFileSync(fileURLToPath(new URL("./fixtures/yang/standard/ietf/RFC/ietf-yang-types@2013-07-15.yang", import.meta.url)), "utf8"));

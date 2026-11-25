@@ -152,16 +152,30 @@ function constraintsOn(node: YangStatement): FormConstraint[] {
 }
 
 function optionsFromType(type: ResolvedType): FormOption[] {
-  const enumLayer = type.layers.find(layer => layer.argument === "enumeration");
-  if (enumLayer) return childrenOf(enumLayer, "enum").map(option => ({
-    value: option.argument ?? "", label: option.argument ?? "",
-    ...(childOf(option, "description")?.argument ? { description: childOf(option, "description")!.argument! } : {}),
-  }));
-  const bitsLayer = type.layers.find(layer => layer.argument === "bits");
-  if (bitsLayer) return childrenOf(bitsLayer, "bit").map(option => ({
-    value: option.argument ?? "", label: option.argument ?? "",
-    ...(childOf(option, "description")?.argument ? { description: childOf(option, "description")!.argument! } : {}),
-  }));
+  const optionList = (keyword: "enum" | "bit"): FormOption[] => {
+    let baseIndex = -1;
+    const baseTypeName = keyword === "enum" ? "enumeration" : "bits";
+    for (let index = type.layers.length - 1; index >= 0; index--) {
+      if (type.layers[index]?.argument === baseTypeName) { baseIndex = index; break; }
+    }
+    if (baseIndex < 0) return [];
+    let options = childrenOf(type.layers[baseIndex]!, keyword).map(option => ({
+      value: option.argument ?? "", label: option.argument ?? "",
+      ...(childOf(option, "description")?.argument ? { description: childOf(option, "description")!.argument! } : {}),
+    }));
+    for (let index = baseIndex - 1; index >= 0; index--) {
+      const restrictedNames = childrenOf(type.layers[index]!, keyword).map(option => option.argument ?? "");
+      if (restrictedNames.length) {
+        const allowed = new Set(restrictedNames);
+        options = options.filter(option => allowed.has(option.value));
+      }
+    }
+    return options;
+  };
+  const enums = optionList("enum");
+  if (enums.length) return enums;
+  const bits = optionList("bit");
+  if (bits.length) return bits;
   return [];
 }
 
