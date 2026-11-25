@@ -3,45 +3,185 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>YANG browser parser example (standalone)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 56rem; margin: 1rem auto; padding: 0 1rem; }
+    section { border: 1px solid #ccc; border-radius: 6px; padding: 0.5rem 1rem; margin-bottom: 1rem; }
+    h2 { font-size: 1.1rem; margin: 0.5rem 0; }
+    .field { display: block; margin: 0.5rem 0; }
+    .field label { font-weight: 600; }
+    .type { font-family: monospace; color: #555; font-size: 0.8rem; }
+    .help { display: block; color: #666; font-size: 0.82rem; max-width: 40rem; }
+    .status { color: #085; font-size: 0.85rem; margin-left: 0.5rem; }
+    button { margin: 0.25rem 0.5rem 0.5rem 0; }
+    pre { background: #f4f4f4; padding: 0.5rem; overflow: auto; max-height: 40vh; }
+  </style>
   <body>
-    <h1>Sysrepo oven: build an RPC request</h1>
-    <p>This single file is a self-contained demo: the engine and the oven YANG schema are embedded, so it works when opened directly in a browser (double-click), through the VS Code Live Server extension, or from any static server. No install, no server required.</p>
-    <label for="time">Insert-food timing</label>
-    <select id="time"></select>
-    <pre id="result" aria-live="polite"></pre>
+    <h1>Sysrepo oven — every YANG node at a glance</h1>
+    <p>This single file is a self-contained demo covering <em>all</em> nodes of the oven module: configuration leaves, read-only state data, both RPCs, and the oven-ready notification. The engine and the YANG schema are embedded, so it works when opened directly in a browser (double-click), through the VS Code Live Server extension, or from any static server. Every request below is <em>previewed</em>, never sent.</p>
+    <div id="app"></div>
+    <pre id="result" aria-live="polite">Loading…</pre>
     <script>
       "use strict";
       /*__ENGINE__*/
       const OVEN_YANG = /*__YANG__*/;
       (() => {
         const result = document.querySelector("#result");
-        const fail = message => { result.textContent = message; };
+        const show = message => { result.textContent = message; };
+        const fail = message => { show(`Error: ${message}`); };
         try {
-          const { createFormModel, createRestconfRpcRequest, parseYang, validateFormValue } = YangEngine;
-          const module = parseYang(OVEN_YANG);
-          const form = createFormModel(module);
-          const operation = form.operations.find(item => item.name === "insert-food");
-          const field = form.fields.find(item => item.path === "/insert-food/input/time");
-          if (!operation || !field || field.control !== "enum") throw new Error("Expected insert-food RPC with an enum input");
+          const {
+            parseYang, createFormModel, validateFormValue, canonicalFormOf,
+            createRestconfGetRequest, createRestconfDatastoreRequest, createRestconfSetRequest,
+            createRestconfRpcRequest, readRestconfData,
+          } = YangEngine;
 
-          const select = document.querySelector("#time");
-          for (const option of field.options) {
-            const item = document.createElement("option");
-            item.value = option.value;
-            item.textContent = option.label;
-            if (option.description) item.title = option.description;
-            select.append(item);
+          const app = document.querySelector("#app");
+          const appEl = (tag, attrs, ...children) => {
+            const node = document.createElement(tag);
+            for (const [key, value] of Object.entries(attrs ?? {})) {
+              if (key === "class") node.className = value;
+              else if (key === "text") node.textContent = value;
+              else if (key === "title") node.title = value;
+              else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+              else node.setAttribute(key, value);
+            }
+            for (const child of children) node.append(typeof child === "string" ? document.createTextNode(child) : child);
+            return node;
+          };
+          const section = (title, ...children) => {
+            const node = appEl("section", {}, appEl("h2", { text: title }), ...children);
+            app.append(node);
+            return node;
+          };
+
+          const yangModule = parseYang(OVEN_YANG);
+          const form = createFormModel(yangModule);
+          const MODULE = form.module;
+
+          // Schema path ("/oven/temperature") to RESTCONF path segments.
+          const segmentsOf = path => path.split("/").filter(Boolean).map(name => ({ module: MODULE, name }));
+          const inputId = field => `input-${field.path.split("/").filter(Boolean).join("-")}`;
+
+          // A row per leaf: typed control from the form model, live validation,
+          // and the canonical (schema-normalized) value once valid.
+          const fieldRow = field => {
+            const status = appEl("span", { class: "status", id: `status-${field.path.split("/").filter(Boolean).join("-")}` });
+            let input;
+            const id = inputId(field);
+            if (field.control === "boolean") {
+              input = appEl("input", { type: "checkbox", id });
+            } else if (field.control === "number") {
+              const attrs = { type: "number", id };
+              if (field.defaultValue !== undefined) attrs.value = field.defaultValue;
+              input = appEl("input", attrs);
+            } else if (field.control === "enum") {
+              input = appEl("select", { id }, ...field.options.map(option => {
+                const item = appEl("option", { value: option.value, text: option.label });
+                if (option.description) item.title = option.description;
+                return item;
+              }));
+            } else {
+              const attrs = { type: "text", id };
+              if (field.defaultValue !== undefined) attrs.value = field.defaultValue;
+              input = appEl("input", attrs);
+            }
+            const report = () => {
+              const value = field.control === "boolean" ? input.checked : input.value;
+              const validation = validateFormValue(field, value);
+              if (validation.status === "valid") {
+                const canonical = canonicalFormOf(field, value);
+                status.textContent = `OK${canonical !== undefined ? ` — canonical: ${canonical}` : ""}`;
+              } else {
+                status.textContent = validation.errors.map(error => error.message).join(" ")
+                  || `Pending: ${validation.pending.map(item => `${item.kind}: ${item.expression}`).join("; ")}`;
+              }
+            };
+            input.addEventListener(field.control === "boolean" || field.control === "enum" ? "change" : "input", report);
+            if (field.defaultValue !== undefined || field.control === "boolean") report();
+            return appEl("div", { class: "field" },
+              appEl("label", {
+                for: id,
+                text: field.name + (field.required ? " *" : ""),
+                title: field.help ?? "",
+              }),
+              appEl("span", { class: "type", text: `${field.yangType}${field.readOnly ? " (read-only)" : ""}` }),
+              input,
+              status,
+              field.help ? appEl("span", { class: "help", text: field.help }) : undefined,
+            );
+          };
+
+          // 1 — Configuration data: editable leaves under /oven (running datastore).
+          const configFields = form.fields.filter(field => field.scope === "data" && !field.readOnly);
+          if (configFields.length) {
+            const containerName = configFields[0].path.split("/").filter(Boolean)[0];
+            section("Configuration data (running)", ...configFields.map(field => fieldRow(field)),
+              appEl("button", {
+                id: "preview-get", text: "Preview GET", onclick: () =>
+                  show(JSON.stringify(createRestconfGetRequest(segmentsOf(`/${containerName}`)), null, 2)),
+              }),
+              appEl("button", {
+                id: "preview-put", text: "Preview PUT", onclick: () => {
+                  const data = {};
+                  for (const field of configFields) {
+                    const node = document.querySelector(`#${inputId(field)}`);
+                    const value = field.control === "boolean" ? node.checked : node.value;
+                    data[field.name] = field.control === "number" ? Number(value) : value;
+                  }
+                  show(JSON.stringify(createRestconfSetRequest(segmentsOf(`/${containerName}`), { module: MODULE, name: containerName, data }), null, 2));
+                },
+              }));
           }
-          select.addEventListener("change", () => {
-            const validation = validateFormValue(field, select.value);
-            result.textContent = validation.status === "valid"
-              ? JSON.stringify(createRestconfRpcRequest(operation, { time: select.value }), null, 2)
-              : validation.errors.map(error => error.message).join("\n")
-                || `Validation needs more schema/context: ${validation.pending.map(item => `${item.kind}: ${item.expression}`).join("; ")}`;
-          });
-          select.dispatchEvent(new Event("change"));
+
+          // 2 — State data: config false leaves under /oven-state, read from the
+          // operational datastore (RFC 8527) with origin data included.
+          const stateFields = form.fields.filter(field => field.scope === "data" && field.readOnly);
+          if (stateFields.length) {
+            const stateContainer = stateFields[0].path.split("/").filter(Boolean)[0];
+            section("State data (operational)",
+              ...stateFields.map(field => fieldRow(field)),
+              appEl("button", {
+                id: "preview-state-get", text: "Preview GET with-origin", onclick: () =>
+                  show(JSON.stringify(createRestconfDatastoreRequest("GET", "ietf-datastores:operational", segmentsOf(`/${stateContainer}`), undefined, { "with-origin": true }), null, 2)),
+              }),
+              appEl("div", { id: "state-sample" },
+                `Extracting from a sample response: ${JSON.stringify(readRestconfData({ [`${MODULE}:${stateContainer}`]: { temperature: 180, "food-inside": true } }, MODULE, stateContainer))}`),
+            );
+          }
+
+          // 3 — RPCs: insert-food (enum input) and remove-food (no input).
+          section("RPC operations",
+            ...form.operations.map(operation => appEl("div", { class: "field" },
+              appEl("label", { text: operation.label, title: operation.help ?? "" }),
+              appEl("div", { class: "field" }, ...operation.inputFields.map(field => fieldRow(field))),
+              appEl("button", {
+                id: `preview-rpc-${operation.name}`,
+                text: `Preview POST ${operation.name}`,
+                onclick: () => {
+                  const input = {};
+                  for (const field of operation.inputFields) {
+                    const node = document.querySelector(`#${inputId(field)}`);
+                    input[field.name] = field.control === "boolean" ? node.checked : node.value;
+                  }
+                  show(JSON.stringify(createRestconfRpcRequest(operation, operation.inputFields.length ? input : undefined), null, 2));
+                },
+              }))));
+
+          // 4 — Notification: oven-ready is listed from the schema. The engine
+          // compiles and validates event data; delivery goes through the
+          // server's RESTCONF event stream, so there is nothing to send here.
+          for (const statement of yangModule.children) {
+            if (statement.keyword === "notification") {
+              const description = (statement.children.find(child => child.keyword === "description") ?? {}).argument;
+              section(`Notification ${statement.argument}`,
+                appEl("div", {}, description ?? "No description in the schema."),
+                appEl("div", { id: "notification-note" }, "Delivered through the RESTCONF event stream (e.g. GET /restconf/streams/…, RFC 8040 §6.3): the engine validates such event data, it is not sent from this page."),
+              );
+            }
+          }
+          show("Ready. Edit the fields, then preview requests below.");
         } catch (error) {
-          fail(error instanceof Error ? error.message : String(error));
+          fail(error instanceof Error ? error.stack : String(error));
         }
       })();
     </script>
