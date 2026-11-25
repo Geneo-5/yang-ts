@@ -115,16 +115,22 @@ describe("semantic compilation foundation", () => {
       container system {
         list port { key "name"; leaf name { type string; } uses port-operations; }
       }
+      rpc status { output { leaf state { type string; } } }
     }`);
     const extension = parseYang(`module extension {
       namespace "urn:extension"; prefix e; import base { prefix b; }
       augment /b:system/b:port { action synchronize { output { leaf result { type string; } } } }
+      augment /b:system/b:port/b:diagnostics/b:reset/input { leaf timeout { type uint16; } }
+      augment /b:status/input { leaf detail { type string; } }
     }`);
     const moduleSet = await resolveModuleSet([base, extension], { async loadModule() { return undefined; } });
     const schema = compileYangModules(moduleSet);
     expect(schema.operations.filter(operation => operation.kind === "action")).toMatchObject([
-      { name: "reset", module: "base", path: "/system/port/diagnostics/reset", input: [{ path: "/system/port/diagnostics/reset/input/force" }] },
+      { name: "reset", module: "base", path: "/system/port/diagnostics/reset", input: [{ path: "/system/port/diagnostics/reset/input/force" }, { path: "/system/port/diagnostics/reset/input/timeout" }] },
       { name: "synchronize", module: "extension", path: "/system/port/synchronize", output: [{ path: "/system/port/synchronize/output/result" }] },
+    ]);
+    expect(schema.operations.find(operation => operation.name === "status")?.input).toMatchObject([
+      { kind: "leaf", name: "detail", path: "/status/input/detail", module: "extension" },
     ]);
     expect(schema.diagnostics).toEqual([]);
   });

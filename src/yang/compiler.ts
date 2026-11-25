@@ -29,6 +29,7 @@ export interface CompiledOperation {
   module: string;
   /** Schema path to an RPC/action/notification; actions include their data-node ancestors. */
   path: string;
+  schemaPath: readonly { module: string; name: string }[];
   source: YangStatement;
   input: CompiledSchemaNode[];
   output: CompiledSchemaNode[];
@@ -380,7 +381,8 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     }
     return result;
   };
-  const pendingAugmentActions: Array<{ module: YangModule; statement: YangStatement; parentPath: string }> = [];
+  const pendingAugmentActions: Array<{ module: YangModule; statement: YangStatement; parentPath: string; schemaPath: readonly { module: string; name: string }[] }> = [];
+  const operationAugments: Array<{ module: YangModule; statement: YangStatement; target: Array<{ module: YangModule; name: string }> }> = [];
   const augments = modules.flatMap(module => [module, ...submodulesFor(module)].flatMap(source =>
     childrenOf(source, "augment").map(statement => ({ module, source, statement })),
   ));
@@ -393,12 +395,23 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       const path = qnamePath(item.source, item.statement.argument ?? "");
       if (!path) { report("unresolved-prefix", `Cannot resolve augment path '${item.statement.argument ?? ""}'`, item.module, item.statement); pending.splice(index, 1); continue; }
       const target = findTarget(path);
-      if (!target) continue;
+      if (!target) {
+        const last = path[path.length - 1];
+        if (last && (last.name === "input" || last.name === "output")) {
+          operationAugments.push({ module: item.module, statement: item.statement, target: path });
+          pending.splice(index, 1);
+          madeProgress = true;
+        }
+        continue;
+      }
       const augmentWhen = childrenOf(item.statement, "when");
       const augmentFeatures = childrenOf(item.statement, "if-feature").map(feature => ({ module: item.module.argument, expression: feature.argument ?? "", source: feature }));
       if (options.enabledFeatures && !featureRequirementsEnabled(augmentFeatures)) { pending.splice(index, 1); madeProgress = true; continue; }
       const additions = normalizeChoiceChildren(item.statement.children.flatMap(child => makeNode(child, item.module, target.path, target.config, [], augmentWhen, augmentFeatures, item.module)), target);
-      for (const action of childrenOf(item.statement, "action")) pendingAugmentActions.push({ module: item.module, statement: action, parentPath: target.path });
+      for (const action of childrenOf(item.statement, "action")) pendingAugmentActions.push({
+        module: item.module, statement: action, parentPath: target.path,
+        schemaPath: path.map(part => ({ module: part.module.argument, name: part.name })),
+      });
       for (const addition of additions) {
         if (target.children.some(child => child.module === addition.module && child.name === addition.name)) {
           report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${target.path}'`, item.module, addition.source);
@@ -494,7 +507,10 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   roots.forEach(node => refreshConfig(node, true));
 
   const operations: CompiledOperation[] = [];
-  const compileOperation = (module: YangModule, statement: YangStatement, parentPath = "") => {
+  const compileOperation = (
+    module: YangModule, statement: YangStatement, parentPath = "",
+    parentSchemaPath: readonly { module: string; name: string }[] = [],
+  ) => {
     if (statement.keyword !== "rpc" && statement.keyword !== "action" && statement.keyword !== "notification") return;
     const operationPath = `${parentPath}/${statement.argument ?? ""}`;
     const compileScope = (scope: YangStatement | undefined, name: "input" | "output") => scope
@@ -502,6 +518,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       : [];
     operations.push({
       kind: statement.keyword, name: statement.argument ?? "", module: module.argument, path: operationPath, source: statement,
+      schemaPath: [...parentSchemaPath, { module: module.argument, name: statement.argument ?? "" }],
       input: compileScope(childOf(statement, "input"), "input"), output: compileScope(childOf(statement, "output"), "output"),
     });
   };
@@ -512,15 +529,36 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       }
     }
   }
-  const collectNestedActions = (nodes: readonly CompiledSchemaNode[]) => {
+  const collectNestedActions = (nodes: readonly CompiledSchemaNode[], parentSchemaPath: readonly { module: string; name: string }[] = []) => {
     for (const node of nodes) {
       const operationModule = modules.find(module => module.argument === node.module);
-      if (operationModule) for (const action of childrenOf(node.source, "action")) compileOperation(operationModule, action, node.path);
-      collectNestedActions(node.children);
+      const nodeSchemaPath = [...parentSchemaPath, { module: node.module, name: node.name }];
+      if (operationModule) for (const action of childrenOf(node.source, "action")) compileOperation(operationModule, action, node.path, nodeSchemaPath);
+      collectNestedActions(node.children, nodeSchemaPath);
     }
   };
   collectNestedActions(roots);
-  for (const action of pendingAugmentActions) compileOperation(action.module, action.statement, action.parentPath);
+  for (const action of pendingAugmentActions) {
+    compileOperation(action.module, action.statement, action.parentPath, action.schemaPath);
+  }
+  for (const augment of operationAugments) {
+    const targetSchemaPath = augment.target.slice(0, -1).map(part => ({ module: part.module.argument, name: part.name }));
+    const operation = operations.find(candidate => candidate.schemaPath.length === targetSchemaPath.length
+      && candidate.schemaPath.every((part, index) => part.module === targetSchemaPath[index]?.module && part.name === targetSchemaPath[index]?.name));
+    if (!operation) {
+      report("unresolved-augment", `Augment target '${augment.statement.argument ?? ""}' was not found`, augment.module, augment.statement);
+      continue;
+    }
+    const scope = augment.target[augment.target.length - 1]!.name as "input" | "output";
+    const targetNodes = operation[scope];
+    const additions = augment.statement.children.flatMap(child => makeNode(child, augment.module, `${operation.path}/${scope}`, true, [], childrenOf(augment.statement, "when"), childrenOf(augment.statement, "if-feature").map(feature => ({ module: augment.module.argument, expression: feature.argument ?? "", source: feature })), augment.module));
+    for (const addition of additions) {
+      if (targetNodes.some(child => child.module === addition.module && child.name === addition.name)) {
+        report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${operation.path}/${scope}'`, augment.module, addition.source);
+      } else targetNodes.push(addition);
+    }
+    checkDuplicates(targetNodes, augment.module);
+  }
   const identities: CompiledIdentity[] = [];
   for (const module of modules) {
     for (const source of [module, ...submodulesFor(module)]) {
