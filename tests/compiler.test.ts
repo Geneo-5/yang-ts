@@ -164,4 +164,17 @@ describe("semantic compilation foundation", () => {
     const cycleSet = await resolveModuleSet([cycleA], { async loadModule(name) { return name === "b" ? cycleB : undefined; } });
     expect(compileYangModules(cycleSet).diagnostics.map(item => item.code)).toContain("identity-cycle");
   });
+
+  it("resolves interface and IANA identities from the requested fixture modules", async () => {
+    const roots = [
+      fixture("standard/ietf/RFC/ietf-interfaces@2018-02-20.yang"),
+      fixture("standard/ietf/RFC/ietf-yang-types@2013-07-15.yang"),
+      fixture("standard/iana/iana-if-type@2023-01-26.yang"),
+    ];
+    const byName = new Map(roots.map(module => [module.argument, module]));
+    const moduleSet = await resolveModuleSet(roots, { async loadModule(name) { return byName.get(name); } });
+    const schema = compileYangModules(moduleSet);
+    expect(isIdentityDerivedFrom(schema, "iana-if-type:ethernetCsmacd", "ietf-interfaces:interface-type")).toBe(true);
+    expect(schema.diagnostics).toEqual([]);
+  });
 });
