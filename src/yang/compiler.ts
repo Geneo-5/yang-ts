@@ -31,11 +31,18 @@ export interface CompiledOperation {
   input: CompiledSchemaNode[];
   output: CompiledSchemaNode[];
 }
+export interface CompiledIdentity {
+  name: string;
+  module: string;
+  namespace: string;
+  bases: readonly string[];
+  source: YangStatement;
+}
 export interface CompilerDiagnostic {
   code: "duplicate-node" | "unresolved-prefix" | "unresolved-augment" | "unresolved-grouping" |
     "uses-cycle" | "augment-conflict" | "invalid-key" | "unresolved-type" | "typedef-cycle" |
     "unresolved-feature" | "invalid-feature-expression" | "unresolved-deviation" | "invalid-deviation" |
-    "unresolved-refine" | "invalid-refine";
+    "unresolved-refine" | "invalid-refine" | "unresolved-identity" | "identity-cycle";
   message: string;
   module: string;
   source: YangStatement;
@@ -43,6 +50,7 @@ export interface CompilerDiagnostic {
 export interface CompiledYangSchema {
   roots: CompiledSchemaNode[];
   operations: CompiledOperation[];
+  identities: readonly CompiledIdentity[];
   diagnostics: CompilerDiagnostic[];
   modules: readonly YangModule[];
 }
@@ -60,7 +68,10 @@ function importedModule(context: YangModule, prefix: string, modules: readonly Y
   if (childOf(context, "prefix")?.argument === prefix) return context;
   const importNode = childrenOf(context, "import").find(item => childOf(item, "prefix")?.argument === prefix);
   const name = importNode?.argument;
-  return modules.find(candidate => candidate.argument === name);
+  const candidates = modules.filter(candidate => candidate.argument === name);
+  const pinnedRevision = importNode && childOf(importNode, "revision-date")?.argument;
+  if (pinnedRevision) return candidates.find(candidate => revisionOf(candidate) === pinnedRevision);
+  return candidates.sort((a, b) => revisionOf(b).localeCompare(revisionOf(a)))[0];
 }
 
 function resolveQName(context: YangModule, qname: string, modules: readonly YangModule[]): { module: YangModule; name: string } | undefined {
@@ -443,5 +454,76 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       input: compileScope(childOf(statement, "input"), "input"), output: compileScope(childOf(statement, "output"), "output"),
     });
   }
-  return { roots, operations, diagnostics, modules };
+  const identities: CompiledIdentity[] = [];
+  for (const module of modules) {
+    for (const source of [module, ...submodulesFor(module)]) {
+      for (const statement of childrenOf(source, "identity")) {
+        const requirements = childrenOf(statement, "if-feature").map(feature => ({ module: module.argument, expression: feature.argument ?? "", source: feature }));
+        if (options.enabledFeatures && !featureRequirementsEnabled(requirements)) continue;
+        const bases: string[] = [];
+        for (const base of childrenOf(statement, "base")) {
+          const resolved = resolveQName(module, base.argument ?? "", modules);
+          if (!resolved) {
+            report("unresolved-identity", `Identity base '${base.argument ?? ""}' could not be resolved`, module, base);
+            continue;
+          }
+          bases.push(`${resolved.module.argument}:${resolved.name}`);
+        }
+        identities.push({ name: statement.argument ?? "", module: module.argument, namespace: childOf(module, "namespace")?.argument ?? "", bases, source: statement });
+      }
+    }
+  }
+  const identityById = new Map(identities.map(identity => [`${identity.module}:${identity.name}`, identity]));
+  for (const identity of identities) for (const base of identity.bases) {
+    if (!identityById.has(base)) {
+      const owner = modules.find(module => module.argument === identity.module)!;
+      report("unresolved-identity", `Identity base '${base}' is not defined in the module set`, owner, identity.source);
+    }
+  }
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const checkIdentityCycle = (identity: CompiledIdentity, chain: readonly string[] = []) => {
+    const id = `${identity.module}:${identity.name}`;
+    if (visiting.has(id)) {
+      report("identity-cycle", `Identity inheritance cycle: ${[...chain, id].join(" -> ")}`, modules.find(module => module.argument === identity.module)!, identity.source);
+      return;
+    }
+    if (visited.has(id)) return;
+    visiting.add(id);
+    for (const baseId of identity.bases) {
+      const base = identityById.get(baseId);
+      if (base) checkIdentityCycle(base, [...chain, id]);
+    }
+    visiting.delete(id);
+    visited.add(id);
+  };
+  for (const identity of identities) checkIdentityCycle(identity);
+  return { roots, operations, identities, diagnostics, modules };
+}
+
+/** Test transitive identity derivation using module-qualified `module:name` identities. */
+export function isIdentityDerivedFrom(schema: CompiledYangSchema, identityRef: string, baseRef: string): boolean {
+  const toIdentityId = (value: string): string | undefined => {
+    const separator = value.indexOf(":");
+    if (separator < 0) return undefined;
+    const moduleName = value.slice(0, separator);
+    const identityName = value.slice(separator + 1);
+    const module = schema.modules.filter(candidate => candidate.argument === moduleName)
+      .sort((a, b) => revisionOf(b).localeCompare(revisionOf(a)))[0];
+    return module ? `${module.argument}:${identityName}` : undefined;
+  };
+  const target = toIdentityId(baseRef);
+  const start = toIdentityId(identityRef);
+  if (!target || !start || start === target) return false;
+  const byId = new Map<string, CompiledIdentity>(schema.identities.map(identity => [`${identity.module}:${identity.name}`, identity]));
+  const visited = new Set<string>();
+  const pending = [...(byId.get(start)?.bases ?? [])];
+  while (pending.length) {
+    const current = pending.pop()!;
+    if (current === target) return true;
+    if (visited.has(current)) continue;
+    visited.add(current);
+    pending.push(...(byId.get(current)?.bases ?? []));
+  }
+  return false;
 }

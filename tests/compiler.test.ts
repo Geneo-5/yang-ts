@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { compileYangModules, parseYang, resolveModuleSet, YangModule } from "../src/index.js";
+import { compileYangModules, isIdentityDerivedFrom, parseYang, resolveModuleSet, YangModule } from "../src/index.js";
 
 function fixture(path: string): YangModule {
   return parseYang(readFileSync(fileURLToPath(new URL(`./fixtures/yang/${path}`, import.meta.url)), "utf8"));
@@ -145,5 +145,23 @@ describe("semantic compilation foundation", () => {
     });
     expect(findNode(service.children, "metadata")?.properties.presence?.[0]?.argument).toBe("metadata is explicitly configured");
     expect(schema.diagnostics).toEqual([]);
+  });
+
+  it("resolves transitive identity inheritance and detects identity cycles", async () => {
+    const base = parseYang(`module base { namespace "urn:base"; prefix b; identity root; }`);
+    const middle = parseYang(`module middle { namespace "urn:middle"; prefix m; import base { prefix b; } identity child { base b:root; } }`);
+    const leaf = parseYang(`module leaf { namespace "urn:leaf"; prefix l; import middle { prefix m; } identity ethernet { base m:child; } }`);
+    const moduleByName = new Map([base, middle].map(module => [module.argument, module]));
+    const moduleSet = await resolveModuleSet([leaf], { async loadModule(name) { return moduleByName.get(name); } });
+    const schema = compileYangModules(moduleSet);
+    expect(isIdentityDerivedFrom(schema, "leaf:ethernet", "base:root")).toBe(true);
+    expect(isIdentityDerivedFrom(schema, "middle:child", "base:root")).toBe(true);
+    expect(isIdentityDerivedFrom(schema, "base:root", "base:root")).toBe(false);
+    expect(schema.diagnostics).toEqual([]);
+
+    const cycleA = parseYang(`module a { namespace "urn:a"; prefix a; import b { prefix b; } identity one { base b:two; } }`);
+    const cycleB = parseYang(`module b { namespace "urn:b"; prefix b; import a { prefix a; } identity two { base a:one; } }`);
+    const cycleSet = await resolveModuleSet([cycleA], { async loadModule(name) { return name === "b" ? cycleB : undefined; } });
+    expect(compileYangModules(cycleSet).diagnostics.map(item => item.code)).toContain("identity-cycle");
   });
 });
