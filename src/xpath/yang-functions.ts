@@ -5,6 +5,40 @@ import { CompiledSchemaNode, CompiledYangSchema, isIdentityDerivedFrom } from ".
 import { schemaNodeForElement } from "./accessible-tree.js";
 import { compileYangXPath } from "./xpath.js";
 
+/**
+ * Follow a leafref statement from its instance element: evaluate the leafref
+ * path (prefixes of the declaring module) and keep reached leaves whose value
+ * matches the leafref value, so only the referenced node survives. Returns
+ * undefined when the node is not a leafref or cannot be resolved.
+ */
+export type LeafrefResolver = (schemaNode: CompiledSchemaNode, element: Element) => Element[] | undefined;
+
+/** Build a leafref resolver sharing one compiled-path cache across deref and validation. */
+export function createLeafrefResolver(schema: CompiledYangSchema): LeafrefResolver {
+  const compiledCache = new Map<string, ReturnType<typeof compileYangXPath>>();
+  return (schemaNode, element) => {
+    const pathStatement = schemaNode.type && childOf(schemaNode.type, "path");
+    if (schemaNode.resolvedType !== "leafref" || !pathStatement?.argument) return undefined;
+    const owner = schema.modules.find(module => module.argument === schemaNode.module);
+    if (!owner) return undefined;
+    const key = schemaNode.module + ":" + pathStatement.argument;
+    let compiled = compiledCache.get(key);
+    if (compiled === undefined) {
+      const prefixModules: Record<string, string> = {};
+      for (const importNode of childrenOf(owner, "import")) {
+        const prefix = childOf(importNode, "prefix")?.argument;
+        const namespace = childOf(schema.modules.find(candidate => candidate.argument === importNode.argument) ?? owner, "namespace")?.argument;
+        if (prefix && namespace) prefixModules[prefix] = namespace;
+      }
+      compiled = compileYangXPath(pathStatement.argument, childOf(owner, "namespace")?.argument ?? "", prefixModules);
+      compiledCache.set(key, compiled);
+    }
+    const value = element.textContent ?? "";
+    return compiled.select({ node: element })
+      .filter((child): child is Element => child.nodeType === 1 && (child as unknown as Element).textContent === value);
+  };
+}
+
 /** Namespace the RFC 7950 section 10 function library is registered under as well as unprefixed. */
 export const YANG_FUNCTION_NAMESPACE = "urn:ietf:params:xml:ns:yang:1";
 
@@ -52,23 +86,7 @@ export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Re
     return nativeModule(module) ? `${module}:${value}` : undefined;
   };
   const positions = collectOptionPositions(schema.modules);
-  // LeafRef path expressions are compiled lazily per module-instantiated path.
-  const leafrefCache = new Map<string, ReturnType<typeof compileYangXPath>>();
-  const compileLeafrefPath = (owner: YangModule, path: string) => {
-    const key = `${owner.argument}:${path}`;
-    const cached = leafrefCache.get(key);
-    if (cached) return cached;
-    const prefixModules: Record<string, string> = {};
-    for (const importNode of childrenOf(owner, "import")) {
-      const prefix = childOf(importNode, "prefix")?.argument;
-      const namespace = childOf(schema.modules.find(candidate => candidate.argument === importNode.argument) ?? owner, "namespace")?.argument;
-      if (prefix && namespace) prefixModules[prefix] = namespace;
-    }
-    const namespace = childOf(owner, "namespace")?.argument ?? "";
-    const compiled = compileYangXPath(path, namespace, prefixModules);
-    leafrefCache.set(key, compiled);
-    return compiled;
-  };
+  const resolveLeafref = createLeafrefResolver(schema);
   // Note: `current` cannot live here. RFC 7950 section 10.1 requires the
   // original context node even inside predicates, and the redoable evaluator
   // extends the context per step; the XPath adapter binds it per evaluation.
@@ -89,16 +107,9 @@ export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Re
       const target = nodes[0]!;
       if (target.nodeType !== 1) return item;
       const schemaNode = schemaNodeForElement(schema, target as Element);
-      const pathStatement = schemaNode?.type && childOf(schemaNode.type, "path");
-      if (!schemaNode || schemaNode.resolvedType !== "leafref" || !pathStatement?.argument) return item;
-      const owner = schema.modules.find(module => module.argument === schemaNode.module);
-      if (!owner) return item;
-      // The path reaches every candidate leaf; only the one whose value equals
-      // the leafref value is the node the leafref actually points to.
-      const value = (target as Element).textContent ?? "";
-      return compileLeafrefPath(owner, pathStatement.argument)
-        .select({ node: target })
-        .filter(child => child.nodeType === 1 && (child as unknown as Element).textContent === value);
+      if (!schemaNode) return item;
+      const resolved = resolveLeafref(schemaNode, target as Element);
+      return resolved ?? item;
     },
     "derived-from-or-self": (context, item, ...bases) => {
       const value = qualifiedValue(requireString(item, "derived-from-or-self"));

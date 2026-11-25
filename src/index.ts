@@ -6,6 +6,7 @@ export * from "./xpath/xpath.js";
 export * from "./xpath/yang-functions.js";
 export * from "./xpath/accessible-tree.js";
 export * from "./xpath/evaluate-constraints.js";
+export * from "./validation/validate-instance.js";
 export * from "./forms/form-model.js";
 export * from "./restconf/paths.js";
 

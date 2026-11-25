@@ -124,7 +124,7 @@ function applyDefaults(node: CompiledSchemaNode, present: number, target: Elemen
   }
 }
 
-function matchSchemaChild(nodes: readonly CompiledSchemaNode[], element: Element): CompiledSchemaNode | undefined {
+export function matchSchemaChild(nodes: readonly CompiledSchemaNode[], element: Element): CompiledSchemaNode | undefined {
   for (const node of nodes) {
     if (node.kind === "choice" || node.kind === "case") {
       const nested = matchSchemaChild(node.children, element);
@@ -142,19 +142,21 @@ function matchSchemaChild(nodes: readonly CompiledSchemaNode[], element: Element
  * Built trees sit under a synthetic wrapper whose children are schema roots.
  */
 export function schemaNodeForElement(schema: CompiledYangSchema, element: Element): CompiledSchemaNode | undefined {
-  // The instance-document element chain stops at its root: the synthetic
-  // wrapper is not schema (datastore trees attach copies under documentElement;
-  // operation trees use the wrapper as the context node itself).
+  // Walk the element chain up to the document root, then trim ancestors that
+  // are not schema roots: built accessible trees carry a synthetic wrapper
+  // above their root copies, while raw instance documents name their root
+  // data node directly as the document element.
   const segment = (node: Element): Element[] => {
     const parent = node.parentNode;
-    if (!isElement(parent) || parent === parent.ownerDocument.documentElement) return [node];
-    return [...segment(parent), node];
+    return isElement(parent) ? [...segment(parent), node] : [node];
   };
   const chain = segment(element);
+  const rootIndex = chain.findIndex(segmentElement => schema.roots.some(root =>
+    root.name === segmentElement.localName && root.namespace === segmentElement.namespaceURI));
+  if (rootIndex < 0) return undefined;
   let schemaNode = schema.roots.find(root =>
-    root.name === chain[0]!.localName && root.namespace === chain[0]!.namespaceURI);
-  if (!schemaNode) return undefined;
-  for (const child of chain.slice(1)) {
+    root.name === chain[rootIndex]!.localName && root.namespace === chain[rootIndex]!.namespaceURI)!;
+  for (const child of chain.slice(rootIndex + 1)) {
     const next = matchSchemaChild(schemaNode.children, child);
     if (!next) return undefined;
     schemaNode = next;
