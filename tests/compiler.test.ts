@@ -108,6 +108,27 @@ describe("semantic compilation foundation", () => {
     expect(withFeature.diagnostics).toEqual([]);
   });
 
+  it("compiles nested actions from data nodes, groupings and augments with schema paths", async () => {
+    const base = parseYang(`module base {
+      namespace "urn:base"; prefix b;
+      grouping port-operations { container diagnostics { action reset { input { leaf force { type boolean; } } } } }
+      container system {
+        list port { key "name"; leaf name { type string; } uses port-operations; }
+      }
+    }`);
+    const extension = parseYang(`module extension {
+      namespace "urn:extension"; prefix e; import base { prefix b; }
+      augment /b:system/b:port { action synchronize { output { leaf result { type string; } } } }
+    }`);
+    const moduleSet = await resolveModuleSet([base, extension], { async loadModule() { return undefined; } });
+    const schema = compileYangModules(moduleSet);
+    expect(schema.operations.filter(operation => operation.kind === "action")).toMatchObject([
+      { name: "reset", module: "base", path: "/system/port/diagnostics/reset", input: [{ path: "/system/port/diagnostics/reset/input/force" }] },
+      { name: "synchronize", module: "extension", path: "/system/port/synchronize", output: [{ path: "/system/port/synchronize/output/result" }] },
+    ]);
+    expect(schema.diagnostics).toEqual([]);
+  });
+
   it("validates list keys against effective children introduced by uses", async () => {
     const module = parseYang(`module keyed {
       namespace "urn:keyed"; prefix k;

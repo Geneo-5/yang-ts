@@ -27,6 +27,8 @@ export interface CompiledOperation {
   kind: "rpc" | "action" | "notification";
   name: string;
   module: string;
+  /** Schema path to an RPC/action/notification; actions include their data-node ancestors. */
+  path: string;
   source: YangStatement;
   input: CompiledSchemaNode[];
   output: CompiledSchemaNode[];
@@ -378,6 +380,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     }
     return result;
   };
+  const pendingAugmentActions: Array<{ module: YangModule; statement: YangStatement; parentPath: string }> = [];
   const augments = modules.flatMap(module => [module, ...submodulesFor(module)].flatMap(source =>
     childrenOf(source, "augment").map(statement => ({ module, source, statement })),
   ));
@@ -395,6 +398,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       const augmentFeatures = childrenOf(item.statement, "if-feature").map(feature => ({ module: item.module.argument, expression: feature.argument ?? "", source: feature }));
       if (options.enabledFeatures && !featureRequirementsEnabled(augmentFeatures)) { pending.splice(index, 1); madeProgress = true; continue; }
       const additions = normalizeChoiceChildren(item.statement.children.flatMap(child => makeNode(child, item.module, target.path, target.config, [], augmentWhen, augmentFeatures, item.module)), target);
+      for (const action of childrenOf(item.statement, "action")) pendingAugmentActions.push({ module: item.module, statement: action, parentPath: target.path });
       for (const addition of additions) {
         if (target.children.some(child => child.module === addition.module && child.name === addition.name)) {
           report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${target.path}'`, item.module, addition.source);
@@ -497,15 +501,26 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       ? dataChildren(scope).flatMap(child => makeNode(child, module, `${operationPath}/${name}`, true))
       : [];
     operations.push({
-      kind: statement.keyword, name: statement.argument ?? "", module: module.argument, source: statement,
+      kind: statement.keyword, name: statement.argument ?? "", module: module.argument, path: operationPath, source: statement,
       input: compileScope(childOf(statement, "input"), "input"), output: compileScope(childOf(statement, "output"), "output"),
     });
   };
   for (const module of modules) {
     for (const source of [module, ...submodulesFor(module)]) {
-      for (const statement of source.children) compileOperation(module, statement);
+      for (const statement of source.children) {
+        if (statement.keyword === "rpc" || statement.keyword === "notification") compileOperation(module, statement);
+      }
     }
   }
+  const collectNestedActions = (nodes: readonly CompiledSchemaNode[]) => {
+    for (const node of nodes) {
+      const operationModule = modules.find(module => module.argument === node.module);
+      if (operationModule) for (const action of childrenOf(node.source, "action")) compileOperation(operationModule, action, node.path);
+      collectNestedActions(node.children);
+    }
+  };
+  collectNestedActions(roots);
+  for (const action of pendingAugmentActions) compileOperation(action.module, action.statement, action.parentPath);
   const identities: CompiledIdentity[] = [];
   for (const module of modules) {
     for (const source of [module, ...submodulesFor(module)]) {
