@@ -2,6 +2,8 @@ import { YangModule, YangStatement } from "../yang/ast.js";
 import { CompiledYangSchema, isIdentityDerivedFrom } from "../yang/compiler.js";
 import { childOf, childrenOf } from "../yang/parser.js";
 import { findSchemaNodeByPath } from "../xpath/accessible-tree.js";
+import { leafrefPathStatementOf } from "../xpath/yang-functions.js";
+import { compileXsdPattern } from "../types/xsd-pattern.js";
 import { compileModuleExpression } from "../xpath/evaluate-constraints.js";
 
 export type FormValidationStatus = "valid" | "invalid" | "indeterminate";
@@ -295,34 +297,7 @@ function base64OctetLength(value: string): number | undefined {
   return value.length / 4 * 3 - padding;
 }
 
-// RFC 7950 section 9.4.6 patterns are implicitly-anchored XML Schema
-// regular expressions. JavaScript regexes agree on the common subset, but not
-// on backreferences, `(?`-prefixed groups or character-class subtraction, where
-// JavaScript silently accepts and misinterprets the syntax; such patterns stay
-// pending instead of being evaluated with the wrong rules.
-const patternCache = new Map<string, RegExp | undefined>();
-function compilePattern(pattern: string): RegExp | undefined {
-  const cached = patternCache.get(pattern);
-  if (cached !== undefined) return cached;
-  if (patternCache.has(pattern)) return undefined;
-  let compiled: RegExp | undefined;
-  if (!/\\\d|\(\?/.test(pattern) && !hasCharacterClassSubtraction(pattern)) {
-    try { compiled = new RegExp(`^(?:${pattern})$`); } catch { compiled = undefined; }
-  }
-  patternCache.set(pattern, compiled);
-  return compiled;
-}
-function hasCharacterClassSubtraction(pattern: string): boolean {
-  let inside = false;
-  for (let index = 0; index < pattern.length; index++) {
-    const character = pattern[index]!;
-    if (inside && character === "\\") { index++; continue; }
-    if (character === "[") inside = true;
-    else if (character === "]") inside = false;
-    else if (inside && character === "-" && pattern[index + 1] === "[") return true;
-  }
-  return false;
-}
+
 
 interface EffectiveIntervalConstraint { expression: string; minimum: bigint; maximum: bigint; }
 function inheritedIntervals(
@@ -427,9 +402,18 @@ function validateType(field: FormField, value: unknown, errors: FormError[]): bo
     }
     if (typeof value === "string") {
       for (const layer of fieldTypeLayers.get(field) ?? []) for (const patternStatement of childrenOf(layer, "pattern")) {
-        const pattern = compilePattern(patternStatement.argument ?? "");
-        if (!pattern) continue;
-        if (!pattern.test(value)) { errors.push({ code: "constraint.pattern", message: `${field.label} does not match pattern '${patternStatement.argument ?? ""}'.` }); return false; }
+        // RFC 7950 section 9.4.6.2: `modifier invert-match` inverts the
+        // satisfaction of this one pattern (not the whole conjunction).
+        const invert = childOf(patternStatement, "modifier")?.argument === "invert-match";
+        const pattern = compileXsdPattern(patternStatement.argument ?? "");
+        if (!pattern) continue; // pending patterns surface through unsupportedPattern
+        const matched = pattern.test(value);
+        if (invert ? matched : !matched) {
+          errors.push({ code: "constraint.pattern", message: invert
+            ? `${field.label} matches the forbidden pattern '${patternStatement.argument ?? ""}'.`
+            : `${field.label} does not match pattern '${patternStatement.argument ?? ""}'.` });
+          return false;
+        }
       }
     }
     return true;
@@ -517,7 +501,7 @@ export function validateFormValue(
   const hasPattern = (fieldTypeLayers.get(field) ?? []).some(layer => childrenOf(layer, "pattern").length > 0);
   const unsupportedPattern = hasPattern && (field.yangType !== "string"
     || (fieldTypeLayers.get(field) ?? []).some(layer => childrenOf(layer, "pattern")
-      .some(patternStatement => !compilePattern(patternStatement.argument ?? ""))));
+      .some(patternStatement => !compileXsdPattern(patternStatement.argument ?? ""))));
   const pending = [...field.constraints];
   if (crossReferencePending) {
     pending.push({ kind: "unsupported", expression: `${field.yangType} requires cross-reference/schema validation`, source: field.source });
@@ -565,8 +549,9 @@ function validateCrossReference(field: FormField, value: unknown, errors: FormEr
     if (text === undefined || text === "") { errors.push({ code: "type.leafref", message: `${field.label} must be a node reference.` }); return false; }
     // Evaluate the declared path against the anchor element but match it
     // against the submitted value: unlike tree validation, the form value is
-    // not committed to the element yet.
-    const pathArgument = schemaNode.type ? childOf(schemaNode.type, "path")?.argument : undefined;
+    // not committed to the element yet. The path may be declared through the
+    // typedef chain (e.g. if:interface-ref), not only on the node's type.
+    const pathArgument = leafrefPathStatementOf(schemaNode)?.argument;
     if (!pathArgument) return true;
     const compiled = compileModuleExpression(crossReference.schema, schemaNode.module, pathArgument);
     if (!compiled) return true;

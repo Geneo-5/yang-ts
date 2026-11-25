@@ -176,4 +176,44 @@ describe("stage 7 P0 correctness regressions", () => {
     // false invalid-key because the key leaf kept the defining module).
     expect(list.children.some(child => child.kind === "leaf" && child.name === "name")).toBe(true);
   });
+
+  it("treats invert-match patterns as inverted and XSD/JS divergent patterns as pending", async () => {
+    const { parseYang, createFormModel, validateFormValue } = await import("../src/index.js");
+    const moduleYaml = parseYang(`module pat {
+      namespace "urn:pat"; prefix p;
+      container pat {
+        leaf forbidden {
+          type string { pattern "bad" { modifier invert-match; } }
+        }
+        leaf digits {
+          // XSD \\d is Unicode-wide and JS \\d is ASCII-only; the engine cannot
+          // know the instance charset, so evaluation must stay indeterminate.
+          type string { pattern "[\\\\d]{3}"; }
+        }
+        leaf unicode-class {
+          type string { pattern "\\\\p{Lu}+"; }
+        }
+        leaf anchored {
+          // ^/$ are anchors in JS but ordinary characters in XSD.
+          type string { pattern "^ab$"; }
+        }
+      }
+    }`);
+    const form = createFormModel(moduleYaml);
+    const field = (name: string) => form.fields.find(candidate => candidate.path === `/pat/${name}`)!;
+
+    // invert-match: the forbidden value must NOT be accepted and passing
+    // values must not be rejected as they used to be.
+    const matching = validateFormValue(field("forbidden"), "bad");
+    expect(matching.status).toBe("invalid");
+    const inverted = validateFormValue(field("forbidden"), "good");
+    expect(inverted.errors).toEqual([]);
+    expect(inverted.status).toBe("valid");
+
+    for (const name of ["digits", "unicode-class", "anchored"]) {
+      const result = validateFormValue(field(name), name === "digits" ? "42" : "abc");
+      expect(result.status, `${name} must stay unjudged, not silently validated`).toBe("indeterminate");
+      expect(result.pending.some(item => item.kind === "unsupported")).toBe(true);
+    }
+  });
 });

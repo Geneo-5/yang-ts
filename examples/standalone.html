@@ -3920,6 +3920,7 @@ var YangEngine = (() => {
     findSchemaNodeByPath: () => findSchemaNodeByPath,
     finiteDomainOf: () => finiteDomainOf,
     isIdentityDerivedFrom: () => isIdentityDerivedFrom,
+    leafrefPathStatementOf: () => leafrefPathStatementOf,
     matchSchemaChild: () => matchSchemaChild,
     moduleNamespacePrefixes: () => moduleNamespacePrefixes,
     nodeToRestconfDataPath: () => nodeToRestconfDataPath,
@@ -5227,21 +5228,64 @@ var YangEngine = (() => {
     return found;
   }
 
+  // src/types/xsd-pattern.ts
+  var xsdPatternCache = /* @__PURE__ */ new Map();
+  function compileXsdPattern(pattern) {
+    const cached = xsdPatternCache.get(pattern);
+    if (cached !== void 0) return cached;
+    if (xsdPatternCache.has(pattern)) return void 0;
+    let compiled;
+    if (!usesDivergentConstruct(pattern)) {
+      try {
+        compiled = new RegExp(`^(?:${pattern})$`);
+      } catch {
+        compiled = void 0;
+      }
+    }
+    xsdPatternCache.set(pattern, compiled);
+    return compiled;
+  }
+  var DIVERGENT_ESCAPES = new Set("dDwWsSpPiIcC".split(""));
+  function usesDivergentConstruct(pattern) {
+    let inside = false;
+    for (let index = 0; index < pattern.length; index++) {
+      const character = pattern[index];
+      if (character === "\\") {
+        const next = pattern[index + 1] ?? "";
+        index++;
+        if (next === "") return true;
+        if (!inside && /[1-9]/.test(next)) return true;
+        if (DIVERGENT_ESCAPES.has(next)) return true;
+        continue;
+      }
+      if (!inside) {
+        if (character === "^" || character === "$") return true;
+        if (character === "(" && pattern[index + 1] === "?") return true;
+        if (character === "[") inside = true;
+        continue;
+      }
+      if (character === "[" && pattern[index + 1] === "]") return true;
+      if (character === "-" && pattern[index + 1] === "[") return true;
+      if (character === "]") inside = false;
+    }
+    return false;
+  }
+
   // src/xpath/yang-functions.ts
+  function leafrefPathStatementOf(schemaNode) {
+    if (schemaNode.resolvedType !== "leafref") return void 0;
+    const layers = [schemaNode.type, ...schemaNode.typedefChain.map((typedef) => childOf(typedef, "type"))].filter((layer) => Boolean(layer));
+    for (const layer of layers) {
+      if (layer.argument !== "leafref") continue;
+      const path = childOf(layer, "path");
+      if (path?.argument) return path;
+    }
+    return void 0;
+  }
   function createLeafrefResolver(schema) {
     const compiledCache = /* @__PURE__ */ new Map();
-    const pathStatementOf = (schemaNode) => {
-      if (schemaNode.resolvedType !== "leafref") return void 0;
-      const layers = [schemaNode.type, ...schemaNode.typedefChain.map((typedef) => childOf(typedef, "type"))].filter((layer) => Boolean(layer));
-      for (const layer of layers) {
-        if (layer.argument !== "leafref") continue;
-        const path = childOf(layer, "path");
-        if (path?.argument) return path;
-      }
-      return void 0;
-    };
     return (schemaNode, element) => {
-      const pathStatement = pathStatementOf(schemaNode);
+      const pathStatement = leafrefPathStatementOf(schemaNode);
       if (!pathStatement?.argument) return void 0;
       const owner = schema.modules.find((module) => module.argument === schemaNode.module);
       if (!owner) return void 0;
@@ -5342,36 +5386,6 @@ var YangEngine = (() => {
     const registered = {};
     for (const [name2, implementation] of Object.entries(library)) registered[name2] = implementation;
     return registered;
-  }
-  var xsdPatternCache = /* @__PURE__ */ new Map();
-  function compileXsdPattern(pattern) {
-    const cached = xsdPatternCache.get(pattern);
-    if (cached !== void 0) return cached;
-    if (xsdPatternCache.has(pattern)) return void 0;
-    let compiled;
-    if (!/\\\d|\(\?/.test(pattern) && !hasCharacterClassSubtraction(pattern)) {
-      try {
-        compiled = new RegExp(`^(?:${pattern})$`);
-      } catch {
-        compiled = void 0;
-      }
-    }
-    xsdPatternCache.set(pattern, compiled);
-    return compiled;
-  }
-  function hasCharacterClassSubtraction(pattern) {
-    let inside = false;
-    for (let index = 0; index < pattern.length; index++) {
-      const character = pattern[index];
-      if (inside && character === "\\") {
-        index++;
-        continue;
-      }
-      if (character === "[") inside = true;
-      else if (character === "]") inside = false;
-      else if (inside && character === "-" && pattern[index + 1] === "[") return true;
-    }
-    return false;
   }
   function collectOptionPositions(modules) {
     const enums = /* @__PURE__ */ new Map();
@@ -6176,36 +6190,6 @@ var YangEngine = (() => {
     if (padding === 1 && (alphabet.indexOf(value[value.length - 2] ?? "") & 3) !== 0) return void 0;
     return value.length / 4 * 3 - padding;
   }
-  var patternCache = /* @__PURE__ */ new Map();
-  function compilePattern(pattern) {
-    const cached = patternCache.get(pattern);
-    if (cached !== void 0) return cached;
-    if (patternCache.has(pattern)) return void 0;
-    let compiled;
-    if (!/\\\d|\(\?/.test(pattern) && !hasCharacterClassSubtraction2(pattern)) {
-      try {
-        compiled = new RegExp(`^(?:${pattern})$`);
-      } catch {
-        compiled = void 0;
-      }
-    }
-    patternCache.set(pattern, compiled);
-    return compiled;
-  }
-  function hasCharacterClassSubtraction2(pattern) {
-    let inside = false;
-    for (let index = 0; index < pattern.length; index++) {
-      const character = pattern[index];
-      if (inside && character === "\\") {
-        index++;
-        continue;
-      }
-      if (character === "[") inside = true;
-      else if (character === "]") inside = false;
-      else if (inside && character === "-" && pattern[index + 1] === "[") return true;
-    }
-    return false;
-  }
   function inheritedIntervals(layers, keyword, minimum, maximum, decimalDigits) {
     let inheritedMinimum = minimum;
     let inheritedMaximum = maximum;
@@ -6326,10 +6310,12 @@ var YangEngine = (() => {
       }
       if (typeof value === "string") {
         for (const layer of fieldTypeLayers.get(field) ?? []) for (const patternStatement of childrenOf(layer, "pattern")) {
-          const pattern = compilePattern(patternStatement.argument ?? "");
+          const invert = childOf(patternStatement, "modifier")?.argument === "invert-match";
+          const pattern = compileXsdPattern(patternStatement.argument ?? "");
           if (!pattern) continue;
-          if (!pattern.test(value)) {
-            errors.push({ code: "constraint.pattern", message: `${field.label} does not match pattern '${patternStatement.argument ?? ""}'.` });
+          const matched = pattern.test(value);
+          if (invert ? matched : !matched) {
+            errors.push({ code: "constraint.pattern", message: invert ? `${field.label} matches the forbidden pattern '${patternStatement.argument ?? ""}'.` : `${field.label} does not match pattern '${patternStatement.argument ?? ""}'.` });
             return false;
           }
         }
@@ -6425,7 +6411,7 @@ var YangEngine = (() => {
     const crossReferencePending = validateCrossReference(field, value, errors, crossReference);
     if (result === void 0 && (field.yangType === "leafref" || field.yangType === "identityref") && !crossReferencePending) result = true;
     const hasPattern = (fieldTypeLayers.get(field) ?? []).some((layer) => childrenOf(layer, "pattern").length > 0);
-    const unsupportedPattern = hasPattern && (field.yangType !== "string" || (fieldTypeLayers.get(field) ?? []).some((layer) => childrenOf(layer, "pattern").some((patternStatement) => !compilePattern(patternStatement.argument ?? ""))));
+    const unsupportedPattern = hasPattern && (field.yangType !== "string" || (fieldTypeLayers.get(field) ?? []).some((layer) => childrenOf(layer, "pattern").some((patternStatement) => !compileXsdPattern(patternStatement.argument ?? ""))));
     const pending = [...field.constraints];
     if (crossReferencePending) {
       pending.push({ kind: "unsupported", expression: `${field.yangType} requires cross-reference/schema validation`, source: field.source });
@@ -6451,7 +6437,7 @@ var YangEngine = (() => {
         errors.push({ code: "type.leafref", message: `${field.label} must be a node reference.` });
         return false;
       }
-      const pathArgument = schemaNode.type ? childOf(schemaNode.type, "path")?.argument : void 0;
+      const pathArgument = leafrefPathStatementOf(schemaNode)?.argument;
       if (!pathArgument) return true;
       const compiled = compileModuleExpression(crossReference.schema, schemaNode.module, pathArgument);
       if (!compiled) return true;

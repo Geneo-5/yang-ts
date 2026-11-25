@@ -4,6 +4,7 @@ import { childOf, childrenOf } from "../yang/parser.js";
 import { CompiledSchemaNode, CompiledYangSchema, isIdentityDerivedFrom, moduleNamespacePrefixes } from "../yang/compiler.js";
 import { schemaNodeForElement } from "./accessible-tree.js";
 import { compileYangXPath } from "./xpath.js";
+import { compileXsdPattern } from "../types/xsd-pattern.js";
 
 /**
  * Follow a leafref statement from its instance element: evaluate the leafref
@@ -13,25 +14,29 @@ import { compileYangXPath } from "./xpath.js";
  */
 export type LeafrefResolver = (schemaNode: CompiledSchemaNode, element: Element) => Element[] | undefined;
 
+/**
+ * RFC 7950 section 9.9: the effective leafref `path` may live on the node's
+ * own `type` statement (direct or deviation-replaced) or on a `leafref` type
+ * inside the typedef chain (e.g. ietf-interfaces' if:interface-ref). Shared by
+ * the resolver and form-level cross-reference checks.
+ */
+export function leafrefPathStatementOf(schemaNode: CompiledSchemaNode): YangStatement | undefined {
+  if (schemaNode.resolvedType !== "leafref") return undefined;
+  const layers = [schemaNode.type, ...schemaNode.typedefChain.map(typedef => childOf(typedef, "type"))]
+    .filter((layer): layer is YangStatement => Boolean(layer));
+  for (const layer of layers) {
+    if (layer.argument !== "leafref") continue;
+    const path = childOf(layer, "path");
+    if (path?.argument) return path;
+  }
+  return undefined;
+}
+
 /** Build a leafref resolver sharing one compiled-path cache across deref and validation. */
 export function createLeafrefResolver(schema: CompiledYangSchema): LeafrefResolver {
   const compiledCache = new Map<string, ReturnType<typeof compileYangXPath>>();
-  // RFC 7950 section 9.9: the effective leafref path may live on the leaf's
-  // own `type` statement (direct or deviation-replaced) or on a `leafref`
-  // type inside the typedef chain (e.g. if:interface-ref).
-  const pathStatementOf = (schemaNode: CompiledSchemaNode): YangStatement | undefined => {
-    if (schemaNode.resolvedType !== "leafref") return undefined;
-    const layers = [schemaNode.type, ...schemaNode.typedefChain.map(typedef => childOf(typedef, "type"))]
-      .filter((layer): layer is YangStatement => Boolean(layer));
-    for (const layer of layers) {
-      if (layer.argument !== "leafref") continue;
-      const path = childOf(layer, "path");
-      if (path?.argument) return path;
-    }
-    return undefined;
-  };
   return (schemaNode, element) => {
-    const pathStatement = pathStatementOf(schemaNode);
+    const pathStatement = leafrefPathStatementOf(schemaNode);
     if (!pathStatement?.argument) return undefined;
     const owner = schema.modules.find(module => module.argument === schemaNode.module);
     if (!owner) return undefined;
@@ -163,30 +168,6 @@ export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Re
   return registered;
 }
 
-/** Compile an XML Schema pattern to an anchored JavaScript regex over the shared subset. */
-const xsdPatternCache = new Map<string, RegExp | undefined>();
-function compileXsdPattern(pattern: string): RegExp | undefined {
-  const cached = xsdPatternCache.get(pattern);
-  if (cached !== undefined) return cached;
-  if (xsdPatternCache.has(pattern)) return undefined;
-  let compiled: RegExp | undefined;
-  if (!/\\\d|\(\?/.test(pattern) && !hasCharacterClassSubtraction(pattern)) {
-    try { compiled = new RegExp(`^(?:${pattern})$`); } catch { compiled = undefined; }
-  }
-  xsdPatternCache.set(pattern, compiled);
-  return compiled;
-}
-function hasCharacterClassSubtraction(pattern: string): boolean {
-  let inside = false;
-  for (let index = 0; index < pattern.length; index++) {
-    const character = pattern[index]!;
-    if (inside && character === "\\") { index++; continue; }
-    if (character === "[") inside = true;
-    else if (character === "]") inside = false;
-    else if (inside && character === "-" && pattern[index + 1] === "[") return true;
-  }
-  return false;
-}
 
 interface OptionPositions {
   enums: ReadonlyMap<string, number | "ambiguous">;
