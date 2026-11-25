@@ -8,7 +8,7 @@ This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers.
 - **done, defects open** — the feature slice exists and is tested, but known bugs are listed under the stage and tracked in Stage 7.
 - **partial** — a defined slice works; named gaps remain.
 
-A stage returns to **done** only when every defect listed under it is closed by a test that failed before the fix. Items marked `[ ]` are open; the review findings were made by reading the code and each one needs a failing regression test first (not yet confirmed by running them).
+A stage returns to **done** only when every defect listed under it is closed by a test that failed before the fix. Items marked `[x]` are closed with a red-then-green regression (`tests/stage7-p0.test.ts`, 2026-11-26); remaining `[ ]` findings still need a failing test first. The Stage 7 **P0 batch is closed**; P1 is next.
 
 ## Stage 0 — Parser foundation (done, defects open)
 
@@ -28,7 +28,7 @@ Open defects:
 - `ModuleSetConstraints`: abort signal, module/submodule counts, source characters, wall-clock deadline.
 
 Open defects:
-- [ ] `ModuleSetBudget.maxDepth` is declared and documented but never enforced.
+- [x] `ModuleSetBudget.maxDepth` is enforced on import and include chains since 2026-11-26 (single `budget-exceeded` diagnostic, refusing mode), regression-tested in `tests/stage7-p0.test.ts`.
 - [ ] Deadline and abort are only checked before each load; synchronous parsing of a large document cannot be interrupted.
 - [ ] Several revisions of one module can end up in the set and then compile as duplicate roots.
 
@@ -37,7 +37,7 @@ Open defects:
 Delivered: source-linked schema IR, grouping expansion with `refine`, choices/cases (explicit and shorthand), augments (data, RPC/action input/output, notification), deviations (`not-supported`, `add`, `replace`, `delete`), identities with cycle checks, `if-feature` filtering, nested actions, cardinality and type-restriction legality checks.
 
 Open defects:
-- [ ] Nested nodes of a grouping defined in another module receive the grouping's module/namespace instead of the instantiating module (`instantiatingModule` is not forwarded to children), producing wrong namespaces and false `invalid-key` on lists inside shared groupings.
+- [x] Nested nodes of a grouping defined in another module now inherit the instantiating module/namespace (`instantiatingModule` and inherited `when`/`if-feature` are forwarded to every expansion level), regression-tested in `tests/stage7-p0.test.ts` (2026-11-26).
 - [ ] Submodule context: top-level data nodes, operations and augment children of a submodule are compiled in the parent module's context, so imports/prefixes declared only in the submodule are not visible to their `type`, `uses` and XPath.
 - [ ] `refine` of a `leaf` rejects `mandatory` (allowed by RFC 7950 §7.13.2); `augment` inside `uses` is ignored.
 - [ ] Typedef and grouping lookup ignores scoping rules (§6.2.1) and walks the whole module per reference (O(N²)); needs a per-module index.
@@ -49,10 +49,10 @@ Open defects:
 Delivered: integer boundaries including exact 64-bit BigInt, decimal64 scaled arithmetic, string length/pattern, binary base64, enum/bits with derived restrictions, union in declaration order, canonical forms, leafref/identityref form-level checks, boundary corpus.
 
 Open defects:
-- [ ] `pattern` with `modifier invert-match` is evaluated as a normal pattern (inverted result).
-- [ ] Patterns are compiled with JavaScript semantics where XSD differs: `\p{…}` without the `u` flag is read as literal text, `^`/`$` are anchors in JS but literals in XSD, `\d`/`\w` are Unicode-wide in XSD. Anything outside a proven-safe subset must stay `pending`.
+- [x] `pattern` with `modifier invert-match` inverts only its own pattern in the conjunction (fixed 2026-11-26, `tests/stage7-p0.test.ts`).
+- [x] Patterns outside the proven-safe XSD/JS subset stay `pending` (fixed 2026-11-26): divergent escapes (`\d \D \w \W \s \S \p \P \i \c`), backreferences, `(?` groups, class subtraction, `[]` forms and out-of-class `^`/`$` never compile; shared logic lives in `src/types/xsd-pattern.ts` (test: `tests/stage7-p0.test.ts`).
 - [ ] Unparsable `range`/`length` endpoints are treated as unbounded (constraint silently satisfied).
-- [ ] Type, pattern and builtin-name logic is duplicated (`compilePattern`/`compileXsdPattern`, three builtin lists); extract a shared `types/` module.
+- [ ] Type and builtin-name logic is still duplicated (three builtin lists); extract a shared `types/` module. The pattern compiler is now shared (`src/types/xsd-pattern.ts`, first `types/` module).
 - [ ] Canonical forms for identityref and instance-identifier are not represented.
 
 ## Stage 4 — XPath 1.0 and YANG evaluation context (partial)
@@ -60,10 +60,10 @@ Open defects:
 Delivered: `xpath@0.0.36` adapter with unprefixed-name qualification, `current()`, the RFC 7950 function library, accessible trees (§6.4.1) and `must`/`when` evaluation.
 
 Open defects:
-- [ ] The module's own `prefix` is not in the prefix→namespace maps (only `import`s are), so `must`/`when`/leafref/`derived-from` using the own prefix are `indeterminate`, and the leafref resolver can throw uncaught.
+- [x] The module's own `prefix` is in the prefix→namespace maps of must/when compilation, the leafref resolver and the identity library (`moduleNamespacePrefixes`, fixed 2026-11-26, `tests/stage7-p0.test.ts`).
 - [ ] Identityref values are resolved as `module-name:identity`; XML instances use arbitrary prefixes bound by namespace, so `ianaift:ethernetCsmacd` does not match.
 - [ ] `enum-value` uses a schema-wide name→value table and throws on ambiguous names instead of resolving the argument node's own type.
-- [ ] `buildAccessibleTree` accepts a single root element (no wrapper document, unlike `validateDataTree`) and injects defaults of inactive cases.
+- [ ] `buildAccessibleTree`: the datastore context node is now the datastore document with the data root as document element (RFC 6.4.1, fixed 2026-11-26), so absolute YANG paths resolve; still open: only a single root element is accepted, and defaults of inactive cases are injected.
 - [ ] Module-level compiled-expression caches are keyed without schema identity and grow without bound.
 - [ ] `qualifyYangXPathNodeTests` is a heuristic token scanner; it needs a differential/fuzz corpus against the evaluator's own parser.
 - [ ] `instance-identifier` `deref` and metadata annotations remain unsupported (see `CONFORMANCE.md`).
@@ -73,9 +73,9 @@ Open defects:
 Delivered: `validateDataTree` (keys, unique, mandatory, cardinality, leafref, instance-identifier, `must`/`when`), form-level validation, `evaluateCandidates` with per-constraint reasons.
 
 Open defects (several return *valid* where the result is unknown — highest priority):
-- [ ] Leafrefs declared through a typedef (e.g. `if:interface-ref`) are never checked: the resolver reads `path` only from the node's own `type`, not from `typedefChain`.
-- [ ] `visitElement` does not descend into `choice`/`case`: `must`, `when`, keys, `unique`, cardinality and `mandatory` are skipped under choices.
-- [ ] `unique` compares descendant paths by local name only: multi-step or prefixed paths always collide (false `unique-violation`); entries missing a referenced leaf must be excluded (§7.8.3).
+- [x] Leafrefs declared through a typedef are checked: the resolver (and form-level cross-reference) reads the effective `path` from the own `type` or any `leafref` layer of the `typedefChain` (`leafrefPathStatementOf`, fixed 2026-11-26, `tests/stage7-p0.test.ts`).
+- [x] `visitElement` descends into `choice`/`case`: members get full constraint/cardinality evaluation, and a mandatory leaf of the active case is enforced while inactive cases impose nothing (fixed 2026-11-26, `tests/stage7-p0.test.ts`).
+- [x] `unique` resolves each sub-path into (namespace, name) steps from the declaring module's prefix map, traverses direct children only, excludes entries missing a referenced leaf (§7.8.3) and checks every `unique` statement separately (fixed 2026-11-26, `tests/stage7-p0.test.ts`).
 - [ ] Validation evaluates the raw document, not the accessible tree: defaults are not injected and state data is not hidden in config contexts.
 - [ ] Mandatory descendants of absent non-presence containers are not enforced.
 - [ ] `FormField` validation depends on a `WeakMap` keyed by object identity: copies, clones and reactive proxies silently lose range/length/pattern/fraction-digits. Replace with a serializable restriction descriptor.
@@ -100,14 +100,14 @@ Open defects:
 
 New stage collecting the review findings by priority. Each item is closed by a failing test first, then the fix, then the matching `CONFORMANCE.md` row.
 
-**P0 — wrong "valid" or wrong namespaces**
-- [ ] Leafref through typedef (Stage 5).
-- [ ] `choice`/`case` descent in `validateDataTree` (Stage 5).
-- [ ] `unique` semantics (Stage 5).
-- [ ] Cross-module grouping namespace/`invalid-key` (Stage 2).
-- [ ] Own-prefix in XPath maps (Stage 4).
-- [ ] `pattern`: `invert-match` and XSD/JS divergences kept `pending` (Stage 3).
-- [ ] `maxDepth` enforced or removed (Stage 1).
+**P0 — wrong "valid" or wrong namespaces — all closed 2026-11-26, each by a regression in `tests/stage7-p0.test.ts` that failed before its fix**
+- [x] Leafref through typedef (Stage 5).
+- [x] `choice`/`case` descent in `validateDataTree` (Stage 5).
+- [x] `unique` semantics (Stage 5).
+- [x] Cross-module grouping namespace/`invalid-key` (Stage 2).
+- [x] Own-prefix in XPath maps (Stage 4) — plus the datastore accessible-tree context node/root fix that made absolute YANG paths evaluable.
+- [x] `pattern`: `invert-match` evaluated inverted and XSD/JS divergences kept `pending` (Stage 3).
+- [x] `maxDepth` enforced (Stage 1).
 
 **P1 — correctness of secondary paths**
 - [ ] Submodule compilation context (Stage 2).
