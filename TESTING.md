@@ -12,12 +12,12 @@ npm run build
 npm audit --omit=dev
 ```
 
-Today these gates cover the source parser only. The upstream fixtures prove parsing and retention of imports, augment paths and `if:type`-dependent `when` statements; they do not prove module resolution or semantic application of augments.
+The source parser and module resolver are covered. The upstream fixtures prove parsing and retention of imports, augment paths and `if:type`-dependent `when` statements; the resolver tests prove dependency closures and diagnostics, but not semantic application of augments.
 
 ## Test layers to add with the roadmap
 
 1. **Lexer/parser** — every statement form, comments, escaped and concatenated strings, whitespace, malformed delimiters, unterminated strings/comments, and precise line/column diagnostics. Parse the real fixture corpus on every change.
-2. **Module set** — imports/includes with pinned and unpinned revisions, submodules, multiple revisions, missing dependencies, duplicate modules, and cycle diagnostics. Assert the exact resolved dependency closure.
+2. **Module set** — imports/includes with pinned and unpinned revisions, submodules, multiple revisions, missing dependencies, duplicate modules, and cycle diagnostics. Assert the exact resolved dependency closure. Implemented partially by `tests/module-set.test.ts`; malformed metadata and richer submodule corpus remain.
 3. **Semantic compiler** — statement legality/cardinality, namespaces/prefixes, typedef inheritance, uses/refine, choice/case, augment path resolution, feature gates and deviations. Check both compiled tree shape and source provenance.
 4. **Types** — boundaries and canonical values for every built-in type and restriction; enum/bit numbering; union branch selection; exact 64-bit and decimal parsing; derived restrictions and defaults.
 5. **XPath** — XPath 1.0 parser/evaluator behavior, YANG name resolution, axes/predicates/coercions, node-set comparison, all YANG functions, `current()`, absent nodes, defaults, and each accessible-tree context. Include RFC examples and focused predicates from `ietf-if-extensions`.

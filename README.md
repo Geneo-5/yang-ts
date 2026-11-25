@@ -9,7 +9,29 @@ const module = parseYang(`module demo { yang-version 1.1; namespace "urn:demo"; 
 console.log(module.argument); // demo
 ```
 
-The package currently parses the generic YANG statement grammar into a source-located AST and includes a **partial form helper** for data and RPC input/output field metadata and safe, local type checks. It is not a full YANG compiler or validator: module resolution, schema compilation, XPath evaluation, `must`/`when`, features and deviations are not yet implemented. See [ARCHITECTURE.md](./ARCHITECTURE.md) for scope and design, [ROADMAP.md](./ROADMAP.md) for milestones, and [TESTING.md](./TESTING.md) for validation gates and coverage policy.
+The package parses the generic YANG statement grammar into a source-located AST, resolves module import/include closures through an injected async loader, and includes a **partial form helper** for data and RPC input/output field metadata and safe, local type checks. It is not a full YANG compiler or validator: schema compilation, XPath evaluation, `must`/`when`, features and deviations are not yet implemented. See [ARCHITECTURE.md](./ARCHITECTURE.md) for scope and design, [ROADMAP.md](./ROADMAP.md) for milestones, and [TESTING.md](./TESTING.md) for validation gates and coverage policy.
+
+## Module dependencies
+
+```ts
+import { parseYang, resolveModuleSet } from "yang-browser-engine";
+
+const root = parseYang(rootYangText);
+const moduleSet = await resolveModuleSet([root], {
+  async loadModule(name, revision) {
+    // Return YANG source text, parsed modules, candidate revisions, or undefined.
+    return moduleStore.get(name, revision);
+  },
+  async loadSubmodule(name, revision) {
+    return submoduleStore.get(name, revision);
+  },
+});
+moduleSet.modules;      // Stable module closure, sorted by name and revision
+moduleSet.submodules;   // Included submodules
+moduleSet.diagnostics;  // Missing, ambiguous, cyclic, or malformed dependencies
+```
+
+The loader is transport-neutral, so browser applications can supply bundled modules, IndexedDB, or their own fetch/YANG Library integration. Unpinned imports select the newest available revision; pinned `revision-date` imports require that exact revision.
 
 ## Form helper
 
