@@ -59,6 +59,7 @@ Exit: RFC-linked positive/negative type tests, including inherited restrictions 
 - Implement XPath 1.0 axes, predicates, coercions, node-set comparisons, and the YANG-specific root/context/namespace rules.
 - Add the RFC 7950 function library: `current`, `re-match`, `derived-from`, `derived-from-or-self`, `deref`, `enum-value` and `bit-is-set` are implemented over the compiled schema (`createYangFunctionLibrary`); `current` is bound by the XPath adapter to the original evaluation context node because the evaluator extends its context inside predicates, and `deref` follows leafref paths over built accessible trees (`schemaNodeForElement` maps instance elements back to schema nodes; instance-identifier values still dereference as themselves).
 - Model the five accessible-tree contexts (datastore config, state, notification, RPC/action input, output) and default nodes.
+- Compiled `must`/`when` constraints now evaluate over accessible trees (`createConstraintEvaluator`): `must` uses the data node as context, a node's own `when` evaluates at that node, and whens inherited from an augment/uses/ancestor statement evaluate at the parent element (the introducing node). The checked-in `ietf-if-extensions` fixture provides the section-linked `if:type` cases (`encapsulation`, `loopback`, `parent-interface`).
 
 Exit: section-linked tests plus focused cases from the checked-in `if:type` conditions and `must` expressions.
 
