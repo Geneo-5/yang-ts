@@ -14,12 +14,22 @@ Use the `xpath` package as the XPath 1.0 expression parser/evaluator, with a YAN
 
 `src/xpath/xpath.ts` compiles expressions and maps unprefixed element node tests to the module namespace while leaving function calls, literals, operators, attributes and axis names intact. Tests verify current-module names, imported namespace prefixes, same-local-name isolation across modules, list predicates and relative paths over a YANG-shaped interface tree, and a custom function call. The runtime module only accepts a DOM `Node`, so it can use the browser's XML DOM; `@xmldom/xmldom` is a development-only test dependency.
 
-## Limits before adopting for validation
+## Status of the original limits (2026-11-26)
 
-- This spike does not construct the RFC 7950 accessible tree from YANG JSON/data, including defaults, state/config visibility, RPC/action scopes or notification scope.
-- `current()` needs YANG's original-expression-context semantics; custom function support alone does not prove this behavior.
-- YANG functions (`re-match`, `derived-from*`, `deref`, `enum-value`, `bit-is-set`) are not implemented here.
-- XML DOM node ordering and identityref string values need explicit mapping from the effective schema and data.
-- XPath expression rewriting is covered by focused examples, not the full XPath 1.0 grammar corpus or differential testing yet.
+The spike listed what was missing before the adapter could back validation. Most of it has since been built; what remains is recorded here and in `ROADMAP.md` (Stage 4 and Stage 7).
 
-The dependency choice is therefore a viable evaluator candidate, not a claim that the Stage 4 YANG XPath implementation is complete.
+Resolved:
+
+- The RFC 7950 accessible tree (§6.4.1) is built by `buildAccessibleTree` for datastore config/state, notification and RPC/action input/output contexts, with declared defaults injected in datastore contexts.
+- `current()` is bound per evaluation to the original context node.
+- The function library (`re-match`, `derived-from`, `derived-from-or-self`, `deref`, `enum-value`, `bit-is-set`) exists in `src/xpath/yang-functions.ts`.
+
+Still open:
+
+- The prefix→namespace maps contain imported prefixes only; the module's own `prefix` is missing, so expressions using it fail to resolve.
+- Identityref values are matched as `module-name:identity`; XML prefixes bound by namespace are not mapped back to modules.
+- `enum-value` uses a schema-wide name table rather than the argument node's type.
+- `buildAccessibleTree` accepts a single root element and injects defaults of inactive cases.
+- `qualifyYangXPathNodeTests` is a token-scanning heuristic covered by focused examples, not by the full XPath 1.0 grammar or a differential/fuzz corpus.
+- No step or time budget exists for evaluating XPath from untrusted modules.
+- Dependency note: `xpath` is the only runtime dependency of the package; it is pre-1.0 and pinned with a caret on a `0.0.x` version (patch range only).

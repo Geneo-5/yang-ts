@@ -1,6 +1,6 @@
 # yang-browser-engine
 
-Browser-first TypeScript foundation for compiling YANG 1.1 schemas and exposing them to user interfaces. The project is at its parser foundation stage; it is not yet a complete YANG compiler or validator.
+Browser-first TypeScript foundation for compiling YANG 1.1 schemas and exposing them to user interfaces. The engine parses YANG, resolves module sets, compiles an effective schema, evaluates `must`/`when` constraints and validates instance data, but it is not a complete or conformance-tested YANG implementation: see [Status](#status).
 
 ```ts
 import { parseYang } from "yang-browser-engine";
@@ -9,7 +9,7 @@ const module = parseYang(`module demo { yang-version 1.1; namespace "urn:demo"; 
 console.log(module.argument); // demo
 ```
 
-The package parses the generic YANG statement grammar into a source-located AST, resolves module import/include closures through an injected async loader, and has an **initial semantic compiler** for source-linked schema trees, use-site grouping expansion with refinements, augments, deviations, identities and optional `if-feature` filtering. It also includes a **partial form helper** for data and RPC input/output field metadata and safe, local type checks. It is not a full YANG compiler or validator: complete RFC 7950 semantics, XPath evaluation and contextual `must`/`when` validation remain in progress. See [ARCHITECTURE.md](./ARCHITECTURE.md) for scope and design, [ROADMAP.md](./ROADMAP.md) for milestones, and [TESTING.md](./TESTING.md) for validation gates and coverage policy.
+The package parses the generic YANG statement grammar into a source-located AST, resolves module import/include closures through an injected async loader, and has an **initial semantic compiler** for source-linked schema trees, use-site grouping expansion with refinements, augments, deviations, identities and optional `if-feature` filtering. It also includes a **partial form helper** for data and RPC input/output field metadata and safe, local type checks. The package evaluates compiled `must`/`when` expressions over RFC 7950 accessible trees (XPath 1.0 through the `xpath` package) and validates instance data and finite-domain candidate values with valid/invalid/indeterminate results. These layers are partial: complete RFC 7950 semantics are not implemented, and a source review (2026-11-26) found open defects that are listed in [ROADMAP.md](./ROADMAP.md). See [ARCHITECTURE.md](./ARCHITECTURE.md) for scope and design, [ROADMAP.md](./ROADMAP.md) for milestones, and [TESTING.md](./TESTING.md) for validation gates and coverage policy.
 
 ## Module dependencies
 
@@ -63,7 +63,7 @@ const result = validateFormValue(timing, "now");
 // result.pending: must/when/if-feature or unsupported checks not evaluated
 ```
 
-The helper currently extracts descriptions, units, defaults, required/read-only flags, enums, bits, simple types and cardinality. It resolves local typedefs; pass imported modules in `createFormModel(module, { modules })` to resolve imported typedefs. Type/range/length checks are performed locally. Pattern, leafref, identityref, binary and unresolved types are marked indeterminate; `must`, `when` and `if-feature` expressions are returned as pending with their YANG `error-message` when available. This avoids presenting partial checks as full model validation.
+The helper currently extracts descriptions, units, defaults, required/read-only flags, enums, bits, simple types and cardinality. It resolves local typedefs; pass imported modules in `createFormModel(module, { modules })` to resolve imported typedefs. Type/range/length checks are performed locally. Patterns outside the supported XML Schema/JavaScript subset, leafref/identityref values checked without a `FormCrossReference` context, and unresolved types are marked indeterminate; `must`, `when` and `if-feature` expressions are returned as pending with their YANG `error-message` when available. This avoids presenting partial checks as full model validation. The form model is built from the parsed module only: it ignores `uses`, augments, features, deviations and choice exclusivity. Type restrictions are kept in a side table keyed by the `FormField` object, so pass the field returned by `createFormModel` to `validateFormValue` as is; a copied, cloned or proxied field silently loses its range, length and pattern checks.
 
 ## RPC and RESTCONF helpers
 
@@ -113,12 +113,22 @@ RFC 8527 NMDA datastore resources are available through `nodeToRestconfDatastore
 
 After building, serve the repository root over HTTP and open [`examples/browser-usage.html`](./examples/browser-usage.html). It parses the Sysrepo oven model in the browser, populates the `insert-food` timing enum, validates the selected value, and previews the corresponding RESTCONF RPC request. The example does not send the request, resolve typedefs, apply augments, or evaluate `must`/`when` constraints.
 
+## Status
+
+This is a pre-1.0 foundation, not a conformance-tested YANG implementation. Where an area is only partly implemented, the engine is meant to report `indeterminate`/`pending` instead of a pass, but a source review found places where it does not (for example leafrefs declared through a typedef are not checked, nodes under `choice` are not validated, and `unique` uses a simplified path match).
+
+- [CONFORMANCE.md](./CONFORMANCE.md) records the status of each RFC area and its known gaps; it is the authority on what is implemented.
+- [ROADMAP.md](./ROADMAP.md) lists the open defects by stage and the priority order for fixing them.
+- `capabilities` in the bundle reports possession of a feature layer, not conformance, and some of its values currently lag the implementation.
+- The optional YANG Library loader (`createRestconfModuleLoader`) has open issues with URL shape and submodule lists; see the roadmap before relying on it against a real server.
+- Resource budgets cover module loading only; treat compilation and validation of untrusted modules as unbounded in time and memory.
+
 ## Development
 
-Requires Node.js 20+ for development tooling. The published runtime is ESM targeting ES2022 and uses no Node APIs.
+Requires Node.js 20+ for development tooling. The test suite imports the built `dist/`, so run the build first on a clean checkout. The published runtime is ESM targeting ES2022 and uses no Node APIs.
 
 ```sh
 npm install
-npm test
 npm run build
+npm test
 ```
