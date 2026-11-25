@@ -48,9 +48,24 @@ const uri = nodeToRestconfDataPath([
   { module: "ietf-interfaces", name: "interface", keys: [{ name: "name", value: "eth0" }] },
 ]);
 // /restconf/data/ietf-interfaces:interfaces/interface=eth0
+
+const target = [
+  { module: "ietf-interfaces", name: "interfaces" },
+  { module: "ietf-interfaces", name: "interface", keys: [{ name: "name", value: "eth0" }] },
+];
+const get = createRestconfGetRequest(target);
+const set = createRestconfSetRequest(target, {
+  module: "ietf-interfaces", name: "interface", data: { name: "eth0", enabled: true },
+});
+const update = createRestconfUpdateRequest(target, {
+  module: "ietf-interfaces", name: "interface", data: { enabled: false },
+});
+const remove = createRestconfDeleteRequest(target);
 ```
 
 `nodeToXPath(contextModule, path)` is a separate helper for YANG XPath expressions and uses prefixes declared by the context module. RESTCONF data resource paths follow RFC 8040 URI rules; they are not XPath strings. The current helpers build paths from caller-supplied schema path segments and do not yet compile a schema or verify that nodes and list keys exist.
+
+For collection/resource operations, `createRestconfGetRequest` prepares GET, `createRestconfAddRequest(parent, resource)` prepares POST creation under a parent, `createRestconfSetRequest` prepares PUT replacement, `createRestconfUpdateRequest` prepares plain PATCH merge, and `createRestconfDeleteRequest` prepares DELETE. `readRestconfData(response, module, name)` unwraps a JSON response node. In RESTCONF, POST creates a child resource; PATCH performs a partial merge update. There is no general POST update operation. These methods and JSON envelopes follow [RFC 8040 §§4.4–4.7](https://datatracker.ietf.org/doc/html/rfc8040#section-4).
 
 ## Browser example
 

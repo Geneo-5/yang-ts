@@ -2,8 +2,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-  createFormModel, createRestconfRpcRequest, nodeToRestconfDataPath, nodeToXPath,
-  parseYang, readRestconfRpcOutput, restconfRpcPath,
+  createFormModel, createRestconfAddRequest, createRestconfDeleteRequest, createRestconfGetRequest,
+  createRestconfRpcRequest, createRestconfSetRequest, createRestconfUpdateRequest,
+  nodeToRestconfDataPath, nodeToXPath, parseYang, readRestconfData, readRestconfRpcOutput, restconfRpcPath,
 } from "../src/index.js";
 
 const oven = parseYang(readFileSync(fileURLToPath(new URL("./fixtures/yang/sysrepo/oven.yang", import.meta.url)), "utf8"));
@@ -56,5 +57,37 @@ describe("RPC form and RESTCONF helpers", () => {
     expect(nodeToRestconfDataPath([
       { module: "m", name: "items", keys: [{ name: "a", value: "1" }, { name: "b", value: "2" }] },
     ])).toBe("/restconf/data/m:items=1,2");
+  });
+
+  it("prepares RESTCONF GET, POST create, PUT replace, PATCH merge and DELETE requests", () => {
+    const interfaces = [{ module: "ietf-interfaces", name: "interfaces" }];
+    const instance = [...interfaces, { module: "ietf-interfaces", name: "interface", keys: [{ name: "name", value: "eth0" }] }];
+    const data = { name: "eth0", enabled: true };
+    expect(createRestconfGetRequest(instance)).toEqual({
+      method: "GET", path: "/restconf/data/ietf-interfaces:interfaces/interface=eth0",
+      headers: { Accept: "application/yang-data+json" },
+    });
+    expect(createRestconfAddRequest(interfaces, { module: "ietf-interfaces", name: "interface", data })).toMatchObject({
+      method: "POST", path: "/restconf/data/ietf-interfaces:interfaces",
+      body: { "ietf-interfaces:interface": data },
+      headers: { "Content-Type": "application/yang-data+json" },
+    });
+    expect(createRestconfSetRequest(instance, { module: "ietf-interfaces", name: "interface", data })).toMatchObject({
+      method: "PUT", path: "/restconf/data/ietf-interfaces:interfaces/interface=eth0",
+      body: { "ietf-interfaces:interface": data },
+    });
+    expect(createRestconfUpdateRequest(instance, { module: "ietf-interfaces", name: "interface", data: { enabled: false } })).toMatchObject({
+      method: "PATCH", path: "/restconf/data/ietf-interfaces:interfaces/interface=eth0",
+      body: { "ietf-interfaces:interface": { enabled: false } },
+    });
+    expect(createRestconfDeleteRequest(instance)).toEqual({
+      method: "DELETE", path: "/restconf/data/ietf-interfaces:interfaces/interface=eth0",
+      headers: { Accept: "application/yang-data+json" },
+    });
+    expect(readRestconfData({ "ietf-interfaces:interface": data }, "ietf-interfaces", "interface")).toEqual(data);
+    expect(readRestconfData({ "ietf-interfaces:interface": data }, "ietf-interfaces", "missing")).toBeUndefined();
+    expect(() => createRestconfDeleteRequest([])).toThrow(/requires a target/);
+    expect(() => createRestconfSetRequest([], { module: "m", name: "n", data: {} })).toThrow(/requires a target/);
+    expect(() => createRestconfUpdateRequest([], { module: "m", name: "n", data: {} })).toThrow(/requires a target/);
   });
 });

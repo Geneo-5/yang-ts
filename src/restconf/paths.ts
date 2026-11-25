@@ -92,6 +92,85 @@ export interface RestconfRpcRequest {
   body?: Record<string, unknown>;
 }
 
+export interface RestconfDataRequest {
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  path: string;
+  headers: { Accept: "application/yang-data+json"; "Content-Type"?: "application/yang-data+json" };
+  body?: Record<string, unknown>;
+}
+
+const DATA_ACCEPT = "application/yang-data+json" as const;
+const DATA_CONTENT_TYPE = "application/yang-data+json" as const;
+
+function dataRequest(
+  method: RestconfDataRequest["method"],
+  path: string,
+  body?: Record<string, unknown>,
+): RestconfDataRequest {
+  const hasBody = body !== undefined;
+  return {
+    method,
+    path,
+    headers: { Accept: DATA_ACCEPT, ...(hasBody ? { "Content-Type": DATA_CONTENT_TYPE } : {}) },
+    ...(hasBody ? { body } : {}),
+  };
+}
+
+function dataEnvelope(module: string, name: string, data: Record<string, unknown>): Record<string, unknown> {
+  if (!module || !name) throw new Error("A data resource module and name are required");
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("RESTCONF data must be a JSON object");
+  return { [`${module}:${name}`]: data };
+}
+
+/** Prepare a GET request for a data resource or collection. */
+export function createRestconfGetRequest(path: readonly YangPathSegment[] = [], restconfRoot = "/restconf"): RestconfDataRequest {
+  return dataRequest("GET", nodeToRestconfDataPath(path, restconfRoot));
+}
+
+/** Create a child resource by POSTing it to its parent resource (RFC 8040 §4.4.1). */
+export function createRestconfAddRequest(
+  parentPath: readonly YangPathSegment[],
+  resource: { module: string; name: string; data: Record<string, unknown> },
+  restconfRoot = "/restconf",
+): RestconfDataRequest {
+  return dataRequest("POST", nodeToRestconfDataPath(parentPath, restconfRoot), dataEnvelope(resource.module, resource.name, resource.data));
+}
+
+/** Delete the target data resource (RFC 8040 §4.7). */
+export function createRestconfDeleteRequest(path: readonly YangPathSegment[], restconfRoot = "/restconf"): RestconfDataRequest {
+  if (path.length === 0) throw new Error("DELETE requires a target data resource");
+  return dataRequest("DELETE", nodeToRestconfDataPath(path, restconfRoot));
+}
+
+/** Create or replace the target data resource using PUT (RFC 8040 §4.5). */
+export function createRestconfSetRequest(
+  path: readonly YangPathSegment[],
+  resource: { module: string; name: string; data: Record<string, unknown> },
+  restconfRoot = "/restconf",
+): RestconfDataRequest {
+  if (path.length === 0) throw new Error("PUT requires a target data resource");
+  return dataRequest("PUT", nodeToRestconfDataPath(path, restconfRoot), dataEnvelope(resource.module, resource.name, resource.data));
+}
+
+/**
+ * Merge supplied nodes into an existing data resource using plain PATCH.
+ * RESTCONF POST creates a child resource; PATCH is the partial update method.
+ */
+export function createRestconfUpdateRequest(
+  path: readonly YangPathSegment[],
+  resource: { module: string; name: string; data: Record<string, unknown> },
+  restconfRoot = "/restconf",
+): RestconfDataRequest {
+  if (path.length === 0) throw new Error("PATCH requires a target data resource");
+  return dataRequest("PATCH", nodeToRestconfDataPath(path, restconfRoot), dataEnvelope(resource.module, resource.name, resource.data));
+}
+
+/** Extract one module-qualified node from a RESTCONF JSON response body. */
+export function readRestconfData(response: unknown, module: string, name: string): unknown {
+  if (!response || typeof response !== "object" || Array.isArray(response)) return undefined;
+  return (response as Record<string, unknown>)[`${module}:${name}`];
+}
+
 /** Prepare an RFC 8040 JSON RPC request body; it does not send the request. */
 export function createRestconfRpcRequest(
   operation: FormRpcOperation,
