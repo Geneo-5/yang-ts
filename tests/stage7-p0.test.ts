@@ -105,4 +105,43 @@ describe("stage 7 P0 correctness regressions", () => {
       code: "missing-mandatory", path: "/mux/transport/udp/verify",
     }));
   });
+
+  it("applies RFC 7950 unique semantics: multi-step and prefixed paths, absent-leaf exclusion", async () => {
+    const schema = await compile(`module uniq {
+      namespace "urn:uniq"; prefix u;
+      container net {
+        list provision {
+          key name;
+          leaf name { type string; }
+          container data { leaf ip { type string; } }
+          unique "data/ip";
+          unique "u:data/ip";
+        }
+      }
+    }`);
+    const { validateDataTree } = await import("../src/index.js");
+    const doc = (entries: string) => xml(`<net xmlns="urn:uniq">${entries}</net>`);
+
+    // Multi-step path (own-prefixed form included): distinct values are fine.
+    // The old check matched local names only, so both paths collapsed to empty
+    // signatures and reported false unique-violations.
+    const distinct = validateDataTree(schema, doc(`
+      <provision><name>p1</name><data><ip>10.0.0.1</ip></data></provision>
+      <provision><name>p2</name><data><ip>10.0.0.2</ip></data></provision>
+    `));
+    expect(distinct.issues).toEqual([]);
+
+    const collision = validateDataTree(schema, doc(`
+      <provision><name>p1</name><data><ip>10.0.0.1</ip></data></provision>
+      <provision><name>p2</name><data><ip>10.0.0.1</ip></data></provision>
+    `));
+    expect(collision.issues.filter(issue => issue.code === "unique-violation")).toHaveLength(2); // both unique statements
+
+    // RFC 7950 section 7.8.3: entries missing any referenced leaf are excluded.
+    const missingExcluded = validateDataTree(schema, doc(`
+      <provision><name>p1</name></provision>
+      <provision><name>p2</name></provision>
+    `));
+    expect(missingExcluded.issues.filter(issue => issue.code === "unique-violation")).toEqual([]);
+  });
 });

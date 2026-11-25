@@ -5573,14 +5573,8 @@ var YangEngine = (() => {
     }
     function checkList(child, entries) {
       const keyNames = (child.properties.key?.[0]?.argument ?? "").split(/\s+/).filter(Boolean);
-      const uniquePaths = (child.properties.unique?.[0]?.argument ?? "").split(/\s+/).filter(Boolean);
       const seenKeys = /* @__PURE__ */ new Set();
-      const seenUnique = /* @__PURE__ */ new Set();
       for (const entry of entries) {
-        const descendantValue = (name2) => {
-          const found = Array.from(entry.getElementsByTagName("*")).find((candidate) => candidate.localName === name2 && candidate.namespaceURI === child.namespace);
-          return found ? found.textContent ?? "" : "";
-        };
         const keyElements = keyNames.map((name2) => Array.from(entry.childNodes).find((candidate) => isElement2(candidate) && candidate.localName === name2 && candidate.namespaceURI === child.namespace));
         if (keyNames.length && keyElements.some((key) => key === void 0)) {
           issue("missing-key", child, `entry of list '${child.name}' requires keys ${keyNames.join(" ")}`);
@@ -5589,10 +5583,54 @@ var YangEngine = (() => {
           if (seenKeys.has(signature)) issue("duplicate-key", child, `duplicate key combination in list '${child.name}'`);
           seenKeys.add(signature);
         }
-        if (uniquePaths.length) {
-          const signature = uniquePaths.map(descendantValue).join("\0");
-          if (seenUnique.has(signature)) issue("unique-violation", child, `unique '${child.properties.unique[0].argument}' is violated in list '${child.name}'`);
-          seenUnique.add(signature);
+      }
+      checkUnique(child, entries);
+    }
+    const uniqueStepsCache = /* @__PURE__ */ new WeakMap();
+    function checkUnique(child, entries) {
+      const statements = (child.properties.unique ?? []).filter((statement) => statement.argument?.trim());
+      if (!statements.length) return;
+      let parsed = uniqueStepsCache.get(child);
+      if (!parsed) {
+        const prefixes = moduleNamespacePrefixes(schema, child.module);
+        parsed = statements.map((statement) => ({
+          argument: statement.argument,
+          subPaths: statement.argument.trim().split(/\s+/).map((subPath) => subPath.split("/").map((step) => {
+            const separator = step.indexOf(":");
+            const prefix = separator >= 0 ? step.slice(0, separator) : void 0;
+            const name2 = separator >= 0 ? step.slice(separator + 1) : step;
+            return { namespace: prefix !== void 0 ? prefixes[prefix] : child.namespace, name: name2 };
+          }))
+        }));
+        uniqueStepsCache.set(child, parsed);
+      }
+      for (const statement of parsed) {
+        const seen = /* @__PURE__ */ new Set();
+        for (const entry of entries) {
+          const values = [];
+          let complete = true;
+          for (const steps of statement.subPaths) {
+            let current = entry;
+            for (const step of steps) {
+              if (!current) {
+                complete = false;
+                break;
+              }
+              current = Array.from(current.childNodes).find((candidate) => isElement2(candidate) && candidate.localName === step.name && candidate.namespaceURI === step.namespace);
+            }
+            if (!current) {
+              complete = false;
+              break;
+            }
+            values.push(current.textContent ?? "");
+          }
+          if (!complete) continue;
+          const signature = values.join("\0");
+          if (seen.has(signature)) {
+            issue("unique-violation", child, `unique '${statement.argument}' is violated in list '${child.name}'`);
+            break;
+          }
+          seen.add(signature);
         }
       }
     }

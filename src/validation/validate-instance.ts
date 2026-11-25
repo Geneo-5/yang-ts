@@ -1,4 +1,4 @@
-import { CompiledSchemaNode, CompiledYangSchema } from "../yang/compiler.js";
+import { CompiledSchemaNode, CompiledYangSchema, moduleNamespacePrefixes } from "../yang/compiler.js";
 import { childOf } from "../yang/parser.js";
 import { createConstraintEvaluator } from "../xpath/evaluate-constraints.js";
 import { createLeafrefResolver } from "../xpath/yang-functions.js";
@@ -145,14 +145,8 @@ export function validateDataTree(
 
   function checkList(child: CompiledSchemaNode, entries: Element[]): void {
     const keyNames = (child.properties.key?.[0]?.argument ?? "").split(/\s+/).filter(Boolean);
-    const uniquePaths = (child.properties.unique?.[0]?.argument ?? "").split(/\s+/).filter(Boolean);
     const seenKeys = new Set<string>();
-    const seenUnique = new Set<string>();
     for (const entry of entries) {
-      const descendantValue = (name: string): string => {
-        const found = Array.from(entry.getElementsByTagName("*")).find(candidate => candidate.localName === name && candidate.namespaceURI === child.namespace);
-        return found ? found.textContent ?? "" : "";
-      };
       const keyElements = keyNames.map(name =>
         Array.from(entry.childNodes).find(candidate => isElement(candidate)
           && candidate.localName === name && candidate.namespaceURI === child.namespace));
@@ -163,10 +157,56 @@ export function validateDataTree(
         if (seenKeys.has(signature)) issue("duplicate-key", child, `duplicate key combination in list '${child.name}'`);
         seenKeys.add(signature);
       }
-      if (uniquePaths.length) {
-        const signature = uniquePaths.map(descendantValue).join("\u0000");
-        if (seenUnique.has(signature)) issue("unique-violation", child, `unique '${child.properties.unique![0]!.argument}' is violated in list '${child.name}'`);
-        seenUnique.add(signature);
+    }
+    checkUnique(child, entries);
+  }
+
+  /**
+   * RFC 7950 section 7.8.3: each argument of `unique` is a whitespace list of
+   * descendant paths; the constraint is violated only when two entries have
+   * identical values for ALL referenced leafs, and only entries where every
+   * referenced leaf exists participate in the check.
+   */
+  const uniqueStepsCache = new WeakMap<CompiledSchemaNode, { argument: string; subPaths: { namespace: string | undefined; name: string }[][] }[]>();
+  function checkUnique(child: CompiledSchemaNode, entries: Element[]): void {
+    const statements = (child.properties.unique ?? []).filter(statement => statement.argument?.trim());
+    if (!statements.length) return;
+    let parsed = uniqueStepsCache.get(child);
+    if (!parsed) {
+      const prefixes = moduleNamespacePrefixes(schema, child.module);
+      parsed = statements.map(statement => ({
+        argument: statement.argument!,
+        subPaths: statement.argument!.trim().split(/\s+/).map(subPath => subPath.split("/").map(step => {
+          const separator = step.indexOf(":");
+          const prefix = separator >= 0 ? step.slice(0, separator) : undefined;
+          const name = separator >= 0 ? step.slice(separator + 1) : step;
+          return { namespace: prefix !== undefined ? prefixes[prefix] : child.namespace, name };
+        })),
+      }));
+      uniqueStepsCache.set(child, parsed);
+    }
+    for (const statement of parsed) {
+      const seen = new Set<string>();
+      for (const entry of entries) {
+        const values: string[] = [];
+        let complete = true;
+        for (const steps of statement.subPaths) {
+          let current: Element | undefined = entry;
+          for (const step of steps) {
+            if (!current) { complete = false; break; }
+            current = Array.from(current.childNodes).find(candidate => isElement(candidate)
+              && candidate.localName === step.name && candidate.namespaceURI === step.namespace) as Element | undefined;
+          }
+          if (!current) { complete = false; break; }
+          values.push(current.textContent ?? "");
+        }
+        if (!complete) continue;
+        const signature = values.join("\u0000");
+        if (seen.has(signature)) {
+          issue("unique-violation", child, `unique '${statement.argument}' is violated in list '${child.name}'`);
+          break;
+        }
+        seen.add(signature);
       }
     }
   }
