@@ -69,4 +69,50 @@ describe("semantic compilation foundation", () => {
     expect(disabled.diagnostics).toEqual([]);
     expect(enabled.diagnostics).toEqual([]);
   });
+
+  it("applies RFC 7950 deviations to nodes and properties", async () => {
+    const base = parseYang(`module base {
+      namespace "urn:base"; prefix b;
+      container system {
+        leaf daylight { type string; }
+        leaf count { type uint8; default "1"; }
+        leaf note { type string; must ". != ''"; }
+        list users { key "name"; leaf name { type string; } }
+      }
+    }`);
+    const deviations = parseYang(`module device-deviations {
+      namespace "urn:device"; prefix d;
+      import base { prefix b; }
+      deviation /b:system/b:daylight { deviate not-supported; }
+      deviation /b:system/b:count { deviate replace { type uint16; default "2"; } }
+      deviation /b:system/b:note { deviate delete { must ". != ''"; } }
+      deviation /b:system/b:users { deviate add { max-elements 10; must "count(.) <= 10"; } }
+    }`);
+    const moduleSet = await resolveModuleSet([base, deviations], { async loadModule() { return undefined; } });
+    const schema = compileYangModules(moduleSet);
+    const system = findNode(schema.roots, "system");
+    expect(findNode(system.children, "daylight")).toBeUndefined();
+    expect(findNode(system.children, "count")).toMatchObject({
+      resolvedType: "uint16", properties: { default: [{ argument: "2" }] },
+      deviations: [{ keyword: "deviation", argument: "/b:system/b:count" }],
+    });
+    expect(findNode(system.children, "note")?.must).toEqual([]);
+    expect(findNode(system.children, "users")?.properties).toMatchObject({
+      "max-elements": [{ argument: "10" }], must: [{ argument: "count(.) <= 10" }],
+    });
+    expect(schema.diagnostics).toEqual([]);
+  });
+
+  it("diagnoses unresolved deviation targets and invalid property operations", async () => {
+    const base = parseYang(`module base { namespace "urn:base"; prefix b; leaf value { type string; } }`);
+    const deviations = parseYang(`module bad-deviations {
+      namespace "urn:bad"; prefix d; import base { prefix b; }
+      deviation /b:missing { deviate not-supported; }
+      deviation /b:value { deviate replace { units "widgets"; } deviate delete { default "x"; } }
+    }`);
+    const moduleSet = await resolveModuleSet([base, deviations], { async loadModule() { return undefined; } });
+    const schema = compileYangModules(moduleSet);
+    expect(schema.diagnostics.map(item => item.code)).toContain("unresolved-deviation");
+    expect(schema.diagnostics.filter(item => item.code === "invalid-deviation")).toHaveLength(2);
+  });
 });

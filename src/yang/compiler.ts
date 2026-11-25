@@ -18,6 +18,8 @@ export interface CompiledSchemaNode {
   whenConstraints: readonly YangStatement[];
   ifFeatures: readonly string[];
   featureRequirements: readonly { module: string; expression: string }[];
+  properties: Record<string, YangStatement[]>;
+  deviations: YangStatement[];
   source: YangStatement;
   children: CompiledSchemaNode[];
 }
@@ -32,7 +34,7 @@ export interface CompiledOperation {
 export interface CompilerDiagnostic {
   code: "duplicate-node" | "unresolved-prefix" | "unresolved-augment" | "unresolved-grouping" |
     "uses-cycle" | "augment-conflict" | "invalid-key" | "unresolved-type" | "typedef-cycle" |
-    "unresolved-feature" | "invalid-feature-expression";
+    "unresolved-feature" | "invalid-feature-expression" | "unresolved-deviation" | "invalid-deviation";
   message: string;
   module: string;
   source: YangStatement;
@@ -232,6 +234,12 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       whenConstraints: nodeWhen,
       ifFeatures: nodeFeatures,
       featureRequirements: nodeFeatureRequirements.map(({ module, expression }) => ({ module, expression })),
+      properties: statement.children.reduce<Record<string, YangStatement[]>>((properties, child) => {
+        if (DATA_KINDS.has(child.keyword as SchemaNodeKind) || child.keyword === "uses") return properties;
+        (properties[child.keyword] ??= []).push(child);
+        return properties;
+      }, {}),
+      deviations: [],
       source: statement, children: [],
     };
     if (kind === "list") {
@@ -292,6 +300,88 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     }
   }
   for (const item of pending) report("unresolved-augment", `Augment target '${item.statement.argument ?? ""}' was not found`, item.module, item.statement);
+
+  const locateTarget = (path: Array<{ module: YangModule; name: string }>) => {
+    let siblings = roots;
+    for (const part of path) {
+      const index = siblings.findIndex(node => node.module === part.module.argument && node.name === part.name);
+      if (index < 0) return undefined;
+      const node = siblings[index]!;
+      if (part === path[path.length - 1]) return { siblings, index, node };
+      siblings = node.children;
+    }
+    return undefined;
+  };
+  const deviableProperties = new Set(["config", "default", "mandatory", "max-elements", "min-elements", "must", "type", "unique", "units"]);
+  const repeatableProperty = (node: CompiledSchemaNode, property: string) =>
+    property === "must" || property === "unique" || (property === "default" && node.kind === "leaf-list");
+  const deviationSources = modules.flatMap(module => [module, ...submodulesFor(module)].flatMap(source =>
+    childrenOf(source, "deviation").map(statement => ({ module, statement })),
+  ));
+  for (const { module, statement } of deviationSources) {
+    const path = qnamePath(module, statement.argument ?? "");
+    const targetLocation = path && locateTarget(path);
+    if (!targetLocation) {
+      report("unresolved-deviation", `Deviation target '${statement.argument ?? ""}' was not found`, module, statement);
+      continue;
+    }
+    const { siblings, index, node } = targetLocation;
+    node.deviations.push(statement);
+    let removed = false;
+    for (const deviate of childrenOf(statement, "deviate")) {
+      const action = deviate.argument;
+      if (action === "not-supported") { siblings.splice(index, 1); removed = true; break; }
+      if (action !== "add" && action !== "replace" && action !== "delete") {
+        report("invalid-deviation", `Unknown deviate operation '${action ?? ""}'`, module, deviate);
+        continue;
+      }
+      for (const property of deviate.children) {
+        if (!deviableProperties.has(property.keyword)) {
+          report("invalid-deviation", `Property '${property.keyword}' cannot be changed by a deviation`, module, property);
+          continue;
+        }
+        const current = node.properties[property.keyword] ?? [];
+        if (action === "add") {
+          if (!repeatableProperty(node, property.keyword) && current.length > 0) {
+            report("invalid-deviation", `Cannot add '${property.keyword}': the property already exists`, module, property);
+            continue;
+          }
+          node.properties[property.keyword] = [...current, property];
+        } else if (action === "replace") {
+          if (current.length === 0) {
+            report("invalid-deviation", `Cannot replace '${property.keyword}': the property does not exist`, module, property);
+            continue;
+          }
+          node.properties[property.keyword] = [...deviate.children.filter(child => child.keyword === property.keyword)];
+        } else {
+          const match = current.findIndex(existing => existing.argument === property.argument);
+          if (match < 0) {
+            report("invalid-deviation", `Cannot delete '${property.keyword} ${property.argument ?? ""}': no matching property exists`, module, property);
+            continue;
+          }
+          node.properties[property.keyword] = current.filter((_, currentIndex) => currentIndex !== match);
+        }
+      }
+    }
+    if (removed) continue;
+    node.must = node.properties.must ?? [];
+    const replacementType = node.properties.type?.[0];
+    if (replacementType) {
+      node.type = replacementType;
+      const resolved = resolveType(module, replacementType);
+      if (!resolved.name) report("invalid-deviation", `Replacement type '${replacementType.argument ?? ""}' could not be resolved`, module, replacementType);
+      else {
+        node.resolvedType = resolved.name;
+        node.typedefChain = resolved.chain;
+      }
+    }
+  }
+  const refreshConfig = (node: CompiledSchemaNode, inheritedConfig: boolean) => {
+    const ownConfig = node.properties.config?.[0]?.argument;
+    node.config = ownConfig === "true" ? true : ownConfig === "false" ? false : inheritedConfig;
+    node.children.forEach(child => refreshConfig(child, node.config));
+  };
+  roots.forEach(node => refreshConfig(node, true));
 
   const operations: CompiledOperation[] = [];
   for (const module of modules) for (const statement of module.children) {
