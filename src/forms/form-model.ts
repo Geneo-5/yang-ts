@@ -519,3 +519,82 @@ export function validateFormValue(field: FormField, value: unknown): FormValidat
   if (result === undefined || pending.length || unsupportedConstraint) return { status: "indeterminate", errors, pending };
   return { status: "valid", errors, pending };
 }
+
+/**
+ * RFC 6991 canonical lexical representation of a form value for its field's
+ * type: integers drop sign padding and leading zeros, decimal64 re-renders
+ * with exactly its `fraction-digits`, boolean normalizes JavaScript booleans,
+ * bits re-join the selection ordered by bit position, and binary strips
+ * insignificant base64 whitespace. Returns `undefined` when the value is not
+ * a valid lexical form for the type or the type has no canonical check here
+ * (leafref/identityref/instance-identifier need cross-reference context).
+ */
+export function canonicalFormOf(field: FormField, value: unknown): string | undefined {
+  if (field.unresolvedType || value === undefined || value === null) return undefined;
+  switch (field.yangType) {
+    case "boolean":
+      if (value === true || value === "true") return "true";
+      if (value === false || value === "false") return "false";
+      return undefined;
+    case "enumeration":
+      return field.options.some(option => option.value === value) ? String(value) : undefined;
+    case "bits": {
+      const selected = Array.isArray(value) ? value.map(String)
+        : typeof value === "string" ? value.trim().split(/\s+/).filter(Boolean) : [];
+      const allowed = new Set(field.options.map(option => option.value));
+      if (!selected.length || selected.some(bit => !allowed.has(bit)) || new Set(selected).size !== selected.length) return undefined;
+      return sortByBitPosition(field, selected).join(" ");
+    }
+    case "binary": {
+      if (typeof value !== "string") return undefined;
+      const compact = value.replace(/\s+/g, "");
+      return base64OctetLength(compact) !== undefined ? compact : undefined;
+    }
+    case "decimal64": {
+      if (typeof value !== "string" && typeof value !== "number") return undefined;
+      const digits = Number(inheritedFractionDigits(field));
+      if (!Number.isInteger(digits) || digits < 1 || digits > 18) return undefined;
+      const scaled = decimalScaled(typeof value === "number" ? String(value) : value, digits);
+      if (scaled === undefined) return undefined;
+      const negative = scaled < 0n;
+      const magnitude = negative ? -scaled : scaled;
+      const digitsText = magnitude.toString().padStart(digits + 1, "0");
+      const whole = digitsText.slice(0, -digits);
+      const fraction = digitsText.slice(-digits);
+      return `${negative ? "-" : ""}${whole}.${fraction}`;
+    }
+    default: {
+      // Cross-reference types need instance/schema context to judge a value.
+      if (["leafref", "identityref", "instance-identifier"].includes(field.yangType)) return undefined;
+      const bounds = intBounds(field.yangType);
+      if (!bounds) return typeof value === "string" || typeof value === "number" ? String(value) : undefined;
+      if (typeof value === "number" && !Number.isSafeInteger(value)) return undefined;
+      const text = typeof value === "bigint" ? value.toString() : String(value);
+      if (!/^[+-]?\d+$/.test(text)) return undefined;
+      const integer = BigInt(text);
+      if (integer < bounds[0] || integer > bounds[1]) return undefined;
+      return integer.toString();
+    }
+  }
+}
+
+function inheritedFractionDigits(field: FormField): string | undefined {
+  for (const layer of fieldTypeLayers.get(field) ?? []) {
+    const digits = childOf(layer, "fraction-digits")?.argument;
+    if (digits !== undefined) return digits;
+  }
+  return undefined;
+}
+
+/** RFC 6991 canonical bits order: ascending bit position, declaration order as the default position. */
+function sortByBitPosition(field: FormField, selected: string[]): string[] {
+  const positions = new Map(field.options.map((option, index) => {
+    for (const layer of fieldTypeLayers.get(field) ?? []) {
+      const bit = childrenOf(layer, "bit").find(statement => statement.argument === option.value);
+      const explicit = bit && childOf(bit, "position")?.argument;
+      if (bit) return [option.value, explicit !== undefined ? Number(explicit) : index] as const;
+    }
+    return [option.value, index] as const;
+  }));
+  return selected.slice().sort((left, right) => (positions.get(left) ?? 0) - (positions.get(right) ?? 0));
+}

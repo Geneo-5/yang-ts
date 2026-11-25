@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2, 4 and 5 are complete; Stage 3 is in progress with its restriction validation mostly done; Stage 6 is pending. Last updated: 2026-11 (Stage 5 closed with structural validation and contextual candidate evaluation).
+This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2, 4 and 5 are complete; Stage 3 is in progress with its restriction validation mostly done; Stage 6 is pending. Last updated: 2026-11 (Stage 5 closed; Stage 3 gained canonical value representations).
 
 ## Stage 0 — Parser foundation (complete)
 
@@ -47,7 +47,8 @@ Exit: complete dependency closures for oven and the interface fixture set; tests
 - Form enum and bits options now honor typedef subset restrictions, and validation rejects values removed by a derived type.
 - Form validation tests union members in declaration order and returns indeterminate when no branch can be conclusively validated.
 - Form validation checks canonical Base64 syntax and decoded octet length for `binary` without Node APIs.
-- Remaining: canonical value representations, leafref/identityref cross-reference validation (currently reported as pending `must`-style constraints) and an exhaustive RFC-linked boundary corpus before the exit criterion close.
+- Canonical value representations now exist as `canonicalFormOf`: integers drop sign padding and leading zeros within type order, decimal64 re-renders with exactly its inherited `fraction-digits`, boolean normalizes JavaScript booleans, bits re-join selections ordered by bit position (declaration order otherwise), and binary strips insignificant base64 whitespace; cross-reference types stay undefined because they need instance context.
+- Remaining: leafref/identityref cross-reference validation (currently reported as pending `must`-style constraints) and an exhaustive RFC-linked boundary corpus before the exit criterion close.
 
 Exit: RFC-linked positive/negative type tests, including inherited restrictions and boundary values.
 
