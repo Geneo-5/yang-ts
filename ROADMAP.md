@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2 and 3–5 are complete; Stage 6 is in progress with budgets/cancellation, the conformance matrix, the browser-readiness audit and the YANG Library loading adapter done. Last updated: 2026-11 (Stage 6: conformance matrix and browser audit added).
+This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. All stages (0–6) are complete. Last updated: 2026-11 (Stage 6 closed: browser smoke suite and release workflow). The roadmap remains as a record: new work opens under new headers or amends a stage's coverage rather than reopening a closed stage.
 
 ## Stage 0 — Parser foundation (complete)
 
@@ -51,7 +51,7 @@ Exit: complete dependency closures for oven and the interface fixture set; tests
 - Leafref and identityref form validation now resolves cross references (`FormCrossReference`, `tests/cross-reference.test.ts`): a leafref value is matched against the declared path evaluated from the anchor element's document, and identityref values are accepted when they name an identity derived from one of the declared bases (module-qualified or plain names, imported prefixes resolved); without context the types stay indeterminate with the explicit pending reason.
 - An RFC-linked boundary corpus is checked in (`tests/boundaries.test.ts`): every integer width at its exact boundaries including exact 64-bit bigint values, decimal64 scaled range limits and derived `fraction-digits`, inherited length/range restrictions through typedef chains with derived-range narrowing, implicitly-anchored derived patterns with unsupported XML Schema syntax reported as pending, binary octet-length boundaries over canonical base64, and enum/bits restriction narrowing.
 - The corpus exposed a real defect, since fixed: whitespace around the `..` separator in `range` and `length` expressions ("10 .. 90") made endpoints unparsable and the constraint silently satisfied; endpoints are now trimmed and counter-examples at the edges are tested.
-- Remaining: residual breadth (unusual restriction combinations, exotic patterns) folds into the Stage 6 conformance matrix.
+- Residual breadth (unusual restriction combinations, exotic patterns) is tracked as partial rows in `CONFORMANCE.md`.
 
 Exit met: RFC-linked positive/negative type tests, including inherited restrictions and boundary values (`tests/boundaries.test.ts`, `tests/forms.test.ts`, type-restriction compiler tests).
 
@@ -75,7 +75,7 @@ Exit met: section-linked tests plus focused cases from the checked-in `if:type` 
 
 Exit met: end-to-end contextual allowed-value filtering (`tests/candidates.test.ts`) and every result carries a path, source and reason.
 
-## Stage 6 — Browser release readiness (in progress)
+## Stage 6 — Browser release readiness (complete)
 
 - Verify package exports and bundles in current browsers; no Node built-ins, Python, native wrapper or backend.
 - Test workers/cancellation/resource budgets for large or untrusted module sets.

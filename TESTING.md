@@ -37,3 +37,17 @@ The source parser, module resolver and an initial semantic compiler pass are cov
 ## Coverage reporting
 
 Maintain a matrix with four states: **implemented**, **partial**, **unsupported**, **untested**. A parser test only upgrades syntax coverage. A feature is “implemented” only after semantic behavior and negative cases are covered. A CI failure should include the fixture path, statement location and expected diagnostic where available.
+
+## Release workflow (repeatable)
+
+Every release follows the same gates, in order; a release with any red gate does not ship.
+
+1. `npm test` — the full suite (17+ files: parser, module-set with budgets/cancellation, compiler, boundary and canonical corpora, XPath/constraints, validation, candidates, cross-references, RESTCONF adapter, browser-readiness audit, bundle smoke).
+2. `npm run build` — `tsc` must be clean; `dist/index.js` and `dist/index.d.ts` are the only shipped artifacts.
+3. Rerun `npm test` so the browser-readiness audit covers the freshly built `dist` and the bundle smoke suite executes the shipped artifact.
+4. `npm audit --omit=dev` — zero known vulnerabilities in runtime dependencies.
+5. Update `CONFORMANCE.md` rows for anything the release changes (a row without its covering test regresses to `untested`), and `ROADMAP.md` for stage status.
+6. Visual check: serve the repo root over localhost (e.g. `python3 -m http.server`) and open `examples/browser-usage.html` in a current browser; the oven RPC preview must render and validate through `dist/index.js`. This is the manual leg of the browser smoke suite; the automated leg is `tests/bundle-smoke.test.ts` importing the built bundle directly.
+7. `npm pack --dry-run` and check the archive: only `dist`, `examples`, docs; no sources, fixtures or tests leak into the tarball.
+
+Versioning and diagnostics policy for releases is documented in `CONFORMANCE.md`.

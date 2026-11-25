@@ -58,7 +58,7 @@ describe("browser readiness audit", () => {
     const xpathPackage = JSON.parse(readFileSync(`${root}/node_modules/xpath/package.json`, "utf8")) as {
       main?: string; browser?: string | Record<string, string>;
     };
-    expect(xpathPackage.browser).toBeUndefined;
+    expect(xpathPackage.browser).toBeUndefined();
     if (xpathPackage.main) {
       const entry = readFileSync(`${root}/node_modules/xpath/${xpathPackage.main}`, "utf8");
       expect(/\brequire\(/.test(entry) || /\bfrom ["']node:/.test(entry)).toBe(false);
