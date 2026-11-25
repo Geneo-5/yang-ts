@@ -4,6 +4,7 @@ export * from "./yang/module-set.js";
 export * from "./yang/compiler.js";
 export * from "./xpath/xpath.js";
 export * from "./xpath/yang-functions.js";
+export * from "./xpath/accessible-tree.js";
 export * from "./forms/form-model.js";
 export * from "./restconf/paths.js";
 
