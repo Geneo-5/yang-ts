@@ -23,6 +23,8 @@ describe("RPC form and RESTCONF helpers", () => {
       method: "POST", path: "/restconf/operations/oven:insert-food",
       body: { "oven:input": { time: "now" } },
     });
+    const queriedRpc = createRestconfRpcRequest(insert, { time: "now" }, "/restconf", { "with-defaults": "report-all" });
+    expect(queriedRpc.path).toBe("/restconf/operations/oven:insert-food?with-defaults=report-all");
     expect(remove.hasInput).toBe(false);
     expect(createRestconfRpcRequest(remove)).not.toHaveProperty("body");
     expect(() => createRestconfRpcRequest(remove, {})).toThrow(/has no input/);
@@ -67,6 +69,16 @@ describe("RPC form and RESTCONF helpers", () => {
       method: "GET", path: "/restconf/data/ietf-interfaces:interfaces/interface=eth0",
       headers: { Accept: "application/yang-data+json" },
     });
+    const queriedGet = createRestconfGetRequest(interfaces, "/restconf", {
+      content: "config", depth: 2, fields: "interface(name,enabled)",
+      filter: "/ietf-interfaces:interfaces/interface[name='eth 0']",
+    });
+    const getUrl = new URL(queriedGet.path, "https://device.example");
+    expect(getUrl.pathname).toBe("/restconf/data/ietf-interfaces:interfaces");
+    expect(getUrl.searchParams.get("content")).toBe("config");
+    expect(getUrl.searchParams.get("depth")).toBe("2");
+    expect(getUrl.searchParams.get("fields")).toBe("interface(name,enabled)");
+    expect(getUrl.searchParams.get("filter")).toBe("/ietf-interfaces:interfaces/interface[name='eth 0']");
     expect(createRestconfAddRequest(interfaces, { module: "ietf-interfaces", name: "interface", data })).toMatchObject({
       method: "POST", path: "/restconf/data/ietf-interfaces:interfaces",
       body: { "ietf-interfaces:interface": data },
@@ -80,6 +92,8 @@ describe("RPC form and RESTCONF helpers", () => {
       method: "PATCH", path: "/restconf/data/ietf-interfaces:interfaces/interface=eth0",
       body: { "ietf-interfaces:interface": { enabled: false } },
     });
+    expect(createRestconfUpdateRequest(instance, { module: "ietf-interfaces", name: "interface", data: { enabled: false } }, "/restconf", { test: "one & two" }).path)
+      .toBe("/restconf/data/ietf-interfaces:interfaces/interface=eth0?test=one+%26+two");
     expect(createRestconfDeleteRequest(instance)).toEqual({
       method: "DELETE", path: "/restconf/data/ietf-interfaces:interfaces/interface=eth0",
       headers: { Accept: "application/yang-data+json" },

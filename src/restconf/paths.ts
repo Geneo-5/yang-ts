@@ -92,6 +92,17 @@ export interface RestconfRpcRequest {
   body?: Record<string, unknown>;
 }
 
+/** RESTCONF query parameters, including standard parameters and server extensions. */
+export type RestconfQueryParameters = Readonly<Record<string, string | number | boolean>>;
+
+function withQuery(path: string, query?: RestconfQueryParameters): string {
+  if (!query) return path;
+  const parameters = new URLSearchParams();
+  for (const [name, value] of Object.entries(query)) parameters.set(name, String(value));
+  const serialized = parameters.toString();
+  return serialized ? `${path}?${serialized}` : path;
+}
+
 export interface RestconfDataRequest {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
@@ -123,8 +134,8 @@ function dataEnvelope(module: string, name: string, data: Record<string, unknown
 }
 
 /** Prepare a GET request for a data resource or collection. */
-export function createRestconfGetRequest(path: readonly YangPathSegment[] = [], restconfRoot = "/restconf"): RestconfDataRequest {
-  return dataRequest("GET", nodeToRestconfDataPath(path, restconfRoot));
+export function createRestconfGetRequest(path: readonly YangPathSegment[] = [], restconfRoot = "/restconf", query?: RestconfQueryParameters): RestconfDataRequest {
+  return dataRequest("GET", withQuery(nodeToRestconfDataPath(path, restconfRoot), query));
 }
 
 /** Create a child resource by POSTing it to its parent resource (RFC 8040 §4.4.1). */
@@ -132,14 +143,15 @@ export function createRestconfAddRequest(
   parentPath: readonly YangPathSegment[],
   resource: { module: string; name: string; data: Record<string, unknown> },
   restconfRoot = "/restconf",
+  query?: RestconfQueryParameters,
 ): RestconfDataRequest {
-  return dataRequest("POST", nodeToRestconfDataPath(parentPath, restconfRoot), dataEnvelope(resource.module, resource.name, resource.data));
+  return dataRequest("POST", withQuery(nodeToRestconfDataPath(parentPath, restconfRoot), query), dataEnvelope(resource.module, resource.name, resource.data));
 }
 
 /** Delete the target data resource (RFC 8040 §4.7). */
-export function createRestconfDeleteRequest(path: readonly YangPathSegment[], restconfRoot = "/restconf"): RestconfDataRequest {
+export function createRestconfDeleteRequest(path: readonly YangPathSegment[], restconfRoot = "/restconf", query?: RestconfQueryParameters): RestconfDataRequest {
   if (path.length === 0) throw new Error("DELETE requires a target data resource");
-  return dataRequest("DELETE", nodeToRestconfDataPath(path, restconfRoot));
+  return dataRequest("DELETE", withQuery(nodeToRestconfDataPath(path, restconfRoot), query));
 }
 
 /** Create or replace the target data resource using PUT (RFC 8040 §4.5). */
@@ -147,9 +159,10 @@ export function createRestconfSetRequest(
   path: readonly YangPathSegment[],
   resource: { module: string; name: string; data: Record<string, unknown> },
   restconfRoot = "/restconf",
+  query?: RestconfQueryParameters,
 ): RestconfDataRequest {
   if (path.length === 0) throw new Error("PUT requires a target data resource");
-  return dataRequest("PUT", nodeToRestconfDataPath(path, restconfRoot), dataEnvelope(resource.module, resource.name, resource.data));
+  return dataRequest("PUT", withQuery(nodeToRestconfDataPath(path, restconfRoot), query), dataEnvelope(resource.module, resource.name, resource.data));
 }
 
 /**
@@ -160,9 +173,10 @@ export function createRestconfUpdateRequest(
   path: readonly YangPathSegment[],
   resource: { module: string; name: string; data: Record<string, unknown> },
   restconfRoot = "/restconf",
+  query?: RestconfQueryParameters,
 ): RestconfDataRequest {
   if (path.length === 0) throw new Error("PATCH requires a target data resource");
-  return dataRequest("PATCH", nodeToRestconfDataPath(path, restconfRoot), dataEnvelope(resource.module, resource.name, resource.data));
+  return dataRequest("PATCH", withQuery(nodeToRestconfDataPath(path, restconfRoot), query), dataEnvelope(resource.module, resource.name, resource.data));
 }
 
 /** Extract one module-qualified node from a RESTCONF JSON response body. */
@@ -176,12 +190,13 @@ export function createRestconfRpcRequest(
   operation: FormRpcOperation,
   input?: Record<string, unknown>,
   restconfRoot = "/restconf",
+  query?: RestconfQueryParameters,
 ): RestconfRpcRequest {
   if (!operation.hasInput && input !== undefined) throw new Error(`RPC '${operation.name}' has no input statement`);
   const body = operation.hasInput && input !== undefined ? { [`${operation.module}:input`]: input } : undefined;
   return {
     method: "POST",
-    path: restconfRpcPath(operation, restconfRoot),
+    path: withQuery(restconfRpcPath(operation, restconfRoot), query),
     headers: { "Content-Type": "application/yang-data+json", Accept: "application/yang-data+json" },
     ...(body ? { body } : {}),
   };
