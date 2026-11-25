@@ -2,6 +2,7 @@ import { YangStatement } from "../yang/ast.js";
 import { childOf, childrenOf } from "../yang/parser.js";
 import { CompiledSchemaNode, CompiledYangSchema } from "../yang/compiler.js";
 import { createConstraintEvaluator } from "../xpath/evaluate-constraints.js";
+import { findSchemaNodeByPath } from "../xpath/accessible-tree.js";
 
 export type CandidateStatus = "allowed" | "blocked" | "indeterminate";
 export type CandidateDomain = "enum" | "bits" | "boolean" | "none";
@@ -75,23 +76,6 @@ export function finiteDomainOf(node: CompiledSchemaNode): FiniteDomain {
   return { domain: "none", values: [] };
 }
 
-function findSchemaNode(schema: CompiledYangSchema, path: string): CompiledSchemaNode | undefined {
-  const parts = path.split("/").filter(Boolean);
-  // Choice and case names are transparent to schema paths.
-  const usable = (nodes: readonly CompiledSchemaNode[]): CompiledSchemaNode[] =>
-    nodes.flatMap(node => node.kind === "choice"
-      ? usable(node.children)
-      : node.kind === "case" ? node.children : [node]);
-  let level = usable(schema.roots);
-  let found: CompiledSchemaNode | undefined;
-  for (const part of parts) {
-    found = level.find(node => node.name === part);
-    if (!found) return undefined;
-    level = usable(found.children);
-  }
-  return found;
-}
-
 /**
  * Locate the instance element, walking from the root through path segments
  * that are present. When the element itself is absent (typically a leaf gated
@@ -157,7 +141,7 @@ export function evaluateCandidates(
   path: string,
   options: CandidateOptions = {},
 ): CandidateResult {
-  const node = findSchemaNode(schema, path);
+  const node = findSchemaNodeByPath(schema, path);
   if (!node) return { path, domain: "none", candidates: [] };
   const domain = finiteDomainOf(node);
   if (domain.domain === "none") return { path, domain: domain.domain, candidates: [] };

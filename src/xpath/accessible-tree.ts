@@ -163,3 +163,23 @@ export function schemaNodeForElement(schema: CompiledYangSchema, element: Elemen
   }
   return schemaNode;
 }
+
+/**
+ * Resolve a bare schema path ("/top/list/leaf") to its compiled schema node.
+ * Choice and case names are transparent to schema paths.
+ */
+export function findSchemaNodeByPath(schema: CompiledYangSchema, path: string): CompiledSchemaNode | undefined {
+  const parts = path.split("/").filter(Boolean);
+  const usable = (nodes: readonly CompiledSchemaNode[]): CompiledSchemaNode[] =>
+    nodes.flatMap(node => node.kind === "choice"
+      ? usable(node.children)
+      : node.kind === "case" ? node.children : [node]);
+  let level = usable(schema.roots);
+  let found: CompiledSchemaNode | undefined;
+  for (const part of parts) {
+    found = level.find(node => node.name === part);
+    if (!found) return undefined;
+    level = usable(found.children);
+  }
+  return found;
+}

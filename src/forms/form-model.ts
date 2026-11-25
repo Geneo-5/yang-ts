@@ -1,5 +1,8 @@
 import { YangModule, YangStatement } from "../yang/ast.js";
+import { CompiledYangSchema, isIdentityDerivedFrom } from "../yang/compiler.js";
 import { childOf, childrenOf } from "../yang/parser.js";
+import { findSchemaNodeByPath } from "../xpath/accessible-tree.js";
+import { compileModuleExpression } from "../xpath/evaluate-constraints.js";
 
 export type FormValidationStatus = "valid" | "invalid" | "indeterminate";
 export type FormControlKind = "text" | "number" | "boolean" | "enum" | "bits" | "unsupported";
@@ -469,7 +472,11 @@ const fieldTypeLayers = new WeakMap<FormField, YangStatement[]>();
 const fieldResolvedTypes = new WeakMap<FormField, ResolvedType>();
 
 /** Validate requiredness and the built-in type/restrictions we can evaluate safely. */
-export function validateFormValue(field: FormField, value: unknown): FormValidationResult {
+export function validateFormValue(
+  field: FormField,
+  value: unknown,
+  crossReference?: FormCrossReference,
+): FormValidationResult {
   const errors: FormError[] = [];
   if (absent(value)) {
     if (field.required) errors.push({ code: "required", message: `${field.label} is required.` });
@@ -501,23 +508,111 @@ export function validateFormValue(field: FormField, value: unknown): FormValidat
   } else {
     result = validateType(field, value, errors);
   }
+  const crossReferencePending = validateCrossReference(field, value, errors, crossReference);
+  // A cross-reference type has no generic value check of its own; when the
+  // context-backed cross-reference check ran, it is the value's verdict.
+  if (result === undefined && (field.yangType === "leafref" || field.yangType === "identityref") && !crossReferencePending) result = true;
   const hasPattern = (fieldTypeLayers.get(field) ?? []).some(layer => childrenOf(layer, "pattern").length > 0);
   const unsupportedPattern = hasPattern && (field.yangType !== "string"
     || (fieldTypeLayers.get(field) ?? []).some(layer => childrenOf(layer, "pattern")
       .some(patternStatement => !compilePattern(patternStatement.argument ?? ""))));
-  const unsupportedConstraint = unsupportedPattern
-    || ["leafref", "identityref", "instance-identifier"].includes(field.yangType);
   const pending = [...field.constraints];
+  if (crossReferencePending) {
+    pending.push({ kind: "unsupported", expression: `${field.yangType} requires cross-reference/schema validation`, source: field.source });
+  }
+  const unsupportedConstraint = unsupportedPattern || crossReferencePending || field.yangType === "instance-identifier";
   if (unsupportedPattern) {
     pending.push({ kind: "unsupported", expression: "pattern requires XML Schema regular-expression evaluation", source: field.source });
-  }
-  if (["leafref", "identityref", "instance-identifier"].includes(field.yangType)) {
-    pending.push({ kind: "unsupported", expression: `${field.yangType} requires cross-reference/schema validation`, source: field.source });
   }
   if (field.unresolvedType) pending.push({ kind: "unsupported", expression: `type '${field.yangType}' was not resolved`, source: field.source });
   if (errors.length) return { status: "invalid", errors, pending };
   if (result === undefined || pending.length || unsupportedConstraint) return { status: "indeterminate", errors, pending };
   return { status: "valid", errors, pending };
+}
+
+/**
+ * Compiled context that lets form validation check cross-reference types in
+ * place of reporting them as pending: `leafref` values are resolved against
+ * the anchor element's document with the declared path, and `identityref`
+ * values are checked against the schema's identity derivation. Without a
+ * context these types remain indeterminate with an explicit pending reason.
+ */
+export interface FormCrossReference {
+  schema: CompiledYangSchema;
+  /**
+   * Instance element the leafref path is evaluated from — normally the field's
+   * own data node (or a probe in its parent list entry) so relative paths such
+   * as `../route/name` resolve against real sibling data.
+   */
+  anchor?: Element;
+}
+
+/**
+ * Returns false when the cross-reference check ran (whether it passed or
+ * rejected the value) and true when the type still needs context that was not
+ * supplied. Errors are reported through the shared error list.
+ */
+function validateCrossReference(field: FormField, value: unknown, errors: FormError[], crossReference?: FormCrossReference): boolean {
+  if (field.yangType !== "leafref" && field.yangType !== "identityref") return false;
+  if (!crossReference) return true;
+  if (field.yangType === "leafref") {
+    if (!crossReference.anchor) return true;
+    const schemaNode = findSchemaNodeByPath(crossReference.schema, field.path);
+    if (schemaNode?.resolvedType !== "leafref") return true;
+    const text = typeof value === "string" || typeof value === "number" ? String(value) : undefined;
+    if (text === undefined || text === "") { errors.push({ code: "type.leafref", message: `${field.label} must be a node reference.` }); return false; }
+    // Evaluate the declared path against the anchor element but match it
+    // against the submitted value: unlike tree validation, the form value is
+    // not committed to the element yet.
+    const pathArgument = schemaNode.type ? childOf(schemaNode.type, "path")?.argument : undefined;
+    if (!pathArgument) return true;
+    const compiled = compileModuleExpression(crossReference.schema, schemaNode.module, pathArgument);
+    if (!compiled) return true;
+    let reached: Element[];
+    try {
+      reached = compiled.select({ node: crossReference.anchor })
+        .filter((child): child is Element => (child as Node).nodeType === 1 && (child as Element).textContent === text);
+    } catch {
+      return true;
+    }
+    if (!reached.length) { errors.push({ code: "constraint.leafref", message: `${field.label} does not reference an existing node.` }); return false; }
+    return false;
+  }
+  // RFC 7950 section 9.10: an identityref evaluates to an identity derived
+  // from one of the type's declared bases. Values may be module-qualified
+  // ("module:name") or plain identity names; XML namespace prefixes are not
+  // resolvable here and stay indeterminate through the unqualified case.
+  const bases = (fieldTypeLayers.get(field) ?? [])
+    .flatMap(layer => childrenOf(layer, "base").map(base => resolveBaseRef(base.argument ?? "", field.module, crossReference.schema)))
+    .filter((base): base is string => Boolean(base));
+  if (!bases.length) return true;
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) { errors.push({ code: "type.identityref", message: `${field.label} must name an identity.` }); return false; }
+  const derived = bases.some(base => matchesIdentityBase(crossReference.schema, text, base));
+  if (!derived) {
+    errors.push({ code: "type.identityref", message: `${field.label} must be an identity derived from ${bases.join(", ")}.` });
+  }
+  return false;
+}
+
+/** Resolve a base statement's prefix to the declaring module: qualified by module name or by an imported prefix. */
+function resolveBaseRef(base: string, moduleName: string, schema: CompiledYangSchema): string | undefined {
+  if (!base) return undefined;
+  const separator = base.indexOf(":");
+  if (separator < 0) return `${moduleName}:${base}`;
+  const qualifier = base.slice(0, separator);
+  if (schema.modules.some(module => module.argument === qualifier)) return base;
+  const owner = schema.modules.find(module => module.argument === moduleName);
+  const importedName = owner && childrenOf(owner, "import")
+    .find(importNode => childOf(importNode, "prefix")?.argument === qualifier)?.argument;
+  return importedName ? `${importedName}:${base.slice(separator + 1)}` : undefined;
+}
+
+function matchesIdentityBase(schema: CompiledYangSchema, value: string, base: string): boolean {
+  if (value.includes(":")) return value === base || isIdentityDerivedFrom(schema, value, base);
+  return schema.identities.some(identity =>
+    identity.name === value
+    && (identity.module === base.slice(0, base.indexOf(":")) || isIdentityDerivedFrom(schema, `${identity.module}:${identity.name}`, base)));
 }
 
 /**
