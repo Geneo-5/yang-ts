@@ -1,6 +1,6 @@
 import { YangStatement } from "../yang/ast.js";
 import { childOf, childrenOf } from "../yang/parser.js";
-import { CompiledSchemaNode, CompiledYangSchema } from "../yang/compiler.js";
+import { CompiledSchemaNode, CompiledYangSchema, moduleNamespacePrefixes } from "../yang/compiler.js";
 import { schemaNodeForElement } from "./accessible-tree.js";
 import { compileYangXPath } from "./xpath.js";
 import { XPathFunction } from "xpath";
@@ -36,11 +36,17 @@ export function createConstraintEvaluator(schema: CompiledYangSchema): Constrain
   const libraryFor = (moduleName: string) => {
     const cached = libraryCache.get(moduleName);
     if (cached) return cached;
-    const prefixModules: Record<string, string> = {};
+    // Identity prefixes: RFC 7950 §14 resolves `derived-from` bases through the
+    // declaring module's imports and its own prefix.
     const owner = moduleByName(moduleName);
-    if (owner) for (const importNode of childrenOf(owner, "import")) {
-      const prefix = childOf(importNode, "prefix")?.argument;
-      if (prefix && importNode.argument) prefixModules[prefix] = importNode.argument;
+    const prefixModules: Record<string, string> = {};
+    if (owner) {
+      const ownPrefix = childOf(owner, "prefix")?.argument;
+      if (ownPrefix) prefixModules[ownPrefix] = moduleName;
+      for (const importNode of childrenOf(owner, "import")) {
+        const prefix = childOf(importNode, "prefix")?.argument;
+        if (prefix && importNode.argument) prefixModules[prefix] = importNode.argument;
+      }
     }
     const created = createYangFunctionLibrary({
       schema, module: moduleName,
@@ -102,15 +108,9 @@ export function compileModuleExpression(schema: CompiledYangSchema, moduleName: 
   let created: ReturnType<typeof compileYangXPath> | undefined;
   try {
     const owner = schema.modules.find(module => module.argument === moduleName);
-    const prefixModules: Record<string, string> = {};
-    if (owner) for (const importNode of childrenOf(owner, "import")) {
-      const prefix = childOf(importNode, "prefix")?.argument;
-      const imported = schema.modules.find(module => module.argument === importNode.argument);
-      const namespace = imported && childOf(imported, "namespace")?.argument;
-      if (prefix && namespace) prefixModules[prefix] = namespace;
-    }
-    const namespace = owner ? childOf(owner, "namespace")?.argument ?? "" : "";
-    created = compileYangXPath(expression, namespace, prefixModules);
+    if (!owner) throw new Error(`module ${moduleName} is not part of the schema`);
+    // Own prefix plus imports; RSFC 7950 §6.4.1 requires both in the maps.
+    created = compileYangXPath(expression, childOf(owner, "namespace")?.argument ?? "", moduleNamespacePrefixes(schema, moduleName));
   } catch {
     created = undefined;
   }

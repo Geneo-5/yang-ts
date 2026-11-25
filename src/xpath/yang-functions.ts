@@ -1,7 +1,7 @@
 import { XPathFunction, XPathResult } from "xpath";
 import { YangModule, YangStatement } from "../yang/ast.js";
 import { childOf, childrenOf } from "../yang/parser.js";
-import { CompiledSchemaNode, CompiledYangSchema, isIdentityDerivedFrom } from "../yang/compiler.js";
+import { CompiledSchemaNode, CompiledYangSchema, isIdentityDerivedFrom, moduleNamespacePrefixes } from "../yang/compiler.js";
 import { schemaNodeForElement } from "./accessible-tree.js";
 import { compileYangXPath } from "./xpath.js";
 
@@ -24,13 +24,13 @@ export function createLeafrefResolver(schema: CompiledYangSchema): LeafrefResolv
     const key = schemaNode.module + ":" + pathStatement.argument;
     let compiled = compiledCache.get(key);
     if (compiled === undefined) {
-      const prefixModules: Record<string, string> = {};
-      for (const importNode of childrenOf(owner, "import")) {
-        const prefix = childOf(importNode, "prefix")?.argument;
-        const namespace = childOf(schema.modules.find(candidate => candidate.argument === importNode.argument) ?? owner, "namespace")?.argument;
-        if (prefix && namespace) prefixModules[prefix] = namespace;
-      }
-      compiled = compileYangXPath(pathStatement.argument, childOf(owner, "namespace")?.argument ?? "", prefixModules);
+      // Leafref paths use the declaring module's prefixes, including its own
+      // (RFC 7950 §6.4.1); without it `ov:clock/ov:time` cannot resolve.
+      compiled = compileYangXPath(
+        pathStatement.argument,
+        childOf(owner, "namespace")?.argument ?? "",
+        moduleNamespacePrefixes(schema, schemaNode.module),
+      );
       compiledCache.set(key, compiled);
     }
     const value = element.textContent ?? "";

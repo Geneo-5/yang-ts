@@ -31,7 +31,15 @@ describe("RFC 7950 accessible tree construction", () => {
       `<system xmlns="urn:system"><hostname>router1</hostname></system>`), { context: "datastore-config" });
     expect(text(tree.document, "hostname")).toBe("router1");
     expect(text(tree.document, "motd")).toBe("welcome");
-    expect(tree.contextNode).toBe(tree.document.documentElement);
+    // RFC 6.4.1: the datastore context node is the virtual root (the document),
+    // with the data root as its single top-level child — no extra wrapper.
+    expect(tree.contextNode).toBe(tree.document);
+    expect(tree.document.documentElement.localName).toBe("system");
+    // Relative paths evaluate at the data node (documentElement here);
+    // absolute YANG paths treat the data root as the top-level node.
+    expect(compileYangXPath("count(motd) = 1", "urn:system").evaluateBoolean({ node: tree.document.documentElement })).toBe(true);
+    expect(compileYangXPath("/system:system/system:hostname = 'router1'", "urn:system", { system: "urn:system" })
+      .evaluateBoolean({ node: tree.contextNode })).toBe(true);
   });
 
   it("keeps state data out of datastore-config and in datastore-state", () => {

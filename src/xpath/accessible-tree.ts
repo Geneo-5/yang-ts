@@ -22,8 +22,8 @@ export interface AccessibleTreeOptions {
 
 export interface AccessibleTree {
   document: Document;
-  /** RFC 7950 section 6.4.1 context node for the requested context. */
-  contextNode: Element;
+  /** RFC 7950 section 6.4.1 context node for the requested context: the datastore document for datastore contexts, the operation/notification node otherwise. */
+  contextNode: Node;
 }
 
 const OPERATION_CONTEXTS: ReadonlySet<AccessibleTreeContext> = new Set([
@@ -44,21 +44,27 @@ export function buildAccessibleTree(
   if (options.context !== "datastore-config" && options.context !== "datastore-state" && !options.operation) {
     throw new Error(`Operation context '${options.context}' requires an operation name`);
   }
-  const document = instance.implementation.createDocument("", "accessible-tree");
-  const root = document.documentElement!;
+  const document = instance.implementation.createDocument(null, "", null);
   if (options.context === "datastore-config" || options.context === "datastore-state") {
     const scope = { includeState: options.context === "datastore-state", defaults: true };
     // Schema roots match the instance document element itself, not its children.
+    // The data root becomes the document element and the context node is the
+    // datastore document (RFC 6.4.1 virtual root): relative paths reach the
+    // data root (deref(pool/chosen)) while absolute /module:root/... paths see
+    // the data root as the top-level node, matching real instance documents.
     const top = instance.documentElement!;
+    let contextNode: Element | undefined;
     for (const rootNode of schema.roots) {
       if (rootNode.kind === "choice" || rootNode.kind === "case") continue;
       if (!scope.includeState && !rootNode.config) continue;
       if (top.localName !== rootNode.name || top.namespaceURI !== rootNode.namespace) continue;
       const copy = document.createElementNS(rootNode.namespace, rootNode.name);
       copyScope(rootNode.children, top, copy, scope, document);
-      root.appendChild(copy);
+      document.appendChild(copy);
+      contextNode = copy;
     }
-    return { document, contextNode: root };
+    if (!contextNode) throw new Error(`Instance root <${top.localName}> does not match any root of the compiled schema`);
+    return { document, contextNode: document };
   }
   const separator = options.operation!.indexOf(":");
   const moduleFilter = separator >= 0 ? options.operation!.slice(0, separator) : undefined;

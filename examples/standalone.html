@@ -3921,6 +3921,7 @@ var YangEngine = (() => {
     finiteDomainOf: () => finiteDomainOf,
     isIdentityDerivedFrom: () => isIdentityDerivedFrom,
     matchSchemaChild: () => matchSchemaChild,
+    moduleNamespacePrefixes: () => moduleNamespacePrefixes,
     nodeToRestconfDataPath: () => nodeToRestconfDataPath,
     nodeToRestconfDatastorePath: () => nodeToRestconfDatastorePath,
     nodeToXPath: () => nodeToXPath,
@@ -4272,6 +4273,22 @@ var YangEngine = (() => {
   }
 
   // src/yang/compiler.ts
+  function moduleNamespacePrefixes(schema, moduleName) {
+    const map = {};
+    const owner = schema.modules.find((module) => module.argument === moduleName);
+    if (owner) {
+      const ownPrefix = childOf(owner, "prefix")?.argument;
+      const ownNamespace = childOf(owner, "namespace")?.argument;
+      if (ownPrefix && ownNamespace) map[ownPrefix] = ownNamespace;
+      for (const importNode of childrenOf(owner, "import")) {
+        const prefix = childOf(importNode, "prefix")?.argument;
+        const imported = schema.modules.find((module) => module.argument === importNode.argument);
+        const namespace = imported && childOf(imported, "namespace")?.argument;
+        if (prefix && namespace) map[prefix] = namespace;
+      }
+    }
+    return map;
+  }
   var DATA_KINDS = /* @__PURE__ */ new Set(["container", "list", "leaf", "leaf-list", "choice", "case", "anydata", "anyxml"]);
   var revisionOf2 = (module) => childOf(module, "revision")?.argument ?? "";
   var moduleId = (module) => `${module.argument}@${revisionOf2(module)}`;
@@ -5108,20 +5125,22 @@ var YangEngine = (() => {
     if (options.context !== "datastore-config" && options.context !== "datastore-state" && !options.operation) {
       throw new Error(`Operation context '${options.context}' requires an operation name`);
     }
-    const document2 = instance.implementation.createDocument("", "accessible-tree");
-    const root = document2.documentElement;
+    const document2 = instance.implementation.createDocument(null, "", null);
     if (options.context === "datastore-config" || options.context === "datastore-state") {
       const scope = { includeState: options.context === "datastore-state", defaults: true };
       const top = instance.documentElement;
+      let contextNode;
       for (const rootNode of schema.roots) {
         if (rootNode.kind === "choice" || rootNode.kind === "case") continue;
         if (!scope.includeState && !rootNode.config) continue;
         if (top.localName !== rootNode.name || top.namespaceURI !== rootNode.namespace) continue;
         const copy = document2.createElementNS(rootNode.namespace, rootNode.name);
         copyScope(rootNode.children, top, copy, scope, document2);
-        root.appendChild(copy);
+        document2.appendChild(copy);
+        contextNode = copy;
       }
-      return { document: document2, contextNode: root };
+      if (!contextNode) throw new Error(`Instance root <${top.localName}> does not match any root of the compiled schema`);
+      return { document: document2, contextNode: document2 };
     }
     const separator = options.operation.indexOf(":");
     const moduleFilter = separator >= 0 ? options.operation.slice(0, separator) : void 0;
@@ -5216,13 +5235,11 @@ var YangEngine = (() => {
       const key = schemaNode.module + ":" + pathStatement.argument;
       let compiled = compiledCache.get(key);
       if (compiled === void 0) {
-        const prefixModules = {};
-        for (const importNode of childrenOf(owner, "import")) {
-          const prefix = childOf(importNode, "prefix")?.argument;
-          const namespace = childOf(schema.modules.find((candidate) => candidate.argument === importNode.argument) ?? owner, "namespace")?.argument;
-          if (prefix && namespace) prefixModules[prefix] = namespace;
-        }
-        compiled = compileYangXPath(pathStatement.argument, childOf(owner, "namespace")?.argument ?? "", prefixModules);
+        compiled = compileYangXPath(
+          pathStatement.argument,
+          childOf(owner, "namespace")?.argument ?? "",
+          moduleNamespacePrefixes(schema, schemaNode.module)
+        );
         compiledCache.set(key, compiled);
       }
       const value = element.textContent ?? "";
@@ -5382,11 +5399,15 @@ var YangEngine = (() => {
     const libraryFor = (moduleName) => {
       const cached = libraryCache.get(moduleName);
       if (cached) return cached;
-      const prefixModules = {};
       const owner = moduleByName(moduleName);
-      if (owner) for (const importNode of childrenOf(owner, "import")) {
-        const prefix = childOf(importNode, "prefix")?.argument;
-        if (prefix && importNode.argument) prefixModules[prefix] = importNode.argument;
+      const prefixModules = {};
+      if (owner) {
+        const ownPrefix = childOf(owner, "prefix")?.argument;
+        if (ownPrefix) prefixModules[ownPrefix] = moduleName;
+        for (const importNode of childrenOf(owner, "import")) {
+          const prefix = childOf(importNode, "prefix")?.argument;
+          if (prefix && importNode.argument) prefixModules[prefix] = importNode.argument;
+        }
       }
       const created = createYangFunctionLibrary({
         schema,
@@ -5440,15 +5461,8 @@ var YangEngine = (() => {
     let created;
     try {
       const owner = schema.modules.find((module) => module.argument === moduleName);
-      const prefixModules = {};
-      if (owner) for (const importNode of childrenOf(owner, "import")) {
-        const prefix = childOf(importNode, "prefix")?.argument;
-        const imported = schema.modules.find((module) => module.argument === importNode.argument);
-        const namespace2 = imported && childOf(imported, "namespace")?.argument;
-        if (prefix && namespace2) prefixModules[prefix] = namespace2;
-      }
-      const namespace = owner ? childOf(owner, "namespace")?.argument ?? "" : "";
-      created = compileYangXPath(expression, namespace, prefixModules);
+      if (!owner) throw new Error(`module ${moduleName} is not part of the schema`);
+      created = compileYangXPath(expression, childOf(owner, "namespace")?.argument ?? "", moduleNamespacePrefixes(schema, moduleName));
     } catch {
       created = void 0;
     }

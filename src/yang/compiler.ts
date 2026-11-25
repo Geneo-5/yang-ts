@@ -2,6 +2,24 @@ import { YangModule, YangStatement } from "./ast.js";
 import { childOf, childrenOf } from "./parser.js";
 import { YangModuleSet } from "./module-set.js";
 
+/** Prefix → namespace map for XPath written inside `moduleName`: its own prefix first (RFC 7950 §6.4.1), then imports. */
+export function moduleNamespacePrefixes(schema: CompiledYangSchema, moduleName: string): Record<string, string> {
+  const map: Record<string, string> = {};
+  const owner = schema.modules.find(module => module.argument === moduleName);
+  if (owner) {
+    const ownPrefix = childOf(owner, "prefix")?.argument;
+    const ownNamespace = childOf(owner, "namespace")?.argument;
+    if (ownPrefix && ownNamespace) map[ownPrefix] = ownNamespace;
+    for (const importNode of childrenOf(owner, "import")) {
+      const prefix = childOf(importNode, "prefix")?.argument;
+      const imported = schema.modules.find(module => module.argument === importNode.argument);
+      const namespace = imported && childOf(imported, "namespace")?.argument;
+      if (prefix && namespace) map[prefix] = namespace;
+    }
+  }
+  return map;
+}
+
 export type SchemaNodeKind = "container" | "list" | "leaf" | "leaf-list" | "choice" | "case" | "anydata" | "anyxml";
 export interface CompiledSchemaNode {
   kind: SchemaNodeKind;
