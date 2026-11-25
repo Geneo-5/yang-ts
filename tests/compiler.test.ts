@@ -17,6 +17,32 @@ function findNode(nodes: readonly { name: string; children: any[] }[], name: str
 }
 
 describe("semantic compilation foundation", () => {
+  it("materializes implicit cases in choices and choice augments", async () => {
+    const base = parseYang(`module base {
+      namespace "urn:base"; prefix b;
+      container settings {
+        choice transport {
+          leaf tcp { type uint16; }
+          container udp { leaf port { type uint16; } }
+          case local { leaf unix { type string; } }
+        }
+      }
+    }`);
+    const extension = parseYang(`module extension {
+      namespace "urn:extension"; prefix e; import base { prefix b; }
+      augment /b:settings/b:transport { leaf quic { type boolean; } }
+    }`);
+    const moduleSet = await resolveModuleSet([base, extension], { async loadModule() { return undefined; } });
+    const schema = compileYangModules(moduleSet);
+    const choice = findNode(schema.roots, "transport");
+    expect(choice.children.map((node: any) => [node.kind, node.name])).toEqual([
+      ["case", "tcp"], ["case", "udp"], ["case", "local"], ["case", "quic"],
+    ]);
+    expect(choice.children[0]).toMatchObject({ path: "/settings/transport/tcp", children: [{ kind: "leaf", name: "tcp", path: "/settings/transport/tcp/tcp" }] });
+    expect(choice.children[1].children[0]).toMatchObject({ kind: "container", name: "udp", children: [{ name: "port" }] });
+    expect(schema.diagnostics).toEqual([]);
+  });
+
   it("compiles oven data and RPC schema nodes with source-linked type statements", () => {
     const module = fixture("sysrepo/oven.yang");
     return resolveModuleSet([module], { async loadModule() { return undefined; } }).then(moduleSet => {

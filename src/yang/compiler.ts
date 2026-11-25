@@ -306,9 +306,31 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       const directLeafNames = new Set(statement.children.filter(child => child.keyword === "leaf").map(child => child.argument));
       for (const key of keys) if (!directLeafNames.has(key)) report("invalid-key", `List key '${key}' is not a direct leaf of '${path}'`, owner, statement);
     }
-    node.children = dataChildren(statement).flatMap(child => makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatureRequirements));
+    node.children = normalizeChoiceChildren(dataChildren(statement).flatMap(child => makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatureRequirements)), node);
     checkDuplicates(node.children, owner);
     return [node];
+  };
+
+  // RFC 7950 section 7.9.2: shorthand children of a choice still have a
+  // case node in the schema tree. Keep it explicit in the IR so schema paths,
+  // augments and UI consumers all see the same effective tree.
+  const normalizeChoiceChildren = (children: CompiledSchemaNode[], parent: CompiledSchemaNode): CompiledSchemaNode[] => {
+    if (parent.kind !== "choice") return children;
+    return children.map(child => {
+      if (child.kind === "case") return child;
+      const path = `${parent.path}/${child.name}`;
+      const rebase = (node: CompiledSchemaNode, oldPrefix: string, newPrefix: string): void => {
+        node.path = `${newPrefix}${node.path.slice(oldPrefix.length)}`;
+        for (const descendant of node.children) rebase(descendant, oldPrefix, newPrefix);
+      };
+      rebase(child, child.path, `${path}/${child.name}`);
+      return {
+        kind: "case", name: child.name, module: child.module, namespace: child.namespace,
+        path, config: child.config, keys: [], typedefChain: [], must: [], whenConstraints: [],
+        ifFeatures: [], featureRequirements: [], properties: {}, deviations: [], source: child.source,
+        children: [child],
+      };
+    });
   };
 
   for (const module of modules) {
@@ -348,7 +370,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       const augmentWhen = childrenOf(item.statement, "when");
       const augmentFeatures = childrenOf(item.statement, "if-feature").map(feature => ({ module: item.module.argument, expression: feature.argument ?? "", source: feature }));
       if (options.enabledFeatures && !featureRequirementsEnabled(augmentFeatures)) { pending.splice(index, 1); madeProgress = true; continue; }
-      const additions = item.statement.children.flatMap(child => makeNode(child, item.module, target.path, target.config, [], augmentWhen, augmentFeatures, item.module));
+      const additions = normalizeChoiceChildren(item.statement.children.flatMap(child => makeNode(child, item.module, target.path, target.config, [], augmentWhen, augmentFeatures, item.module)), target);
       for (const addition of additions) {
         if (target.children.some(child => child.module === addition.module && child.name === addition.name)) {
           report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${target.path}'`, item.module, addition.source);
