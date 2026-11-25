@@ -5227,9 +5227,19 @@ var YangEngine = (() => {
   // src/xpath/yang-functions.ts
   function createLeafrefResolver(schema) {
     const compiledCache = /* @__PURE__ */ new Map();
+    const pathStatementOf = (schemaNode) => {
+      if (schemaNode.resolvedType !== "leafref") return void 0;
+      const layers = [schemaNode.type, ...schemaNode.typedefChain.map((typedef) => childOf(typedef, "type"))].filter((layer) => Boolean(layer));
+      for (const layer of layers) {
+        if (layer.argument !== "leafref") continue;
+        const path = childOf(layer, "path");
+        if (path?.argument) return path;
+      }
+      return void 0;
+    };
     return (schemaNode, element) => {
-      const pathStatement = schemaNode.type && childOf(schemaNode.type, "path");
-      if (schemaNode.resolvedType !== "leafref" || !pathStatement?.argument) return void 0;
+      const pathStatement = pathStatementOf(schemaNode);
+      if (!pathStatement?.argument) return void 0;
       const owner = schema.modules.find((module) => module.argument === schemaNode.module);
       if (!owner) return void 0;
       const key = schemaNode.module + ":" + pathStatement.argument;
@@ -5498,8 +5508,14 @@ var YangEngine = (() => {
       }
       for (const child of schemaNode.children) {
         if (child.kind === "choice") {
-          const present = choiceEntries(element, child);
-          if (!present.length && child.properties.mandatory?.[0]?.argument === "true") {
+          for (const caseNode of child.children) {
+            const members = caseNode.kind === "case" ? caseNode.children : [caseNode];
+            const active = members.some((member) => member.kind !== "choice" && member.kind !== "case" && elementsOf(element, member).length > 0);
+            for (const member of members) {
+              visitChildNode(element, member, { enforceAbsentRequirements: active });
+            }
+          }
+          if (!choiceEntries(element, child).length && child.properties.mandatory?.[0]?.argument === "true") {
             if (child.whenConstraints.length) {
               indeterminate = true;
               continue;
@@ -5509,32 +5525,35 @@ var YangEngine = (() => {
           continue;
         }
         if (child.kind === "case") continue;
-        const entries = elementsOf(element, child);
-        if (entries.length > 1 && child.kind !== "list" && child.kind !== "leaf-list") {
-          issue("too-many-elements", child, `node '${child.path}' may appear at most once, found ${entries.length}`);
-        }
-        checkCardinality(entries, child);
-        if (!entries.length) {
-          if (child.whenConstraints.length) {
-            const probe = (element.ownerDocument ?? instance).createElementNS(child.namespace, child.name);
-            element.appendChild(probe);
-            try {
-              const statuses = evaluator.evaluateNode(probe).filter((e) => e.kind === "when").map((e) => e.status);
-              if (statuses.every((status) => status === "unmet")) continue;
-              if (statuses.some((status) => status === "indeterminate")) {
-                indeterminate = true;
-                continue;
-              }
-            } finally {
-              element.removeChild(probe);
-            }
-          }
-          checkAbsentRequirements(child);
-          continue;
-        }
-        if (child.kind === "list") checkList(child, entries);
-        for (const entry of entries) visitElement(entry, child);
+        visitChildNode(element, child, { enforceAbsentRequirements: true });
       }
+    }
+    function visitChildNode(element, child, options2) {
+      const entries = elementsOf(element, child);
+      if (entries.length > 1 && child.kind !== "list" && child.kind !== "leaf-list") {
+        issue("too-many-elements", child, `node '${child.path}' may appear at most once, found ${entries.length}`);
+      }
+      checkCardinality(entries, child);
+      if (!entries.length) {
+        if (child.whenConstraints.length) {
+          const probe = (element.ownerDocument ?? instance).createElementNS(child.namespace, child.name);
+          element.appendChild(probe);
+          try {
+            const statuses = evaluator.evaluateNode(probe).filter((e) => e.kind === "when").map((e) => e.status);
+            if (statuses.every((status) => status === "unmet")) return;
+            if (statuses.some((status) => status === "indeterminate")) {
+              indeterminate = true;
+              return;
+            }
+          } finally {
+            element.removeChild(probe);
+          }
+        }
+        if (options2.enforceAbsentRequirements) checkAbsentRequirements(child);
+        return;
+      }
+      if (child.kind === "list") checkList(child, entries);
+      for (const entry of entries) visitElement(entry, child);
     }
     function checkCardinality(entries, child) {
       const min = child.properties["min-elements"]?.[0]?.argument;

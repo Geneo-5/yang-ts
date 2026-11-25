@@ -16,9 +16,23 @@ export type LeafrefResolver = (schemaNode: CompiledSchemaNode, element: Element)
 /** Build a leafref resolver sharing one compiled-path cache across deref and validation. */
 export function createLeafrefResolver(schema: CompiledYangSchema): LeafrefResolver {
   const compiledCache = new Map<string, ReturnType<typeof compileYangXPath>>();
+  // RFC 7950 section 9.9: the effective leafref path may live on the leaf's
+  // own `type` statement (direct or deviation-replaced) or on a `leafref`
+  // type inside the typedef chain (e.g. if:interface-ref).
+  const pathStatementOf = (schemaNode: CompiledSchemaNode): YangStatement | undefined => {
+    if (schemaNode.resolvedType !== "leafref") return undefined;
+    const layers = [schemaNode.type, ...schemaNode.typedefChain.map(typedef => childOf(typedef, "type"))]
+      .filter((layer): layer is YangStatement => Boolean(layer));
+    for (const layer of layers) {
+      if (layer.argument !== "leafref") continue;
+      const path = childOf(layer, "path");
+      if (path?.argument) return path;
+    }
+    return undefined;
+  };
   return (schemaNode, element) => {
-    const pathStatement = schemaNode.type && childOf(schemaNode.type, "path");
-    if (schemaNode.resolvedType !== "leafref" || !pathStatement?.argument) return undefined;
+    const pathStatement = pathStatementOf(schemaNode);
+    if (!pathStatement?.argument) return undefined;
     const owner = schema.modules.find(module => module.argument === schemaNode.module);
     if (!owner) return undefined;
     const key = schemaNode.module + ":" + pathStatement.argument;

@@ -78,37 +78,51 @@ export function validateDataTree(
     }
     for (const child of schemaNode.children) {
       if (child.kind === "choice") {
-        const present = choiceEntries(element, child);
-        if (!present.length && child.properties.mandatory?.[0]?.argument === "true") {
+        // RFC 7950 section 7.9: instance nodes sit directly under the parent,
+        // so descent must continue through choice/case. A mandatory leaf
+        // inside a case only applies when that case is the active one.
+        for (const caseNode of child.children) {
+          const members = caseNode.kind === "case" ? caseNode.children : [caseNode];
+          const active = members.some(member => member.kind !== "choice" && member.kind !== "case"
+            && elementsOf(element, member).length > 0);
+          for (const member of members) {
+            visitChildNode(element, member, { enforceAbsentRequirements: active });
+          }
+        }
+        if (!choiceEntries(element, child).length && child.properties.mandatory?.[0]?.argument === "true") {
           if (child.whenConstraints.length) { indeterminate = true; continue; }
           issue("missing-choice", child, `choice '${child.name}' requires one case`);
         }
         continue;
       }
       if (child.kind === "case") continue;
-      const entries = elementsOf(element, child);
-      if (entries.length > 1 && child.kind !== "list" && child.kind !== "leaf-list") {
-        issue("too-many-elements", child, `node '${child.path}' may appear at most once, found ${entries.length}`);
-      }
-      checkCardinality(entries, child);
-      if (!entries.length) {
-        // A when-gated node cannot be evaluated on absent data: probe it with
-        // a placeholder to learn whether its condition would allow absence.
-        if (child.whenConstraints.length) {
-          const probe = (element.ownerDocument ?? instance).createElementNS(child.namespace, child.name);
-          element.appendChild(probe);
-          try {
-            const statuses = evaluator.evaluateNode(probe).filter(e => e.kind === "when").map(e => e.status);
-            if (statuses.every(status => status === "unmet")) continue;
-            if (statuses.some(status => status === "indeterminate")) { indeterminate = true; continue; }
-          } finally { element.removeChild(probe); }
-        }
-        checkAbsentRequirements(child);
-        continue;
-      }
-      if (child.kind === "list") checkList(child, entries);
-      for (const entry of entries) visitElement(entry, child);
+      visitChildNode(element, child, { enforceAbsentRequirements: true });
     }
+  }
+
+  function visitChildNode(element: Element, child: CompiledSchemaNode, options: { enforceAbsentRequirements: boolean }): void {
+    const entries = elementsOf(element, child);
+    if (entries.length > 1 && child.kind !== "list" && child.kind !== "leaf-list") {
+      issue("too-many-elements", child, `node '${child.path}' may appear at most once, found ${entries.length}`);
+    }
+    checkCardinality(entries, child);
+    if (!entries.length) {
+      // A when-gated node cannot be evaluated on absent data: probe it with
+      // a placeholder to learn whether its condition would allow absence.
+      if (child.whenConstraints.length) {
+        const probe = (element.ownerDocument ?? instance).createElementNS(child.namespace, child.name);
+        element.appendChild(probe);
+        try {
+          const statuses = evaluator.evaluateNode(probe).filter(e => e.kind === "when").map(e => e.status);
+          if (statuses.every(status => status === "unmet")) return;
+          if (statuses.some(status => status === "indeterminate")) { indeterminate = true; return; }
+        } finally { element.removeChild(probe); }
+      }
+      if (options.enforceAbsentRequirements) checkAbsentRequirements(child);
+      return;
+    }
+    if (child.kind === "list") checkList(child, entries);
+    for (const entry of entries) visitElement(entry, child);
   }
 
   function checkCardinality(entries: Element[], child: CompiledSchemaNode): void {
