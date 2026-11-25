@@ -66,19 +66,22 @@ describe("semantic compilation foundation", () => {
   it("applies top-level augments declared in included submodules", async () => {
     const base = parseYang(`module base { namespace "urn:base"; prefix b; container system; }`);
     const extension = parseYang(`module extension {
-      namespace "urn:extension"; prefix e; import base { prefix b; } include extension-extra;
+      namespace "urn:extension"; prefix e; include extension-extra; container local;
     }`);
     const moduleSet = await resolveModuleSet([base, extension], {
       async loadModule() { return undefined; },
       async loadSubmodule(name) {
         return name === "extension-extra" ? `submodule extension-extra {
           belongs-to extension { prefix e; }
+          import base { prefix b; }
           augment /b:system { leaf enabled { type boolean; } }
+          augment /e:local { leaf local-value { type string; } }
         }` : undefined;
       },
     });
     const schema = compileYangModules(moduleSet);
     expect(findNode(schema.roots, "system")?.children).toMatchObject([{ kind: "leaf", name: "enabled", module: "extension" }]);
+    expect(findNode(schema.roots, "local")?.children).toMatchObject([{ kind: "leaf", name: "local-value" }]);
     expect(schema.diagnostics).toEqual([]);
   });
 

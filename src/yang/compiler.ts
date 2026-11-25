@@ -64,8 +64,12 @@ const DATA_KINDS = new Set<SchemaNodeKind>(["container", "list", "leaf", "leaf-l
 const revisionOf = (module: YangModule) => childOf(module, "revision")?.argument ?? "";
 const moduleId = (module: YangModule) => `${module.argument}@${revisionOf(module)}`;
 
-function importedModule(context: YangModule, prefix: string, modules: readonly YangModule[]): YangModule | undefined {
+function importedModule(context: YangModule, prefix: string, modules: readonly YangModule[], submodules: readonly YangModule[] = []): YangModule | undefined {
   if (childOf(context, "prefix")?.argument === prefix) return context;
+  const belongsTo = childOf(context, "belongs-to");
+  if (belongsTo && childOf(belongsTo, "prefix")?.argument === prefix) {
+    return modules.find(module => module.argument === belongsTo.argument);
+  }
   const importNode = childrenOf(context, "import").find(item => childOf(item, "prefix")?.argument === prefix);
   const name = importNode?.argument;
   const candidates = modules.filter(candidate => candidate.argument === name);
@@ -74,11 +78,11 @@ function importedModule(context: YangModule, prefix: string, modules: readonly Y
   return candidates.sort((a, b) => revisionOf(b).localeCompare(revisionOf(a)))[0];
 }
 
-function resolveQName(context: YangModule, qname: string, modules: readonly YangModule[]): { module: YangModule; name: string } | undefined {
+function resolveQName(context: YangModule, qname: string, modules: readonly YangModule[], submodules: readonly YangModule[] = []): { module: YangModule; name: string } | undefined {
   const split = qname.split(":");
   if (split.length === 1) return { module: context, name: split[0]! };
   if (split.length !== 2) return undefined;
-  const module = importedModule(context, split[0]!, modules);
+  const module = importedModule(context, split[0]!, modules, submodules);
   return module ? { module, name: split[1]! } : undefined;
 }
 
@@ -147,7 +151,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       }
       const token = tokens[index++];
       if (!token || token === "and" || token === "or" || token === ")") throw new Error("Expected feature identifier");
-      const resolved = resolveQName(context, token, modules);
+      const resolved = resolveQName(context, token, modules, moduleSet.submodules);
       if (!resolved || !featureExists(resolved.module, resolved.name)) {
         report("unresolved-feature", `Feature '${token}' could not be resolved`, context, source);
         return false;
@@ -180,7 +184,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   const resolveType = (owner: YangModule, type: YangStatement, stack: readonly string[] = []): { name?: string; chain: YangStatement[] } => {
     const typeName = type.argument ?? "";
     if (builtinTypes.has(typeName)) return { name: typeName, chain: [] };
-    const resolved = resolveQName(owner, typeName, modules);
+    const resolved = resolveQName(owner, typeName, modules, moduleSet.submodules);
     if (!resolved) return { chain: [] };
     const key = `${moduleId(resolved.module)}:${resolved.name}`;
     if (stack.includes(key)) {
@@ -212,7 +216,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     instantiatingModule: YangModule = owner,
   ): CompiledSchemaNode[] => {
     if (statement.keyword === "uses") {
-      const resolved = resolveQName(owner, statement.argument ?? "", modules);
+      const resolved = resolveQName(owner, statement.argument ?? "", modules, moduleSet.submodules);
       if (!resolved) { report("unresolved-prefix", `Cannot resolve uses '${statement.argument ?? ""}'`, owner, statement); return []; }
       const groupingId = `${moduleId(resolved.module)}:${resolved.name}`;
       if (groupingStack.includes(groupingId)) { report("uses-cycle", `Grouping uses cycle: ${[...groupingStack, groupingId].join(" -> ")}`, owner, statement); return []; }
@@ -305,7 +309,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     node.children = normalizeChoiceChildren(dataChildren(statement).flatMap(child => makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatureRequirements)), node);
     if (kind === "list") {
       for (const key of keys) {
-        const resolvedKey = resolveQName(instantiatingModule, key, modules);
+        const resolvedKey = resolveQName(instantiatingModule, key, modules, moduleSet.submodules);
         const keyLeaf = resolvedKey && node.children.find(child =>
           child.kind === "leaf" && child.name === resolvedKey.name && child.module === resolvedKey.module.argument,
         );
@@ -352,7 +356,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
 
   const qnamePath = (module: YangModule, path: string): Array<{ module: YangModule; name: string }> | undefined => {
     const parts = path.split("/").filter(Boolean);
-    const resolved = parts.map(part => resolveQName(module, part, modules));
+    const resolved = parts.map(part => resolveQName(module, part, modules, moduleSet.submodules));
     return resolved.every(Boolean) ? resolved as Array<{ module: YangModule; name: string }> : undefined;
   };
   const findTarget = (path: Array<{ module: YangModule; name: string }>): CompiledSchemaNode | undefined => {
@@ -366,7 +370,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     return result;
   };
   const augments = modules.flatMap(module => [module, ...submodulesFor(module)].flatMap(source =>
-    childrenOf(source, "augment").map(statement => ({ module, statement })),
+    childrenOf(source, "augment").map(statement => ({ module, source, statement })),
   ));
   const pending = [...augments];
   let madeProgress = true;
@@ -374,7 +378,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     madeProgress = false;
     for (let index = pending.length - 1; index >= 0; index--) {
       const item = pending[index]!;
-      const path = qnamePath(item.module, item.statement.argument ?? "");
+      const path = qnamePath(item.source, item.statement.argument ?? "");
       if (!path) { report("unresolved-prefix", `Cannot resolve augment path '${item.statement.argument ?? ""}'`, item.module, item.statement); pending.splice(index, 1); continue; }
       const target = findTarget(path);
       if (!target) continue;
@@ -409,10 +413,10 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   const repeatableProperty = (node: CompiledSchemaNode, property: string) =>
     property === "must" || property === "unique" || (property === "default" && node.kind === "leaf-list");
   const deviationSources = modules.flatMap(module => [module, ...submodulesFor(module)].flatMap(source =>
-    childrenOf(source, "deviation").map(statement => ({ module, statement })),
+    childrenOf(source, "deviation").map(statement => ({ module, source, statement })),
   ));
-  for (const { module, statement } of deviationSources) {
-    const path = qnamePath(module, statement.argument ?? "");
+  for (const { module, source, statement } of deviationSources) {
+    const path = qnamePath(source, statement.argument ?? "");
     const targetLocation = path && locateTarget(path);
     if (!targetLocation) {
       report("unresolved-deviation", `Deviation target '${statement.argument ?? ""}' was not found`, module, statement);
@@ -501,7 +505,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
         if (options.enabledFeatures && !featureRequirementsEnabled(requirements)) continue;
         const bases: string[] = [];
         for (const base of childrenOf(statement, "base")) {
-          const resolved = resolveQName(module, base.argument ?? "", modules);
+          const resolved = resolveQName(source, base.argument ?? "", modules, moduleSet.submodules);
           if (!resolved) {
             report("unresolved-identity", `Identity base '${base.argument ?? ""}' could not be resolved`, module, base);
             continue;
