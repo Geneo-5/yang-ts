@@ -38,7 +38,7 @@ Delivered: source-linked schema IR, grouping expansion with `refine`, choices/ca
 
 Open defects:
 - [x] Nested nodes of a grouping defined in another module now inherit the instantiating module/namespace (`instantiatingModule` and inherited `when`/`if-feature` are forwarded to every expansion level), regression-tested in `tests/stage7-p0.test.ts` (2026-11-26).
-- [ ] Submodule context: top-level data nodes, operations and augment children of a submodule are compiled in the parent module's context, so imports/prefixes declared only in the submodule are not visible to their `type`, `uses` and XPath.
+- [x] Submodule context: data nodes, operations, augment and deviation statements of a submodule now resolve their `type`, `uses` and augment paths in the submodule's own document (its imports and its `belongs-to` prefix), keeping the parent module's namespace for schema identity; XPath prefix maps (`moduleNamespacePrefixes`) include the included submodules' imports and `belongs-to` prefixes (2026-11-26, `tests/stage7-p1.test.ts`).
 - [ ] `refine` of a `leaf` rejects `mandatory` (allowed by RFC 7950 §7.13.2); `augment` inside `uses` is ignored.
 - [ ] Typedef and grouping lookup ignores scoping rules (§6.2.1) and walks the whole module per reference (O(N²)); needs a per-module index.
 - [ ] `when` inherited through several levels is always evaluated at the immediate parent element.

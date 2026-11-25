@@ -2,19 +2,28 @@ import { YangModule, YangStatement } from "./ast.js";
 import { childOf, childrenOf } from "./parser.js";
 import { YangModuleSet } from "./module-set.js";
 
-/** Prefix → namespace map for XPath written inside `moduleName`: its own prefix first (RFC 7950 §6.4.1), then imports. */
+/** Prefix → namespace map for XPath written inside `moduleName`: its own prefix first (RFC 7950 §6.4.1), then imports.
+ * Submodules included by `moduleName` contribute their imports too, and their
+ * `belongs-to` prefix resolves to the module's namespace; the module's own
+ * declarations win over collisions. */
 export function moduleNamespacePrefixes(schema: CompiledYangSchema, moduleName: string): Record<string, string> {
   const map: Record<string, string> = {};
+  const put = (prefix: string | undefined, namespace: string | undefined) => {
+    if (prefix && namespace && map[prefix] === undefined) map[prefix] = namespace;
+  };
   const owner = schema.modules.find(module => module.argument === moduleName);
-  if (owner) {
-    const ownPrefix = childOf(owner, "prefix")?.argument;
-    const ownNamespace = childOf(owner, "namespace")?.argument;
-    if (ownPrefix && ownNamespace) map[ownPrefix] = ownNamespace;
-    for (const importNode of childrenOf(owner, "import")) {
-      const prefix = childOf(importNode, "prefix")?.argument;
+  const included = owner ? schema.submodules.filter(submodule => childOf(submodule, "belongs-to")?.argument === owner.argument) : [];
+  for (const doc of owner ? [owner, ...included] : []) {
+    const belongsTo = doc === owner ? undefined : childOf(doc, "belongs-to");
+    const parent = belongsTo && schema.modules.find(module => module.argument === belongsTo.argument);
+    if (doc === owner) {
+      put(childOf(doc, "prefix")?.argument, childOf(doc, "namespace")?.argument);
+    } else if (parent) {
+      put(belongsTo && childOf(belongsTo, "prefix")?.argument, childOf(parent, "namespace")?.argument);
+    }
+    for (const importNode of childrenOf(doc, "import")) {
       const imported = schema.modules.find(module => module.argument === importNode.argument);
-      const namespace = imported && childOf(imported, "namespace")?.argument;
-      if (prefix && namespace) map[prefix] = namespace;
+      put(childOf(importNode, "prefix")?.argument, imported && childOf(imported, "namespace")?.argument);
     }
   }
   return map;
@@ -77,6 +86,7 @@ export interface CompiledYangSchema {
   identities: readonly CompiledIdentity[];
   diagnostics: CompilerDiagnostic[];
   modules: readonly YangModule[];
+  submodules: readonly YangModule[];
 }
 
 export interface YangCompilerOptions {
@@ -332,9 +342,12 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     groupingStack: readonly string[] = [], inheritedWhen: readonly YangStatement[] = [],
     inheritedFeatures: readonly { module: string; expression: string; source: YangStatement }[] = [],
     instantiatingModule: YangModule = owner,
+    // Prefixes of type/uses references resolve in the document that carries the
+    // statement (module or submodule, RFC 7950 §5.6.2), not in the namespace module.
+    sourceModule: YangModule = owner,
   ): CompiledSchemaNode[] => {
     if (statement.keyword === "uses") {
-      const resolved = resolveQName(owner, statement.argument ?? "", modules, moduleSet.submodules);
+      const resolved = resolveQName(sourceModule, statement.argument ?? "", modules, moduleSet.submodules);
       if (!resolved) { report("unresolved-prefix", `Cannot resolve uses '${statement.argument ?? ""}'`, owner, statement); return []; }
       const groupingId = `${moduleId(resolved.module)}:${resolved.name}`;
       if (groupingStack.includes(groupingId)) { report("uses-cycle", `Grouping uses cycle: ${[...groupingStack, groupingId].join(" -> ")}`, owner, statement); return []; }
@@ -343,7 +356,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       const features = [...inheritedFeatures, ...childrenOf(statement, "if-feature").map(item => ({ module: owner.argument, expression: item.argument ?? "", source: item }))];
       if (options.enabledFeatures && !featureRequirementsEnabled(features)) return [];
       const when = [...inheritedWhen, ...childrenOf(statement, "when")];
-      const expanded = dataChildren(grouping).flatMap(child => makeNode(child, resolved.module, parentPath, inheritedConfig, [...groupingStack, groupingId], when, features, instantiatingModule));
+      const expanded = dataChildren(grouping).flatMap(child => makeNode(child, resolved.module, parentPath, inheritedConfig, [...groupingStack, groupingId], when, features, instantiatingModule, resolved.module));
       const refineAllowed: Record<string, ReadonlySet<string>> = {
         leaf: new Set(["default", "description", "reference", "config", "must", "if-feature"]),
         "leaf-list": new Set(["default", "description", "reference", "config", "min-elements", "max-elements", "must", "if-feature"]),
@@ -404,7 +417,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     const nodeWhen = [...inheritedWhen, ...childrenOf(statement, "when")];
     const nodeFeatures = nodeFeatureRequirements.map(requirement => requirement.expression);
     const typeStatement = childOf(statement, "type");
-    const resolvedType = typeStatement ? resolveType(owner, typeStatement) : undefined;
+    const resolvedType = typeStatement ? resolveType(sourceModule, typeStatement) : undefined;
     if (typeStatement && !resolvedType?.name) report("unresolved-type", `Type '${typeStatement.argument ?? ""}' could not be resolved`, owner, typeStatement);
     const node: CompiledSchemaNode = {
       kind, name, module: instantiatingModule.argument, namespace: childOf(instantiatingModule, "namespace")?.argument ?? "",
@@ -429,7 +442,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     // namespace. Inherited when/if-feature keep propagating from the parent.
     node.children = normalizeChoiceChildren(
       dataChildren(statement).flatMap(child =>
-        makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatureRequirements, instantiatingModule)),
+        makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatureRequirements, instantiatingModule, sourceModule)),
       node,
     );
     if (kind === "list") {
@@ -474,7 +487,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   for (const module of modules) {
     const ownerStatements = [module, ...submodulesFor(module)];
     for (const owner of ownerStatements) {
-      for (const statement of dataChildren(owner)) roots.push(...makeNode(statement, module, "", true));
+      for (const statement of dataChildren(owner)) roots.push(...makeNode(statement, module, "", true, [], [], [], module, owner));
     }
   }
   for (const module of modules) checkDuplicates(roots.filter(node => node.module === module.argument), module);
@@ -494,9 +507,9 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     }
     return result;
   };
-  const pendingAugmentActions: Array<{ module: YangModule; statement: YangStatement; parentPath: string; schemaPath: readonly { module: string; name: string }[] }> = [];
-  const pendingAugmentNotifications: Array<{ module: YangModule; statement: YangStatement; parentPath: string; schemaPath: readonly { module: string; name: string }[] }> = [];
-  const operationAugments: Array<{ module: YangModule; statement: YangStatement; target: Array<{ module: YangModule; name: string }>; scope: "input" | "output" | "data" }> = [];
+  const pendingAugmentActions: Array<{ module: YangModule; statement: YangStatement; parentPath: string; schemaPath: readonly { module: string; name: string }[]; source: YangModule }> = [];
+  const pendingAugmentNotifications: Array<{ module: YangModule; statement: YangStatement; parentPath: string; schemaPath: readonly { module: string; name: string }[]; source: YangModule }> = [];
+  const operationAugments: Array<{ module: YangModule; statement: YangStatement; target: Array<{ module: YangModule; name: string }>; scope: "input" | "output" | "data"; source: YangModule }> = [];
   const augments = modules.flatMap(module => [module, ...submodulesFor(module)].flatMap(source =>
     childrenOf(source, "augment").map(statement => ({ module, source, statement })),
   ));
@@ -518,7 +531,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
         if (last && (last.name === "input" || last.name === "output" || notificationTarget)) {
           operationAugments.push({
             module: item.module, statement: item.statement, target: path,
-            scope: last.name === "input" || last.name === "output" ? last.name : "data",
+            scope: last.name === "input" || last.name === "output" ? last.name : "data", source: item.source,
           });
           pending.splice(index, 1);
           madeProgress = true;
@@ -544,15 +557,15 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
         }
         return false;
       });
-      const additions = normalizeChoiceChildren(augmentChildren.flatMap(child => makeNode(child, item.module, target.path, target.config, [], augmentWhen, augmentFeatures, item.module)), target);
+      const additions = normalizeChoiceChildren(augmentChildren.flatMap(child => makeNode(child, item.module, target.path, target.config, [], augmentWhen, augmentFeatures, item.module, item.source)), target);
       if (target.kind === "container" || target.kind === "list") {
         for (const action of childrenOf(item.statement, "action")) pendingAugmentActions.push({
           module: item.module, statement: action, parentPath: target.path,
-          schemaPath: path.map(part => ({ module: part.module.argument, name: part.name })),
+          schemaPath: path.map(part => ({ module: part.module.argument, name: part.name })), source: item.source,
         });
         for (const notification of childrenOf(item.statement, "notification")) pendingAugmentNotifications.push({
           module: item.module, statement: notification, parentPath: target.path,
-          schemaPath: path.map(part => ({ module: part.module.argument, name: part.name })),
+          schemaPath: path.map(part => ({ module: part.module.argument, name: part.name })), source: item.source,
         });
       }
       for (const addition of additions) {
@@ -653,14 +666,15 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   const compileOperation = (
     module: YangModule, statement: YangStatement, parentPath = "",
     parentSchemaPath: readonly { module: string; name: string }[] = [],
+    sourceModule: YangModule = module,
   ) => {
     if (statement.keyword !== "rpc" && statement.keyword !== "action" && statement.keyword !== "notification") return;
     const operationPath = `${parentPath}/${statement.argument ?? ""}`;
     const compileScope = (scope: YangStatement | undefined, name: "input" | "output") => scope
-      ? dataChildren(scope).flatMap(child => makeNode(child, module, `${operationPath}/${name}`, true))
+      ? dataChildren(scope).flatMap(child => makeNode(child, module, `${operationPath}/${name}`, true, [], [], [], module, sourceModule))
       : [];
     const data = statement.keyword === "notification"
-      ? dataChildren(statement).flatMap(child => makeNode(child, module, operationPath, false))
+      ? dataChildren(statement).flatMap(child => makeNode(child, module, operationPath, false, [], [], [], module, sourceModule))
       : [];
     operations.push({
       kind: statement.keyword, name: statement.argument ?? "", module: module.argument, path: operationPath, source: statement,
@@ -672,7 +686,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   for (const module of modules) {
     for (const source of [module, ...submodulesFor(module)]) {
       for (const statement of source.children) {
-        if (statement.keyword === "rpc" || statement.keyword === "notification") compileOperation(module, statement);
+        if (statement.keyword === "rpc" || statement.keyword === "notification") compileOperation(module, statement, "", [], source);
       }
     }
   }
@@ -686,10 +700,10 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   };
   collectNestedActions(roots);
   for (const action of pendingAugmentActions) {
-    compileOperation(action.module, action.statement, action.parentPath, action.schemaPath);
+    compileOperation(action.module, action.statement, action.parentPath, action.schemaPath, action.source);
   }
   for (const notification of pendingAugmentNotifications) {
-    compileOperation(notification.module, notification.statement, notification.parentPath, notification.schemaPath);
+    compileOperation(notification.module, notification.statement, notification.parentPath, notification.schemaPath, notification.source);
   }
   for (const augment of operationAugments) {
     const targetSchemaPath = (augment.scope === "data" ? augment.target : augment.target.slice(0, -1))
@@ -713,7 +727,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       }
       return false;
     });
-    const additions = augmentChildren.flatMap(child => makeNode(child, augment.module, targetPath, inheritedConfig, [], childrenOf(augment.statement, "when"), childrenOf(augment.statement, "if-feature").map(feature => ({ module: augment.module.argument, expression: feature.argument ?? "", source: feature })), augment.module));
+    const additions = augmentChildren.flatMap(child => makeNode(child, augment.module, targetPath, inheritedConfig, [], childrenOf(augment.statement, "when"), childrenOf(augment.statement, "if-feature").map(feature => ({ module: augment.module.argument, expression: feature.argument ?? "", source: feature })), augment.module, augment.source));
     for (const addition of additions) {
       if (targetNodes.some(child => child.module === addition.module && child.name === addition.name)) {
         report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${targetPath}'`, augment.module, addition.source);
@@ -765,7 +779,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     visited.add(id);
   };
   for (const identity of identities) checkIdentityCycle(identity);
-  return { roots, operations, identities, diagnostics, modules };
+  return { roots, operations, identities, diagnostics, modules, submodules: moduleSet.submodules };
 }
 
 /** Test transitive identity derivation using module-qualified `module:name` identities. */

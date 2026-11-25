@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { childOf, parseYang, YangSyntaxError } from "../src/index.js";
+import {
+  childOf, compileYangModules, moduleNamespacePrefixes, parseYang, resolveModuleSet, YangSyntaxError,
+} from "../src/index.js";
+import type { CompiledSchemaNode, CompiledYangSchema } from "../src/index.js";
 
 /** Builds a module wrapping the given inner statements. */
 const wrap = (inner: string, indent = "        ") => `module sample {\n${indent}namespace "urn:sample";\n${indent}prefix s;\n${indent}${inner}\n}`;
@@ -10,6 +13,90 @@ const statementOf = (source: string, keyword: string) => {
   if (!found) throw new Error(`Statement ${keyword} not found in test source`);
   return found;
 };
+
+describe("Stage 7 P1 – submodule compile context (RFC 7950 §5.6.2)", () => {
+  const ownerYang = `module owner {
+    yang-version 1.1;
+    namespace "urn:owner";
+    prefix own;
+    import dep { prefix dp; }
+    include parts;
+    leaf flagged { type boolean; }
+  }`;
+  const depYang = `module dep {
+    yang-version 1.1;
+    namespace "urn:dep";
+    prefix d;
+    typedef dep-type { type string; }
+    grouping dep-grouping { container dep-container; }
+  }`;
+  const submoduleYang = `submodule parts {
+    yang-version 1.1;
+    belongs-to owner { prefix op; }
+    import dep { prefix sp; }
+    container parts-root {
+      leaf typed-leaf { type sp:dep-type; }
+      uses sp:dep-grouping;
+      leaf conditional {
+        type string;
+        when "op:flagged = 'true'";
+      }
+    }
+    augment "/op:parts-root" {
+      container extra;
+      leaf extra-leaf { type sp:dep-type; }
+    }
+  }`;
+
+  const compileSet: Promise<CompiledYangSchema> = (async () => {
+    const resolved = await resolveModuleSet([parseYang(ownerYang), parseYang(depYang)], {
+      async loadSubmodule() { return parseYang(submoduleYang); },
+    });
+    return compileYangModules(resolved);
+  })();
+
+  const rootOf = async (name: string): Promise<CompiledSchemaNode> => {
+    const schema = await compileSet;
+    const root = schema.roots.find(node => node.name === name);
+    if (!root) throw new Error(`Root '${name}' not found`);
+    return root;
+  };
+  const childAt = (node: CompiledSchemaNode, name: string): CompiledSchemaNode => {
+    const child = node.children.find(candidate => candidate.name === name);
+    if (!child) throw new Error(`Child '${name}' not found under ${node.path}`);
+    return child;
+  };
+
+  it("compiles submodule data nodes in the parent module namespace", async () => {
+    const schema = await compileSet;
+    expect(schema.diagnostics).toEqual([]);
+    expect((await rootOf("parts-root")).module).toBe("owner");
+  });
+
+  it("resolves types declared only in the submodule's own imports", async () => {
+    const schema = await compileSet;
+    expect(schema.diagnostics).toEqual([]);
+    expect(childAt(await rootOf("parts-root"), "typed-leaf").resolvedType).toBe("string");
+    expect(childAt(await rootOf("parts-root"), "extra-leaf").resolvedType).toBe("string");
+  });
+
+  it("expands a uses referencing a grouping through the submodule's imports", async () => {
+    const schema = await compileSet;
+    expect(schema.diagnostics).toEqual([]);
+    const root = await rootOf("parts-root");
+    expect(() => childAt(root, "dep-container")).not.toThrow();
+  });
+
+  it("resolves XPath prefixes declared by the module and its submodules", async () => {
+    const schema = await compileSet;
+    expect(moduleNamespacePrefixes(schema, "owner")).toMatchObject({
+      own: "urn:owner",
+      dp: "urn:dep",
+      op: "urn:owner",
+      sp: "urn:dep",
+    });
+  });
+});
 
 describe("Stage 7 P1 – parser string tokens (RFC 7950 §6.1.3)", () => {
   it("accepts quoted arguments whose value is a delimiter", () => {
