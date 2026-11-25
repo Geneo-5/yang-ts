@@ -1,0 +1,22 @@
+{
+  "name": "yang-browser-engine",
+  "version": "0.1.0",
+  "description": "Browser-first TypeScript foundation for YANG 1.1 schema compilation and UI introspection.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "engines": { "node": ">=20" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
+  "files": ["dist", "examples", "README.md", "ARCHITECTURE.md", "ROADMAP.md", "TESTING.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
+  }
+}
