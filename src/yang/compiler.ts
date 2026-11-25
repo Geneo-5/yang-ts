@@ -108,6 +108,15 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   const submodulesFor = (module: YangModule): YangModule[] => moduleSet.submodules.filter(submodule =>
     childOf(submodule, "belongs-to")?.argument === module.argument,
   );
+  const parentModuleFor = (context: YangModule): YangModule => {
+    const parentName = childOf(context, "belongs-to")?.argument;
+    return parentName ? modules.find(module => module.argument === parentName) ?? context : context;
+  };
+  const relatedSources = (context: YangModule): YangModule[] => {
+    const parent = parentModuleFor(context);
+    return [parent, ...submodulesFor(parent)];
+  };
+  const canonicalModule = (context: YangModule): YangModule => parentModuleFor(context);
   const findTypedef = (module: YangModule, name: string): YangStatement | undefined => {
     const visit = (statement: YangStatement): YangStatement | undefined => {
       for (const child of statement.children) {
@@ -117,20 +126,20 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       }
       return undefined;
     };
-    return [module, ...submodulesFor(module)].map(visit).find(Boolean);
+    return relatedSources(module).map(visit).find(Boolean);
   };
   const builtinTypes = new Set([
     "binary", "bits", "boolean", "decimal64", "empty", "enumeration", "identityref", "instance-identifier",
     "int8", "int16", "int32", "int64", "leafref", "string", "uint8", "uint16", "uint32", "uint64", "union",
   ]);
   const featureCache = new Map<string, boolean>();
-  const featureExists = (module: YangModule, name: string) => [module, ...submodulesFor(module)].some(source =>
+  const featureExists = (module: YangModule, name: string) => relatedSources(module).some(source =>
     childrenOf(source, "feature").some(feature => feature.argument === name),
   );
   const evaluateFeature = (moduleName: string, expression: string, source: YangStatement): boolean => {
     const cacheKey = `${moduleName}:${expression}`;
     if (featureCache.has(cacheKey)) return featureCache.get(cacheKey)!;
-    const context = modules.find(module => module.argument === moduleName);
+    const context = [...modules, ...moduleSet.submodules].find(module => module.argument === moduleName);
     if (!context) return false;
     const tokens = expression.match(/[A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?|[()]/g) ?? [];
     if (tokens.join("") !== expression.replace(/\s+/g, "")) {
@@ -156,7 +165,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
         report("unresolved-feature", `Feature '${token}' could not be resolved`, context, source);
         return false;
       }
-      return Boolean(options.enabledFeatures?.has(`${resolved.module.argument}:${resolved.name}`));
+      return Boolean(options.enabledFeatures?.has(`${canonicalModule(resolved.module).argument}:${resolved.name}`));
     };
     const conjunction = (): boolean => {
       let value = primary();
@@ -206,7 +215,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       }
       return undefined;
     };
-    return [owner, ...submodulesFor(owner)].map(visit).find(Boolean);
+    return relatedSources(owner).map(visit).find(Boolean);
   };
 
   const makeNode = (
@@ -505,12 +514,12 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
         if (options.enabledFeatures && !featureRequirementsEnabled(requirements)) continue;
         const bases: string[] = [];
         for (const base of childrenOf(statement, "base")) {
-          const resolved = resolveQName(source, base.argument ?? "", modules, moduleSet.submodules);
+      const resolved = resolveQName(source, base.argument ?? "", modules, moduleSet.submodules);
           if (!resolved) {
             report("unresolved-identity", `Identity base '${base.argument ?? ""}' could not be resolved`, module, base);
             continue;
           }
-          bases.push(`${resolved.module.argument}:${resolved.name}`);
+          bases.push(`${canonicalModule(resolved.module).argument}:${resolved.name}`);
         }
         identities.push({ name: statement.argument ?? "", module: module.argument, namespace: childOf(module, "namespace")?.argument ?? "", bases, source: statement });
       }

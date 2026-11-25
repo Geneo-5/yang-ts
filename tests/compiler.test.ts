@@ -85,6 +85,29 @@ describe("semantic compilation foundation", () => {
     expect(schema.diagnostics).toEqual([]);
   });
 
+  it("resolves typedefs, groupings and features declared in included submodules", async () => {
+    const module = parseYang(`module shared {
+      namespace "urn:shared"; prefix s; include shared-extra;
+      container settings { uses record; }
+    }`);
+    const moduleSet = await resolveModuleSet([module], {
+      async loadModule() { return undefined; },
+      async loadSubmodule(name) {
+        return name === "shared-extra" ? `submodule shared-extra {
+          belongs-to shared { prefix s; }
+          feature advanced;
+          typedef record-id { type uint16; }
+          grouping record { leaf id { type record-id; if-feature advanced; } }
+        }` : undefined;
+      },
+    });
+    const withoutFeature = compileYangModules(moduleSet, { enabledFeatures: new Set() });
+    const withFeature = compileYangModules(moduleSet, { enabledFeatures: new Set(["shared:advanced"]) });
+    expect(findNode(withoutFeature.roots, "settings")?.children).toEqual([]);
+    expect(findNode(withFeature.roots, "id")).toMatchObject({ kind: "leaf", resolvedType: "uint16", module: "shared" });
+    expect(withFeature.diagnostics).toEqual([]);
+  });
+
   it("validates list keys against effective children introduced by uses", async () => {
     const module = parseYang(`module keyed {
       namespace "urn:keyed"; prefix k;
