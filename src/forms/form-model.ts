@@ -342,10 +342,10 @@ function inheritedIntervals(
     const expression = statement.argument ?? "";
     constraints.push({ expression, minimum: inheritedMinimum, maximum: inheritedMaximum });
     const intervals = expression.split("|").map(part => {
-      const endpoints = part.trim().split("..");
-      const lowText = endpoints[0] ?? "";
-      const highText = endpoints[1] ?? lowText;
-      return [parse(lowText), parse(highText)] as const;
+      // RFC 7950 range syntax allows whitespace around the ".." separator.
+      const [lowText = "", highText] = part.trim().split("..");
+      const highTrimmed = (highText ?? lowText).trim();
+      return [parse(lowText.trim()), parse(highTrimmed)] as const;
     });
     const lows = intervals.map(interval => interval[0]).filter((value): value is bigint => value !== undefined);
     const highs = intervals.map(interval => interval[1]).filter((value): value is bigint => value !== undefined);
@@ -356,14 +356,16 @@ function inheritedIntervals(
 }
 function inIntervals(value: bigint, expression: string, decimalDigits?: number, bounds?: readonly [bigint, bigint]): boolean {
   return expression.split("|").some(part => {
-    const endpoints = part.trim().split("..");
+    const [lowText = "", highText] = part.trim().split("..");
+    const low = lowText.trim();
+    const high = (highText ?? low).trim();
     const parse = (endpoint: string): bigint | undefined => {
       if (endpoint === "min") return bounds?.[0];
       if (endpoint === "max") return bounds?.[1];
       return decimalDigits === undefined ? (/^[+-]?\d+$/.test(endpoint) ? BigInt(endpoint) : undefined) : decimalScaled(endpoint, decimalDigits);
     };
-    const lo = parse(endpoints[0] ?? "");
-    const hi = parse(endpoints[1] ?? endpoints[0] ?? "");
+    const lo = parse(low);
+    const hi = parse(high);
     return (lo === undefined || value >= lo) && (hi === undefined || value <= hi);
   });
 }

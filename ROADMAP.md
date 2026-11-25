@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2, 4 and 5 are complete; Stage 3 is in progress with its restriction validation mostly done; Stage 6 is pending. Last updated: 2026-11 (Stage 5 closed; Stage 3 gained canonical values and form cross-reference validation).
+This roadmap targets an RFC 7950 YANG 1.1 engine that runs entirely in browsers. It is intentionally incremental: a later stage starts only when its predecessor has usable diagnostics and regression fixtures. Stages 0–2 and 4–5 are complete; Stage 3 is complete with its boundary corpus; Stage 6 is pending. Last updated: 2026-11 (Stage 3 closed with the boundary corpus; form cross-reference validation added).
 
 ## Stage 0 — Parser foundation (complete)
 
@@ -36,7 +36,7 @@ Exit: complete dependency closures for oven and the interface fixture set; tests
 - Implemented augments targeting RPC/action `input` and `output` nodes and notification content, including operation path matching across module namespaces; invalid target and child statement kinds produce diagnostics.
 - Exit met: the interface base plus the fixture augment modules compile into an inspectable effective tree (`tests/compiler.test.ts`, `tests/yang-fixtures.test.ts`); invalid paths and unresolved names are diagnostics, not silent skips. Residual statement-legality breadth and negative coverage fold into the Stage 6 conformance matrix work.
 
-## Stage 3 — Type system and canonical values (in progress)
+## Stage 3 — Type system and canonical values (complete)
 
 - Implement all built-in YANG types and restrictions: range, length, pattern, enum, bits, union, decimal64, identityref, leafref and instance-identifier.
 - Resolve derived typedef restrictions, defaults and canonical representations.
@@ -49,9 +49,11 @@ Exit: complete dependency closures for oven and the interface fixture set; tests
 - Form validation checks canonical Base64 syntax and decoded octet length for `binary` without Node APIs.
 - Canonical value representations now exist as `canonicalFormOf`: integers drop sign padding and leading zeros within type order, decimal64 re-renders with exactly its inherited `fraction-digits`, boolean normalizes JavaScript booleans, bits re-join selections ordered by bit position (declaration order otherwise), and binary strips insignificant base64 whitespace; cross-reference types stay undefined because they need instance context.
 - Leafref and identityref form validation now resolves cross references (`FormCrossReference`, `tests/cross-reference.test.ts`): a leafref value is matched against the declared path evaluated from the anchor element's document, and identityref values are accepted when they name an identity derived from one of the declared bases (module-qualified or plain names, imported prefixes resolved); without context the types stay indeterminate with the explicit pending reason.
-- Remaining: an exhaustive RFC-linked boundary corpus before the exit criterion close.
+- An RFC-linked boundary corpus is checked in (`tests/boundaries.test.ts`): every integer width at its exact boundaries including exact 64-bit bigint values, decimal64 scaled range limits and derived `fraction-digits`, inherited length/range restrictions through typedef chains with derived-range narrowing, implicitly-anchored derived patterns with unsupported XML Schema syntax reported as pending, binary octet-length boundaries over canonical base64, and enum/bits restriction narrowing.
+- The corpus exposed a real defect, since fixed: whitespace around the `..` separator in `range` and `length` expressions ("10 .. 90") made endpoints unparsable and the constraint silently satisfied; endpoints are now trimmed and counter-examples at the edges are tested.
+- Remaining: residual breadth (unusual restriction combinations, exotic patterns) folds into the Stage 6 conformance matrix.
 
-Exit: RFC-linked positive/negative type tests, including inherited restrictions and boundary values.
+Exit met: RFC-linked positive/negative type tests, including inherited restrictions and boundary values (`tests/boundaries.test.ts`, `tests/forms.test.ts`, type-restriction compiler tests).
 
 ## Stage 4 — XPath 1.0 and YANG evaluation context (complete)
 
