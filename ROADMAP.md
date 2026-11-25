@@ -30,7 +30,7 @@ Exit: complete dependency closures for oven and the interface fixture set; tests
 - Apply augments and deviations; evaluate `if-feature` expressions to create a feature-specific effective schema.
 - Preserve source locations and provenance on every compiled node.
 - Implemented foundation: data/RPC/notification schema nodes (including top-level declarations in included submodules), effective list-key checks after `uses` expansion and matching `config` inheritance, simple typedef-chain resolution, use-site grouping instantiation and `refine`, QName-based augment paths, explicit and shorthand choice cases, `must`/`when` provenance, feature filtering, and RFC 7950 deviations (`not-supported`, `add`, `replace`, `delete`) with property checks.
-- Remaining: nested actions and operation augments, full submodule semantic scoping, statement legality/cardinality, complete type restrictions and broader negative coverage.
+- Remaining: nested actions and operation augments, full submodule semantic scoping (especially submodule-local import/prefix resolution), statement legality/cardinality, complete type restrictions and broader negative coverage.
 
 Exit: the interface base plus all fixture augment modules compile into an inspectable effective tree; invalid paths and unresolved names are diagnostics, not silent skips.
 

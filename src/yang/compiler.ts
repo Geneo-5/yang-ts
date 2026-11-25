@@ -365,7 +365,9 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     }
     return result;
   };
-  const augments = modules.flatMap(module => childrenOf(module, "augment").map(statement => ({ module, statement })));
+  const augments = modules.flatMap(module => [module, ...submodulesFor(module)].flatMap(source =>
+    childrenOf(source, "augment").map(statement => ({ module, statement })),
+  ));
   const pending = [...augments];
   let madeProgress = true;
   while (pending.length && madeProgress) {
