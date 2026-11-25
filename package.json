@@ -25,12 +25,13 @@
     "CONFORMANCE.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/build-example.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "devDependencies": {
     "@xmldom/xmldom": "^0.9.12",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12"
   },

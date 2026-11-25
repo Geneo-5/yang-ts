@@ -43,4 +43,25 @@ describe("example pages", () => {
     const fixture = readFileSync(`${root}/tests/fixtures/yang/sysrepo/oven.yang`, "utf8");
     expect(shipped).toBe(fixture);
   });
+
+  // standalone.html must run from file:// (double-click) or Live Server, so it
+  // may not rely on ES-module imports, network fetches, or external files.
+  // standalone.html must run from file:// (double-click) or Live Server, so it
+  // may not rely on ES-module imports, network fetches, or external files.
+  it("keeps standalone.html self-contained: embedded bundle, embedded schema, no external loads", async () => {
+    const html = readFileSync(`${examplesDir}/standalone.html`, "utf8");
+    expect(html).toContain("</html>");
+    expect(html).not.toContain("<script type=\"module\"");
+    expect(html).not.toMatch(/fetch\s*\(/, "standalone page must not fetch anything");
+    for (const match of html.matchAll(/<script[^>]*(\ssrc=)?/g)) {
+      expect(match[1], "standalone page must not load external scripts").toBeUndefined();
+    }
+    expect(html).toContain("YangEngine");
+    // The embedded schema must be the real oven schema, escaped for embedding.
+    const decoded = JSON.parse(html.match(/const OVEN_YANG = ("(?:[^"\\]|\\.)*");/s)![1]!);
+    expect(decoded).toBe(readFileSync(`${examplesDir}/oven.yang`, "utf8"));
+    // No unresolved placeholders from the build step.
+    expect(html).not.toContain("/*__ENGINE__*/");
+    expect(html).not.toContain("/*__YANG__*/");
+  });
 });

@@ -5,7 +5,7 @@
   <title>YANG browser parser example</title>
   <body>
     <h1>Sysrepo oven: build an RPC request</h1>
-    <p>This demo reads the oven YANG file in the browser, validates the RPC input, and previews a RESTCONF request. It does not send it. Serve this repository over HTTP (for example <code>python3 -m http.server</code> at the repository root) and open this page at <code>http://localhost:8000/examples/browser-usage.html</code> — browsers block module imports on <code>file:</code> pages.</p>
+    <p>This demo reads the oven YANG file in the browser, validates the RPC input, and previews a RESTCONF request. It does not send it. This page needs ES modules over HTTP: serve the repository root with any static server (<code>npx serve</code>, the VS Code Live Server extension, …) and open it at <code>/examples/browser-usage.html</code>. To open the demo straight from the file system (double-click or <code>file:</code> URL), use <code>standalone.html</code> next to it — it bundles the engine and the schema inline.</p>
     <label for="time">Insert-food timing</label>
     <select id="time"></select>
     <pre id="result" aria-live="polite"></pre>
@@ -16,7 +16,7 @@
       // Surface every failure in the page: a silent blank page is the worst outcome.
       const fail = message => { result.textContent = message; };
       try {
-        if (location.protocol === "file:") throw new Error("Open this page over HTTP (see the note above); browsers block module imports on file: pages.");
+        if (location.protocol === "file:") throw new Error("This page needs modules over HTTP — use examples/standalone.html when opening from the file system (see the note above).");
         const response = await fetch("./oven.yang");
         if (!response.ok) throw new Error(`Could not load oven.yang (${response.status} ${response.statusText})`);
         const module = parseYang(await response.text());
