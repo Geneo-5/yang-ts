@@ -34,7 +34,8 @@ export interface CompiledOperation {
 export interface CompilerDiagnostic {
   code: "duplicate-node" | "unresolved-prefix" | "unresolved-augment" | "unresolved-grouping" |
     "uses-cycle" | "augment-conflict" | "invalid-key" | "unresolved-type" | "typedef-cycle" |
-    "unresolved-feature" | "invalid-feature-expression" | "unresolved-deviation" | "invalid-deviation";
+    "unresolved-feature" | "invalid-feature-expression" | "unresolved-deviation" | "invalid-deviation" |
+    "unresolved-refine" | "invalid-refine";
   message: string;
   module: string;
   source: YangStatement;
@@ -197,6 +198,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     statement: YangStatement, owner: YangModule, parentPath: string, inheritedConfig: boolean,
     groupingStack: readonly string[] = [], inheritedWhen: readonly YangStatement[] = [],
     inheritedFeatures: readonly { module: string; expression: string; source: YangStatement }[] = [],
+    instantiatingModule: YangModule = owner,
   ): CompiledSchemaNode[] => {
     if (statement.keyword === "uses") {
       const resolved = resolveQName(owner, statement.argument ?? "", modules);
@@ -208,7 +210,54 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       const features = [...inheritedFeatures, ...childrenOf(statement, "if-feature").map(item => ({ module: owner.argument, expression: item.argument ?? "", source: item }))];
       if (options.enabledFeatures && !featureRequirementsEnabled(features)) return [];
       const when = [...inheritedWhen, ...childrenOf(statement, "when")];
-      return dataChildren(grouping).flatMap(child => makeNode(child, resolved.module, parentPath, inheritedConfig, [...groupingStack, groupingId], when, features));
+      const expanded = dataChildren(grouping).flatMap(child => makeNode(child, resolved.module, parentPath, inheritedConfig, [...groupingStack, groupingId], when, features, instantiatingModule));
+      const refineAllowed: Record<string, ReadonlySet<string>> = {
+        leaf: new Set(["default", "description", "reference", "config", "must", "if-feature"]),
+        "leaf-list": new Set(["default", "description", "reference", "config", "min-elements", "max-elements", "must", "if-feature"]),
+        list: new Set(["description", "reference", "config", "min-elements", "max-elements", "must", "if-feature"]),
+        container: new Set(["description", "reference", "config", "presence", "must", "if-feature"]),
+        choice: new Set(["default", "description", "reference", "config", "mandatory", "if-feature"]),
+        case: new Set(["description", "reference", "if-feature"]),
+        anydata: new Set(["description", "reference", "config", "mandatory", "must", "if-feature"]),
+        anyxml: new Set(["description", "reference", "config", "mandatory", "must", "if-feature"]),
+      };
+      const findRelative = (nodes: CompiledSchemaNode[], names: string[]): CompiledSchemaNode | undefined => {
+        let siblings = nodes;
+        let found: CompiledSchemaNode | undefined;
+        for (const name of names) {
+          found = siblings.find(node => node.name === name);
+          if (!found) return undefined;
+          siblings = found.children;
+        }
+        return found;
+      };
+      for (const refine of childrenOf(statement, "refine")) {
+        const target = findRelative(expanded, (refine.argument ?? "").split("/").filter(Boolean));
+        if (!target) { report("unresolved-refine", `Refine target '${refine.argument ?? ""}' was not found in grouping '${resolved.name}'`, owner, refine); continue; }
+        const allowed = refineAllowed[target.kind];
+        for (const property of refine.children) {
+          if (!allowed?.has(property.keyword)) { report("invalid-refine", `Property '${property.keyword}' cannot refine a '${target.kind}' node`, owner, property); continue; }
+          if (property.keyword === "must" || property.keyword === "if-feature") {
+            target.properties[property.keyword] = [...(target.properties[property.keyword] ?? []), property];
+          } else {
+            target.properties[property.keyword] = [property];
+          }
+        }
+        if (target.kind === "leaf-list" && refine.children.some(property => property.keyword === "default")) {
+          target.properties.default = refine.children.filter(property => property.keyword === "default");
+        }
+        target.must = target.properties.must ?? [];
+        const refinedFeatures = (target.properties["if-feature"] ?? []).map(feature => ({ module: owner.argument, expression: feature.argument ?? "", source: feature }));
+        target.featureRequirements = [...target.featureRequirements, ...refinedFeatures.map(({ module, expression }) => ({ module, expression }))];
+        target.ifFeatures = [...target.ifFeatures, ...refinedFeatures.map(feature => feature.expression)];
+      }
+      const keepEnabledFeatures = (nodes: CompiledSchemaNode[]): CompiledSchemaNode[] => nodes.flatMap(node => {
+        const requirements = node.featureRequirements.map(requirement => ({ ...requirement, source: node.source }));
+        if (options.enabledFeatures && !featureRequirementsEnabled(requirements)) return [];
+        node.children = keepEnabledFeatures(node.children);
+        return [node];
+      });
+      return keepEnabledFeatures(expanded);
     }
     if (!DATA_KINDS.has(statement.keyword as SchemaNodeKind)) return [];
     const kind = statement.keyword as SchemaNodeKind;
@@ -225,7 +274,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     const resolvedType = typeStatement ? resolveType(owner, typeStatement) : undefined;
     if (typeStatement && !resolvedType?.name) report("unresolved-type", `Type '${typeStatement.argument ?? ""}' could not be resolved`, owner, typeStatement);
     const node: CompiledSchemaNode = {
-      kind, name, module: owner.argument, namespace: childOf(owner, "namespace")?.argument ?? "",
+      kind, name, module: instantiatingModule.argument, namespace: childOf(instantiatingModule, "namespace")?.argument ?? "",
       path, config, keys,
       ...(typeStatement ? { type: typeStatement } : {}),
       ...(resolvedType?.name ? { resolvedType: resolvedType.name } : {}),
@@ -288,7 +337,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       const augmentWhen = childrenOf(item.statement, "when");
       const augmentFeatures = childrenOf(item.statement, "if-feature").map(feature => ({ module: item.module.argument, expression: feature.argument ?? "", source: feature }));
       if (options.enabledFeatures && !featureRequirementsEnabled(augmentFeatures)) { pending.splice(index, 1); madeProgress = true; continue; }
-      const additions = item.statement.children.flatMap(child => makeNode(child, item.module, target.path, target.config, [], augmentWhen, augmentFeatures));
+      const additions = item.statement.children.flatMap(child => makeNode(child, item.module, target.path, target.config, [], augmentWhen, augmentFeatures, item.module));
       for (const addition of additions) {
         if (target.children.some(child => child.module === addition.module && child.name === addition.name)) {
           report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${target.path}'`, item.module, addition.source);

@@ -9,7 +9,7 @@ const module = parseYang(`module demo { yang-version 1.1; namespace "urn:demo"; 
 console.log(module.argument); // demo
 ```
 
-The package parses the generic YANG statement grammar into a source-located AST, resolves module import/include closures through an injected async loader, and has an **initial semantic compiler** for source-linked schema trees, grouping and typedef expansion, augments, deviations, and optional `if-feature` filtering. It also includes a **partial form helper** for data and RPC input/output field metadata and safe, local type checks. It is not a full YANG compiler or validator: complete RFC 7950 semantics, XPath evaluation and contextual `must`/`when` validation remain in progress. See [ARCHITECTURE.md](./ARCHITECTURE.md) for scope and design, [ROADMAP.md](./ROADMAP.md) for milestones, and [TESTING.md](./TESTING.md) for validation gates and coverage policy.
+The package parses the generic YANG statement grammar into a source-located AST, resolves module import/include closures through an injected async loader, and has an **initial semantic compiler** for source-linked schema trees, use-site grouping expansion with refinements, augments, deviations, and optional `if-feature` filtering. It also includes a **partial form helper** for data and RPC input/output field metadata and safe, local type checks. It is not a full YANG compiler or validator: complete RFC 7950 semantics, XPath evaluation and contextual `must`/`when` validation remain in progress. See [ARCHITECTURE.md](./ARCHITECTURE.md) for scope and design, [ROADMAP.md](./ROADMAP.md) for milestones, and [TESTING.md](./TESTING.md) for validation gates and coverage policy.
 
 ## Module dependencies
 

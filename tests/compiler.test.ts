@@ -115,4 +115,35 @@ describe("semantic compilation foundation", () => {
     expect(schema.diagnostics.map(item => item.code)).toContain("unresolved-deviation");
     expect(schema.diagnostics.filter(item => item.code === "invalid-deviation")).toHaveLength(2);
   });
+
+  it("applies uses refinements and binds imported grouping nodes to the use-site module", async () => {
+    const library = parseYang(`module library {
+      namespace "urn:library"; prefix l;
+      typedef port-number { type uint16; }
+      grouping endpoint {
+        leaf port { type port-number; }
+        container metadata { leaf tag { type string; } }
+      }
+    }`);
+    const application = parseYang(`module application {
+      namespace "urn:application"; prefix a;
+      import library { prefix l; }
+      container service {
+        uses l:endpoint {
+          refine port { default 443; description "TLS listener port"; }
+          refine metadata { presence "metadata is explicitly configured"; }
+        }
+      }
+    }`);
+    const moduleSet = await resolveModuleSet([application], { async loadModule() { return library; } });
+    const schema = compileYangModules(moduleSet);
+    const service = findNode(schema.roots, "service");
+    expect(findNode(service.children, "port")).toMatchObject({
+      module: "application", namespace: "urn:application", resolvedType: "uint16",
+      typedefChain: [{ argument: "port-number" }],
+      properties: { default: [{ argument: "443" }], description: [{ argument: "TLS listener port" }] },
+    });
+    expect(findNode(service.children, "metadata")?.properties.presence?.[0]?.argument).toBe("metadata is explicitly configured");
+    expect(schema.diagnostics).toEqual([]);
+  });
 });
