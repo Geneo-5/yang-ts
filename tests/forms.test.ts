@@ -137,6 +137,17 @@ describe("form helper", () => {
     expect(validateFormValue(field, "20")).toMatchObject({ status: "invalid", errors: [{ code: "type.union" }] });
   });
 
+  it("validates canonical base64 binary values and length in octets", () => {
+    const module = parseYang(`module binary-values { namespace "urn:binary-values"; prefix b;
+      leaf payload { type binary { length "3"; } }
+    }`);
+    const field = createFormModel(module).fields[0]!;
+    expect(validateFormValue(field, "AQID").status).toBe("valid");
+    expect(validateFormValue(field, "AQI=")).toMatchObject({ status: "invalid", errors: [{ code: "constraint.length" }] });
+    expect(validateFormValue(field, "AB==")).toMatchObject({ status: "invalid", errors: [{ code: "type.binary.base64" }] });
+    expect(validateFormValue(field, "not base64")).toMatchObject({ status: "invalid", errors: [{ code: "type.binary.base64" }] });
+  });
+
   it("resolves imported typedefs only when their dependency module is supplied", () => {
     const interfaces = parseYang(readFileSync(fileURLToPath(new URL("./fixtures/yang/standard/ietf/RFC/ietf-interfaces@2018-02-20.yang", import.meta.url)), "utf8"));
     const yangTypes = parseYang(readFileSync(fileURLToPath(new URL("./fixtures/yang/standard/ietf/RFC/ietf-yang-types@2013-07-15.yang", import.meta.url)), "utf8"));

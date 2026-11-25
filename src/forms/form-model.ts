@@ -283,6 +283,15 @@ function decimalScaled(value: string, fractionDigits: number): bigint | undefine
   return negative ? -scaled : scaled;
 }
 
+function base64OctetLength(value: string): number | undefined {
+  if (value.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return undefined;
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  if (padding === 2 && (alphabet.indexOf(value[value.length - 3] ?? "") & 15) !== 0) return undefined;
+  if (padding === 1 && (alphabet.indexOf(value[value.length - 2] ?? "") & 3) !== 0) return undefined;
+  return value.length / 4 * 3 - padding;
+}
+
 interface EffectiveIntervalConstraint { expression: string; minimum: bigint; maximum: bigint; }
 function inheritedIntervals(
   layers: YangStatement[], keyword: "range" | "length", minimum: bigint, maximum: bigint, decimalDigits?: number,
@@ -365,7 +374,17 @@ function validateType(field: FormField, value: unknown, errors: FormError[]): bo
     if (new Set(selected).size !== selected.length) { errors.push({ code: "type.bits.duplicate", message: "A bit may only be selected once." }); return false; }
     return true;
   }
-  if (field.yangType === "binary") return undefined;
+  if (field.yangType === "binary") {
+    if (typeof value !== "string") { errors.push({ code: "type.binary", message: `${field.label} must be base64 text.` }); return false; }
+    const octets = base64OctetLength(value);
+    if (octets === undefined) { errors.push({ code: "type.binary.base64", message: `${field.label} must use canonical base64 encoding.` }); return false; }
+    for (const constraint of inheritedIntervals(fieldTypeLayers.get(field) ?? [], "length", 0n, (1n << 64n) - 1n)) {
+      if (!inIntervals(BigInt(octets), constraint.expression, undefined, [constraint.minimum, constraint.maximum])) {
+        errors.push({ code: "constraint.length", message: `${field.label} has a decoded length outside ${constraint.expression} octets.` }); return false;
+      }
+    }
+    return true;
+  }
   if (field.yangType === "string") {
     if (typeof value !== "string") { errors.push({ code: "type.string", message: `${field.label} must be text.` }); return false; }
     const length = BigInt([...value].length);
@@ -448,13 +467,12 @@ export function validateFormValue(field: FormField, value: unknown): FormValidat
   }
   const hasPattern = (fieldTypeLayers.get(field) ?? []).some(layer => childrenOf(layer, "pattern").length > 0);
   const unsupportedConstraint = hasPattern
-    || ["binary", "leafref", "identityref", "instance-identifier"].includes(field.yangType);
+    || ["leafref", "identityref", "instance-identifier"].includes(field.yangType);
   const pending = [...field.constraints];
   if (hasPattern) pending.push({ kind: "unsupported", expression: "pattern requires XML Schema regular-expression evaluation", source: field.source });
   if (["leafref", "identityref", "instance-identifier"].includes(field.yangType)) {
     pending.push({ kind: "unsupported", expression: `${field.yangType} requires cross-reference/schema validation`, source: field.source });
   }
-  if (field.yangType === "binary") pending.push({ kind: "unsupported", expression: "binary requires base64/octet validation", source: field.source });
   if (field.unresolvedType) pending.push({ kind: "unsupported", expression: `type '${field.yangType}' was not resolved`, source: field.source });
   if (errors.length) return { status: "invalid", errors, pending };
   if (result === undefined || pending.length || unsupportedConstraint) return { status: "indeterminate", errors, pending };
