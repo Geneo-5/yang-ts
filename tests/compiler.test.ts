@@ -364,4 +364,30 @@ describe("semantic compilation foundation", () => {
     expect(isIdentityDerivedFrom(schema, "iana-if-type:ethernetCsmacd", "ietf-interfaces:interface-type")).toBe(true);
     expect(schema.diagnostics).toEqual([]);
   });
+
+  it("rejects type restrictions that do not match their underlying built-in type", async () => {
+    const module = parseYang(`module restrictions {
+      namespace "urn:restrictions"; prefix r;
+      typedef port-number { type uint16 { range "0..65535"; } }
+      typedef password { type string { length "1..64"; pattern "[^ ]+"; } }
+      container legal {
+        leaf port { type port-number { range "1..10"; } }
+        leaf secret { type password { length "8..64"; } }
+        leaf target { type leafref { path "../port"; require-instance true; } }
+        leaf reference { type instance-identifier { require-instance false; } }
+      }
+      container illegal {
+        leaf limited-port { type port-number { length "1..10"; } }
+        leaf counted-string { type password { range "1..5"; } }
+        leaf referenced-port { type uint16 { path "/illegal/counted-string"; } }
+        leaf prefix { type string { fraction-digits 2; } }
+      }
+    }`);
+    const moduleSet = await resolveModuleSet([module], { async loadModule() { return undefined; } });
+    const schema = compileYangModules(moduleSet);
+    expect(schema.diagnostics.map(item => [item.code, item.source.keyword]).filter(([code]) => code === "invalid-type-restriction")).toEqual([
+      ["invalid-type-restriction", "length"], ["invalid-type-restriction", "range"],
+      ["invalid-type-restriction", "path"], ["invalid-type-restriction", "fraction-digits"],
+    ]);
+  });
 });

@@ -47,7 +47,8 @@ export interface CompilerDiagnostic {
     "uses-cycle" | "augment-conflict" | "invalid-key" | "unresolved-type" | "typedef-cycle" |
     "unresolved-feature" | "invalid-feature-expression" | "unresolved-deviation" | "invalid-deviation" |
     "unresolved-refine" | "invalid-refine" | "unresolved-identity" | "identity-cycle" |
-    "invalid-augment-target" | "invalid-augment-child" | "invalid-statement-cardinality";
+    "invalid-augment-target" | "invalid-augment-child" | "invalid-statement-cardinality" |
+    "invalid-type-restriction";
   message: string;
   module: string;
   source: YangStatement;
@@ -123,8 +124,21 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     module: ["namespace", "prefix"], submodule: ["belongs-to"], typedef: ["type"],
     leaf: ["type"], "leaf-list": ["type"], "belongs-to": ["prefix"],
   };
+  // RFC 7950 section 9.2.1: restrictions are only legal on built-in types that
+  // support them, including types derived from those built-ins via typedefs.
+  const RESTRICTION_BUILTINS: Readonly<Record<string, ReadonlySet<string>>> = {
+    range: new Set(["int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "decimal64"]),
+    length: new Set(["string", "binary"]),
+    pattern: new Set(["string"]),
+    path: new Set(["leafref"]),
+    "require-instance": new Set(["leafref", "instance-identifier"]),
+    "fraction-digits": new Set(["decimal64"]),
+    base: new Set(["identityref"]),
+    enum: new Set(["enumeration"]),
+    bit: new Set(["bits"]),
+  };
   const validateCardinality = (root: YangModule): void => {
-    const visit = (statement: YangStatement): void => {
+    const visit = (statement: YangStatement, owner: YangModule): void => {
       for (const keyword of singletonChildren[statement.keyword] ?? []) {
         const occurrences = childrenOf(statement, keyword);
         if (occurrences.length > 1) for (const duplicate of occurrences.slice(1)) {
@@ -135,7 +149,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
         report("invalid-statement-cardinality", `Statement '${keyword}' is required under '${statement.keyword}'`, root, statement);
       }
       if (statement.keyword === "type") {
-        const typeName = statement.argument;
+        const typeName = statement.argument ?? "";
         const required = typeName === "decimal64" ? "fraction-digits"
           : typeName === "leafref" ? "path"
           : typeName === "enumeration" ? "enum"
@@ -145,10 +159,33 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
         if (required && childrenOf(statement, required).length === 0) {
           report("invalid-statement-cardinality", `Statement '${required}' is required for type '${typeName}'`, root, statement);
         }
+        // RFC 7950 section 9.2.1: a restriction is only legal for the built-in
+        // type it derives from, resolved through the full typedef chain.
+        const builtinType = resolveBuiltinQuietly(owner, statement);
+        for (const child of statement.children) {
+          const allowed = RESTRICTION_BUILTINS[child.keyword];
+          if (!allowed || !builtinType) continue;
+          if (!allowed.has(builtinType)) {
+            report("invalid-type-restriction", `Restriction '${child.keyword}' is not valid for type '${typeName}' of kind '${builtinType}'`, root, child);
+          }
+        }
       }
-      statement.children.forEach(visit);
+      statement.children.forEach(child => visit(child, owner));
     };
-    visit(root);
+    visit(root, root);
+  };
+  /** Resolve a type reference to its underlying built-in name without emitting diagnostics. */
+  const resolveBuiltinQuietly = (owner: YangModule, type: YangStatement, seen: ReadonlySet<string> = new Set()): string | undefined => {
+    const name = type.argument ?? "";
+    if (builtinTypes.has(name)) return name;
+    const resolved = resolveQName(owner, name, modules, moduleSet.submodules);
+    if (!resolved) return undefined;
+    const key = `${moduleId(resolved.module)}:${resolved.name}`;
+    if (seen.has(key)) return undefined;
+    const typedef = findTypedef(resolved.module, resolved.name);
+    const baseType = typedef && childOf(typedef, "type");
+    if (!baseType) return undefined;
+    return resolveBuiltinQuietly(resolved.module, baseType, new Set([...seen, key]));
   };
   const checkDuplicates = (nodes: readonly CompiledSchemaNode[], owner: YangModule) => {
     const seen = new Set<string>();
@@ -161,7 +198,6 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   const submodulesFor = (module: YangModule): YangModule[] => moduleSet.submodules.filter(submodule =>
     childOf(submodule, "belongs-to")?.argument === module.argument,
   );
-  for (const module of modules) for (const source of [module, ...submodulesFor(module)]) validateCardinality(source);
   const parentModuleFor = (context: YangModule): YangModule => {
     const parentName = childOf(context, "belongs-to")?.argument;
     return parentName ? modules.find(module => module.argument === parentName) ?? context : context;
@@ -271,6 +307,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     };
     return relatedSources(owner).map(visit).find(Boolean);
   };
+  for (const module of modules) for (const source of [module, ...submodulesFor(module)]) validateCardinality(source);
 
   const makeNode = (
     statement: YangStatement, owner: YangModule, parentPath: string, inheritedConfig: boolean,

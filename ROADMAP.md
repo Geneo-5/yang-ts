@@ -43,7 +43,8 @@ Exit: the interface base plus all fixture augment modules compile into an inspec
 - Implement all built-in YANG types and restrictions: range, length, pattern, enum, bits, union, decimal64, identityref, leafref and instance-identifier.
 - Resolve derived typedef restrictions, defaults and canonical representations.
 - Represent int64/uint64/decimal64 exactly for validation; make XPath 1.0's IEEE-754 conversion behavior explicit where applicable.
-- Form validation now resolves inherited `min`/`max` range and length bounds from base typedef restrictions for integer, decimal64 and string values; broader restriction validation and compiler-time restriction legality remain.
+- Form validation now resolves inherited `min`/`max` range and length bounds from base typedef restrictions for integer, decimal64 and string values; broader value-level restriction validation (patterns, additional bounds) remains.
+- Compiler-time restriction legality now rejects `range`, `length`, `pattern`, `path`, `require-instance`, `fraction-digits`, `base`, `enum` and `bit` restrictions applied to a built-in type (resolved through typedef chains) that does not support them.
 - Form enum and bits options now honor typedef subset restrictions, and validation rejects values removed by a derived type.
 - Form validation tests union members in declaration order and returns indeterminate when no branch can be conclusively validated.
 - Form validation checks canonical Base64 syntax and decoded octet length for `binary` without Node APIs.
