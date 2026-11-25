@@ -144,4 +144,36 @@ describe("stage 7 P0 correctness regressions", () => {
     `));
     expect(missingExcluded.issues.filter(issue => issue.code === "unique-violation")).toEqual([]);
   });
+
+  it("assigns grouping-instantiated descendants to the instantiating module", async () => {
+    const schema = await compile(`module user {
+      namespace "urn:user"; prefix usr;
+      import lib { prefix lib; }
+      container box {
+        uses lib:shared-list;
+      }
+    }`, [`module lib {
+      namespace "urn:lib"; prefix lb;
+      grouping shared-list {
+        list item {
+          key name;
+          leaf name { type string; }
+          container detail { leaf note { type string; } }
+        }
+      }
+    }`]);
+    expect(schema.diagnostics, schema.diagnostics.map(d => `${d.code}: ${d.message}`)).toEqual([]);
+
+    const list = schema.roots.find(root => root.name === "box")!.children.find(child => child.name === "item")!;
+    expect(list.module).toBe("user");
+    expect(list.namespace).toBe("urn:user");
+    // Nested descendants — several levels under the grouping — are user nodes.
+    const detail = list.children.find(child => child.name === "detail")!;
+    expect(detail.module).toBe("user");
+    expect(detail.namespace).toBe("urn:user");
+    expect(detail.children.find(child => child.name === "note")!.namespace).toBe("urn:user");
+    // The list key resolves against the same namespace (used to report a
+    // false invalid-key because the key leaf kept the defining module).
+    expect(list.children.some(child => child.kind === "leaf" && child.name === "name")).toBe(true);
+  });
 });

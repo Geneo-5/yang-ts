@@ -424,7 +424,14 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       deviations: [],
       source: statement, children: [],
     };
-    node.children = normalizeChoiceChildren(dataChildren(statement).flatMap(child => makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatureRequirements)), node);
+    // Nested nodes belong to the instantiating module too: only the grouping's
+    // defining module resolves their type/prefix references, not their
+    // namespace. Inherited when/if-feature keep propagating from the parent.
+    node.children = normalizeChoiceChildren(
+      dataChildren(statement).flatMap(child =>
+        makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatureRequirements, instantiatingModule)),
+      node,
+    );
     if (kind === "list") {
       for (const key of keys) {
         const resolvedKey = resolveQName(instantiatingModule, key, modules, moduleSet.submodules);

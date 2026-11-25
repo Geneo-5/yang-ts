@@ -4662,7 +4662,10 @@ var YangEngine = (() => {
         source: statement,
         children: []
       };
-      node.children = normalizeChoiceChildren(dataChildren(statement).flatMap((child) => makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatureRequirements)), node);
+      node.children = normalizeChoiceChildren(
+        dataChildren(statement).flatMap((child) => makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatureRequirements, instantiatingModule)),
+        node
+      );
       if (kind === "list") {
         for (const key of keys) {
           const resolvedKey = resolveQName(instantiatingModule, key, modules, moduleSet.submodules);
