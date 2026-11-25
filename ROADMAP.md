@@ -40,6 +40,7 @@ Exit: the interface base plus all fixture augment modules compile into an inspec
 - Implement all built-in YANG types and restrictions: range, length, pattern, enum, bits, union, decimal64, identityref, leafref and instance-identifier.
 - Resolve derived typedef restrictions, defaults and canonical representations.
 - Represent int64/uint64/decimal64 exactly for validation; make XPath 1.0's IEEE-754 conversion behavior explicit where applicable.
+- Form validation now resolves inherited `min`/`max` range and length bounds from base typedef restrictions for integer, decimal64 and string values; broader restriction validation and compiler-time restriction legality remain.
 
 Exit: RFC-linked positive/negative type tests, including inherited restrictions and boundary values.
 

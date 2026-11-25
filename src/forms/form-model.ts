@@ -268,17 +268,42 @@ function decimalScaled(value: string, fractionDigits: number): bigint | undefine
   return negative ? -scaled : scaled;
 }
 
-function rangeIntervals(layers: YangStatement[]): string[] {
-  return layers.flatMap(layer => childrenOf(layer, "range").map(statement => statement.argument ?? ""));
+interface EffectiveIntervalConstraint { expression: string; minimum: bigint; maximum: bigint; }
+function inheritedIntervals(
+  layers: YangStatement[], keyword: "range" | "length", minimum: bigint, maximum: bigint, decimalDigits?: number,
+): EffectiveIntervalConstraint[] {
+  let inheritedMinimum = minimum;
+  let inheritedMaximum = maximum;
+  const constraints: EffectiveIntervalConstraint[] = [];
+  const parse = (endpoint: string): bigint | undefined => {
+    if (endpoint === "min") return inheritedMinimum;
+    if (endpoint === "max") return inheritedMaximum;
+    return decimalDigits === undefined
+      ? (/^[+-]?\d+$/.test(endpoint) ? BigInt(endpoint) : undefined)
+      : decimalScaled(endpoint, decimalDigits);
+  };
+  for (const layer of [...layers].reverse()) for (const statement of childrenOf(layer, keyword)) {
+    const expression = statement.argument ?? "";
+    constraints.push({ expression, minimum: inheritedMinimum, maximum: inheritedMaximum });
+    const intervals = expression.split("|").map(part => {
+      const endpoints = part.trim().split("..");
+      const lowText = endpoints[0] ?? "";
+      const highText = endpoints[1] ?? lowText;
+      return [parse(lowText), parse(highText)] as const;
+    });
+    const lows = intervals.map(interval => interval[0]).filter((value): value is bigint => value !== undefined);
+    const highs = intervals.map(interval => interval[1]).filter((value): value is bigint => value !== undefined);
+    if (lows.length) inheritedMinimum = lows.reduce((a, b) => a < b ? a : b);
+    if (highs.length) inheritedMaximum = highs.reduce((a, b) => a > b ? a : b);
+  }
+  return constraints;
 }
-function lengthIntervals(layers: YangStatement[]): string[] {
-  return layers.flatMap(layer => childrenOf(layer, "length").map(statement => statement.argument ?? ""));
-}
-function inIntervals(value: bigint, expression: string, decimalDigits?: number): boolean {
+function inIntervals(value: bigint, expression: string, decimalDigits?: number, bounds?: readonly [bigint, bigint]): boolean {
   return expression.split("|").some(part => {
     const endpoints = part.trim().split("..");
     const parse = (endpoint: string): bigint | undefined => {
-      if (endpoint === "min" || endpoint === "max") return undefined;
+      if (endpoint === "min") return bounds?.[0];
+      if (endpoint === "max") return bounds?.[1];
       return decimalDigits === undefined ? (/^[+-]?\d+$/.test(endpoint) ? BigInt(endpoint) : undefined) : decimalScaled(endpoint, decimalDigits);
     };
     const lo = parse(endpoints[0] ?? "");
@@ -309,8 +334,8 @@ function validateType(field: FormField, value: unknown, errors: FormError[]): bo
   if (field.yangType === "string") {
     if (typeof value !== "string") { errors.push({ code: "type.string", message: `${field.label} must be text.` }); return false; }
     const length = BigInt([...value].length);
-    for (const expression of lengthIntervals(fieldTypeLayers.get(field) ?? [])) {
-      if (!inIntervals(length, expression)) { errors.push({ code: "constraint.length", message: `${field.label} has a length outside ${expression}.` }); return false; }
+    for (const constraint of inheritedIntervals(fieldTypeLayers.get(field) ?? [], "length", 0n, (1n << 64n) - 1n)) {
+      if (!inIntervals(length, constraint.expression, undefined, [constraint.minimum, constraint.maximum])) { errors.push({ code: "constraint.length", message: `${field.label} has a length outside ${constraint.expression}.` }); return false; }
     }
     return true;
   }
@@ -323,8 +348,8 @@ function validateType(field: FormField, value: unknown, errors: FormError[]): bo
     const integer = BigInt(text);
     const [minimum, maximum] = intBounds(field.yangType)!;
     if (integer < minimum || integer > maximum) { errors.push({ code: "constraint.range", message: `${field.label} is outside the ${field.yangType} range.` }); return false; }
-    for (const expression of rangeIntervals(fieldTypeLayers.get(field) ?? [])) {
-      if (!inIntervals(integer, expression)) { errors.push({ code: "constraint.range", message: `${field.label} must be within ${expression}.` }); return false; }
+    for (const constraint of inheritedIntervals(fieldTypeLayers.get(field) ?? [], "range", minimum, maximum)) {
+      if (!inIntervals(integer, constraint.expression, undefined, [constraint.minimum, constraint.maximum])) { errors.push({ code: "constraint.range", message: `${field.label} must be within ${constraint.expression}.` }); return false; }
     }
     return true;
   }
@@ -339,8 +364,10 @@ function validateType(field: FormField, value: unknown, errors: FormError[]): bo
     if (scaled < -(1n << 63n) || scaled > (1n << 63n) - 1n) {
       errors.push({ code: "constraint.decimal64.range", message: `${field.label} is outside the decimal64 range for ${digits} fraction digits.` }); return false;
     }
-    for (const expression of rangeIntervals(layers)) {
-      if (!inIntervals(scaled, expression, digits)) { errors.push({ code: "constraint.range", message: `${field.label} must be within ${expression}.` }); return false; }
+    const decimalMinimum = -(1n << 63n);
+    const decimalMaximum = (1n << 63n) - 1n;
+    for (const constraint of inheritedIntervals(layers, "range", decimalMinimum, decimalMaximum, digits)) {
+      if (!inIntervals(scaled, constraint.expression, digits, [constraint.minimum, constraint.maximum])) { errors.push({ code: "constraint.range", message: `${field.label} must be within ${constraint.expression}.` }); return false; }
     }
     return true;
   }

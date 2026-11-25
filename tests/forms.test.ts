@@ -80,6 +80,31 @@ describe("form helper", () => {
     expect(validateFormValue(field, "1.234").errors[0]?.code).toBe("type.decimal64.precision");
   });
 
+  it("resolves min and max in derived ranges against the base type bounds", () => {
+    const module = parseYang(`module ranges { namespace "urn:ranges"; prefix r;
+      typedef byte-range { type uint8 { range "2..8"; } }
+      typedef narrowed-byte { type byte-range { range "4..max"; } }
+      typedef base-name { type string { length "2..5"; } }
+      typedef longer-name { type base-name { length "3..max"; } }
+      typedef base-ratio { type decimal64 { fraction-digits 2; range "1.00..5.00"; } }
+      typedef high-ratio { type base-ratio { range "3.00..max"; } }
+      leaf byte { type narrowed-byte; }
+      leaf name { type longer-name; }
+      leaf ratio { type high-ratio; }
+    }`);
+    const fields = createFormModel(module).fields;
+    const byte = fields.find(field => field.name === "byte")!;
+    const name = fields.find(field => field.name === "name")!;
+    const ratio = fields.find(field => field.name === "ratio")!;
+    expect(validateFormValue(byte, "4").status).toBe("valid");
+    expect(validateFormValue(byte, "3").status).toBe("invalid");
+    expect(validateFormValue(byte, "9").status).toBe("invalid");
+    expect(validateFormValue(name, "abc").status).toBe("valid");
+    expect(validateFormValue(name, "abcdef").status).toBe("invalid");
+    expect(validateFormValue(ratio, "3.00").status).toBe("valid");
+    expect(validateFormValue(ratio, "5.01").status).toBe("invalid");
+  });
+
   it("resolves imported typedefs only when their dependency module is supplied", () => {
     const interfaces = parseYang(readFileSync(fileURLToPath(new URL("./fixtures/yang/standard/ietf/RFC/ietf-interfaces@2018-02-20.yang", import.meta.url)), "utf8"));
     const yangTypes = parseYang(readFileSync(fileURLToPath(new URL("./fixtures/yang/standard/ietf/RFC/ietf-yang-types@2013-07-15.yang", import.meta.url)), "utf8"));
