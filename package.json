@@ -5,18 +5,35 @@
   "type": "module",
   "license": "MIT",
   "sideEffects": false,
-  "engines": { "node": ">=20" },
-  "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  "engines": {
+    "node": ">=20"
   },
-  "files": ["dist", "examples", "README.md", "ARCHITECTURE.md", "ROADMAP.md", "TESTING.md"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "examples",
+    "README.md",
+    "ARCHITECTURE.md",
+    "ROADMAP.md",
+    "TESTING.md",
+    "XPATH_SPIKE.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "@xmldom/xmldom": "^0.9.12",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12"
+  },
+  "dependencies": {
+    "xpath": "^0.0.36"
   }
 }

@@ -2,6 +2,7 @@ export * from "./yang/ast.js";
 export * from "./yang/parser.js";
 export * from "./yang/module-set.js";
 export * from "./yang/compiler.js";
+export * from "./xpath/xpath.js";
 export * from "./forms/form-model.js";
 export * from "./restconf/paths.js";
 
