@@ -10,6 +10,7 @@ export * from "./validation/validate-instance.js";
 export * from "./validation/candidates.js";
 export * from "./forms/form-model.js";
 export * from "./restconf/paths.js";
+export * from "./restconf/library-loader.js";
 
 /** Feature-gated behavior planned for the next implementation layers. */
 export interface EngineCapabilities {
