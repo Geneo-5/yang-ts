@@ -5419,6 +5419,7 @@ var YangEngine = (() => {
   var xsdPatternCache = /* @__PURE__ */ new Map();
   var MAX_PATTERN_LENGTH = 256;
   function compileXsdPattern(pattern) {
+    if (xsdPatternCache.size >= 2048) xsdPatternCache.clear();
     if (xsdPatternCache.has(pattern)) return xsdPatternCache.get(pattern);
     let compiled;
     if (pattern.length <= MAX_PATTERN_LENGTH && !oversizedQuantifierBound(pattern) && !hasUnboundedNestedQuantifier(pattern) && !usesDivergentConstruct(pattern)) {
@@ -5802,12 +5803,15 @@ var YangEngine = (() => {
       }
     };
   }
-  var moduleExpressionCache = /* @__PURE__ */ new Map();
+  var moduleExpressionCache = /* @__PURE__ */ new WeakMap();
   function compileModuleExpression(schema, moduleName, expression) {
+    let scoped = moduleExpressionCache.get(schema);
+    if (!scoped) {
+      scoped = /* @__PURE__ */ new Map();
+      moduleExpressionCache.set(schema, scoped);
+    }
     const key = `${moduleName}:${expression}`;
-    const cached = moduleExpressionCache.get(key);
-    if (cached !== void 0) return cached;
-    if (moduleExpressionCache.has(key)) return void 0;
+    if (scoped.has(key)) return scoped.get(key);
     let created;
     try {
       const owner = schema.modules.find((module) => module.argument === moduleName);
@@ -5816,7 +5820,7 @@ var YangEngine = (() => {
     } catch {
       created = void 0;
     }
-    moduleExpressionCache.set(key, created);
+    scoped.set(key, created);
     return created;
   }
 

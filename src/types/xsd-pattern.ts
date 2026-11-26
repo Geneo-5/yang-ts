@@ -34,6 +34,9 @@ const MAX_QUANTIFIER_BOUND = 999;
  * cannot stall the evaluator (ReDoS).
  */
 export function compileXsdPattern(pattern: string): RegExp | undefined {
+  // Untrusted modules can mint unbounded distinct patterns; the text cache
+  // stays bounded by dropping everything once it grows past the ceiling.
+  if (xsdPatternCache.size >= 2048) xsdPatternCache.clear();
   if (xsdPatternCache.has(pattern)) return xsdPatternCache.get(pattern);
   let compiled: RegExp | undefined;
   if (pattern.length <= MAX_PATTERN_LENGTH && !oversizedQuantifierBound(pattern) && !hasUnboundedNestedQuantifier(pattern) && !usesDivergentConstruct(pattern)) {

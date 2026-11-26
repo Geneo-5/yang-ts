@@ -93,7 +93,10 @@ export function createConstraintEvaluator(schema: CompiledYangSchema): Constrain
   };
 }
 
-const moduleExpressionCache = new Map<string, ReturnType<typeof compileYangXPath> | undefined>();
+// Compiled expressions are scoped to their schema: a module-level map keyed
+// by "module:expression" would answer one schema's compiled path for another
+// schema that reuses the module name, and would outlive every schema.
+const moduleExpressionCache = new WeakMap<CompiledYangSchema, Map<string, ReturnType<typeof compileYangXPath> | undefined>>();
 
 /**
  * Compile an RFC 7950 XPath for reuse across constraint and validation passes:
@@ -101,10 +104,10 @@ const moduleExpressionCache = new Map<string, ReturnType<typeof compileYangXPath
  * unprefixed node tests resolve in the module namespace.
  */
 export function compileModuleExpression(schema: CompiledYangSchema, moduleName: string, expression: string) {
+  let scoped = moduleExpressionCache.get(schema);
+  if (!scoped) { scoped = new Map(); moduleExpressionCache.set(schema, scoped); }
   const key = `${moduleName}:${expression}`;
-  const cached = moduleExpressionCache.get(key);
-  if (cached !== undefined) return cached;
-  if (moduleExpressionCache.has(key)) return undefined;
+  if (scoped.has(key)) return scoped.get(key);
   let created: ReturnType<typeof compileYangXPath> | undefined;
   try {
     const owner = schema.modules.find(module => module.argument === moduleName);
@@ -114,6 +117,6 @@ export function compileModuleExpression(schema: CompiledYangSchema, moduleName: 
   } catch {
     created = undefined;
   }
-  moduleExpressionCache.set(key, created);
+  scoped.set(key, created);
   return created;
 }

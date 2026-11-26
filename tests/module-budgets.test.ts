@@ -156,3 +156,36 @@ describe("beyond-loading budgets and cancellation", () => {
     expect(candidates.candidates.every(item => item.status === "indeterminate")).toBe(true);
   });
 });
+
+describe("schema-scoped caches", () => {
+  it("keeps identical module expressions of different schemas apart", async () => {
+    const shopWith = (namespace: string) => `module shop {
+      namespace "${namespace}"; prefix s;
+      container cart { leaf total { type int16; } must "total > 0"; }
+    }`;
+    const first = compileYangModules(await resolveModuleSet([parseYang(shopWith("urn:shop:first"))], { async loadModule() { return undefined; } }));
+    expect(first.diagnostics).toEqual([]);
+    // A valid document caches the compiled must under (module, expression).
+    expect(validateDataTree(first, new DOMParser().parseFromString(
+      `<cart xmlns="urn:shop:first"><total>5</total></cart>`, "application/xml")).status).toBe("valid");
+
+    // A second schema reuses the module and expression names but binds a
+    // different namespace: the cached first-schema path must not answer it.
+    const second = compileYangModules(await resolveModuleSet([parseYang(shopWith("urn:shop:second"))], { async loadModule() { return undefined; } }));
+    expect(second.diagnostics).toEqual([]);
+    expect(validateDataTree(second, new DOMParser().parseFromString(
+      `<cart xmlns="urn:shop:second"><total>5</total></cart>`, "application/xml")).status).toBe("valid");
+  });
+
+  it("answers repeated compiles of the same expression with the same result", async () => {
+    const schema = compileYangModules(await resolveModuleSet([parseYang(`module shop {
+      namespace "urn:shop"; prefix s;
+      container cart { leaf total { type int16; } must "total > 0"; }
+    }`)], { async loadModule() { return undefined; } }));
+    expect(validateDataTree(schema, new DOMParser().parseFromString(
+      `<cart xmlns="urn:shop"><total>-1</total></cart>`, "application/xml")).issues.map(item => item.code)).toEqual(["must-unmet"]);
+    // Second pass hits the cache: same verdict, no drift.
+    expect(validateDataTree(schema, new DOMParser().parseFromString(
+      `<cart xmlns="urn:shop"><total>-1</total></cart>`, "application/xml")).issues.map(item => item.code)).toEqual(["must-unmet"]);
+  });
+});
