@@ -7734,6 +7734,15 @@ var YangEngine = (() => {
     const body = {};
     for (const [name2, fields] of topLevel) {
       const qualifier = model.topModules?.[name2] ?? model.module;
+      const selfLeaf = fields.find((field) => field.path === `/${name2}`);
+      if (selfLeaf) {
+        const raw = values[selfLeaf.path];
+        if (raw !== void 0) {
+          const encoded = encodeLeaf(selfLeaf, raw);
+          if (encoded !== void 0) body[`${qualifier}:${name2}`] = encoded;
+        }
+        continue;
+      }
       body[`${qualifier}:${name2}`] = buildBody(fields, values, `/${name2}/`);
     }
     return body;
@@ -8607,7 +8616,7 @@ var YangEngine = (() => {
   }
   function dataEnvelope(module, name2, data) {
     if (!module || !name2) throw new Error("A data resource module and name are required");
-    if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("RESTCONF data must be a JSON object");
+    if (data === void 0 || data === null) throw new Error("RESTCONF data is required");
     return { [`${module}:${name2}`]: data };
   }
   function createRestconfGetRequest(path = [], restconfRoot = "/restconf", query) {
