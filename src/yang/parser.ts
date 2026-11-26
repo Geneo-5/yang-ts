@@ -5,7 +5,13 @@ type Token = { value: string; offset: number; line: number; column: number; kind
 
 const MAX_STATEMENT_DEPTH = 200;
 
-function tokenize(input: string): { tokens: Token[]; eof: SourceLocation } {
+function checkAborted(signal: AbortSignal | undefined, eof: SourceLocation): void {
+  if (signal?.aborted) {
+    throw new YangSyntaxError("Parse cancelled", eof);
+  }
+}
+
+function tokenize(input: string, signal?: AbortSignal): { tokens: Token[]; eof: SourceLocation } {
   const out: Token[] = [];
   let i = 0, line = 1, column = 1;
   const advance = (text: string) => { for (const c of text) { if (c === "\n") { line++; column = 1; } else column++; } i += text.length; };
@@ -80,15 +86,16 @@ function tokenize(input: string): { tokens: Token[]; eof: SourceLocation } {
     if (!value) throw new YangSyntaxError(`Unexpected character '${c}'`, start);
     out.push({ ...start, value, kind: "word" });
   }
+  checkAborted(signal, { offset: i, line, column });
   return { tokens: out, eof: { offset: i, line, column } };
 }
 
 /** Parses the YANG statement grammar into a source-located generic AST. */
-export function parseYang(source: string): YangModule {
-  const { tokens, eof } = tokenize(source); let index = 0;
+export function parseYang(source: string, options?: { signal?: AbortSignal }): YangModule {
+  const { tokens, eof } = tokenize(source, options?.signal); let index = 0;
   const peek = () => tokens[index];
   const take = () => tokens[index++];
-  function statement(depth = 0): YangStatement {
+  function statement(depth = 0, signal?: AbortSignal): YangStatement {
     if (depth > MAX_STATEMENT_DEPTH) {
       throw new YangSyntaxError("Statement nesting too deep (possible infinite recursion)", tokens[index] ?? eof);
     }
@@ -120,16 +127,17 @@ export function parseYang(source: string): YangModule {
       // must never close a block (RFC 7950 §6.1.3) — it is diagnosed as a
       // statement keyword by the recursion instead of silently vanishing.
       while (peek() && !(peek()!.kind === "symbol" && peek()!.value === "}")) {
-        children.push(statement(depth + 1));
+        children.push(statement(depth + 1, signal));
       }
       const close = take();
       if (!close || close.kind !== "symbol" || close.value !== "}") {
         throw new YangSyntaxError("Unterminated statement block", close ?? eof);
       }
     }
+    checkAborted(signal, { offset: key.offset, line: key.line, column: key.column });
     return { keyword: key.value, ...(hasArgument ? { argument } : {}), children, location: { offset: key.offset, line: key.line, column: key.column } };
   }
-  const root = statement();
+  const root = statement(0, options?.signal);
   if (peek()) throw new YangSyntaxError("Unexpected content after module", peek()!);
   if (root.keyword !== "module" && root.keyword !== "submodule") throw new YangSyntaxError("Expected module or submodule", root.location);
   if (!root.argument) throw new YangSyntaxError("Module name is required", root.location);

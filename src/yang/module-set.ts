@@ -76,8 +76,8 @@ export interface YangModuleSet {
 const revisionOf = (document: YangModule): string | undefined => childOf(document, "revision")?.argument;
 const sourceStatements = (module: YangModule, submodules: readonly YangModule[]): YangStatement[] => [module, ...submodules];
 
-function parseDocument(document: YangDocument): YangModule {
-  return typeof document === "string" ? parseYang(document) : document;
+function parseDocument(document: YangDocument, signal?: AbortSignal): YangModule {
+  return typeof document === "string" ? parseYang(document, signal ? { signal } : {}) : document;
 }
 
 function normalizedDocuments(result: YangDocument | readonly YangDocument[] | undefined): readonly YangDocument[] {
@@ -87,11 +87,11 @@ function normalizedDocuments(result: YangDocument | readonly YangDocument[] | un
 
 function selectDocument(
   candidates: readonly YangDocument[], expectedName: string, kind: "module" | "submodule", pinnedRevision: string | undefined,
-  owner: YangModule, statement: YangStatement, diagnostics: ModuleSetDiagnostic[],
+  owner: YangModule, statement: YangStatement, diagnostics: ModuleSetDiagnostic[], signal?: AbortSignal,
 ): YangModule | undefined {
   const parsed: YangModule[] = [];
   for (const candidate of candidates) {
-    try { parsed.push(parseDocument(candidate)); }
+    try { parsed.push(parseDocument(candidate, signal)); }
     catch (error) {
       diagnostics.push({ code: "invalid-document", message: `Could not parse ${kind} '${expectedName}': ${String(error)}`, sourceModule: owner.argument, sourceLocation: statement.location });
     }
@@ -201,7 +201,7 @@ export async function resolveModuleSet(roots: readonly YangModule[], loader: Yan
         reportBudget(`Resolution exceeded the ${budget.deadlineMs} ms deadline while loading module '${name}'`, owner, statement);
         return undefined;
       }
-      const selected = selectDocument(normalizedDocuments(result), name, "module", pinned, owner, statement, diagnostics);
+      const selected = selectDocument(normalizedDocuments(result), name, "module", pinned, owner, statement, diagnostics, constraints.signal);
       if (!selected) {
         if (result === undefined || normalizedDocuments(result).length === 0) report("missing-module", `Module '${name}' was not found`, owner, statement);
         return undefined;
@@ -227,7 +227,7 @@ export async function resolveModuleSet(roots: readonly YangModule[], loader: Yan
         reportBudget(`Resolution exceeded the ${budget.deadlineMs} ms deadline while loading submodule '${name}'`, owner, statement);
         return undefined;
       }
-      const selected = selectDocument(normalizedDocuments(result), name, "submodule", pinned, owner, statement, diagnostics);
+      const selected = selectDocument(normalizedDocuments(result), name, "submodule", pinned, owner, statement, diagnostics, constraints.signal);
       if (!selected && (result === undefined || normalizedDocuments(result).length === 0)) report("missing-submodule", `Submodule '${name}' was not found`, owner, statement);
       if (selected && childOf(selected, "belongs-to")?.argument !== owner.argument) {
         report("invalid-belongs-to", `Submodule '${name}' does not belong to module '${owner.argument}'`, owner, statement);
