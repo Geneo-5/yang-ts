@@ -211,11 +211,18 @@ describe("stage 7 P0 correctness regressions", () => {
     expect(inverted.errors).toEqual([]);
     expect(inverted.status).toBe("valid");
 
-    for (const name of ["digits", "unicode-class", "anchored"]) {
-      const result = validateFormValue(field(name), name === "digits" ? "42" : "abc");
-      expect(result.status, `${name} must stay unjudged, not silently validated`).toBe("indeterminate");
-      expect(result.pending.some(item => item.kind === "unsupported")).toBe(true);
-    }
+    // digits / unicode-class: XSD \d, \w, \s, \p{…} are now translated to
+    // JavaScript Unicode property escapes (the u flag); anchored ^/$ remain
+    // pending because they carry different semantics outside a class.
+    const digits = validateFormValue(field("digits"), "420");
+    expect(digits.status).toBe("valid");       // \d → \p{Nd}, validates OK
+    expect(digits.pending.some(item => item.kind === "unsupported")).toBe(false);
+    const uc = validateFormValue(field("unicode-class"), "ABC");
+    expect(uc.status).toBe("valid");           // \p{Lu}+, validates OK
+    expect(uc.pending.some(item => item.kind === "unsupported")).toBe(false);
+    const anchored = validateFormValue(field("anchored"), "ab");
+    expect(anchored.status).toBe("indeterminate");  // ^/$ still pending
+    expect(anchored.pending.some(item => item.kind === "unsupported")).toBe(true);
   });
 
   it("enforces ModuleSetBudget.maxDepth on import and include chains", async () => {

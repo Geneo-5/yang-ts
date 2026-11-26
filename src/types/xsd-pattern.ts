@@ -19,12 +19,9 @@ const MAX_QUANTIFIER_BOUND = 999;
  * Compile an XML Schema pattern to an anchored JavaScript regex over the
  * proven-safe subset, or return `undefined` when the pattern stays pending.
  * The syntax elements that diverge (and are therefore rejected here):
- * - `\\d \\D \\w \\W \\s \\S \\p \\P \\i \\c` — XSD character classes are
- *   Unicode-wide (`\\d` = Nd, `\\s` = XML whitespace), while JavaScript
- *   compiles them ASCII-wide or as literal letters;
  * - `^` and `$` outside a character class — anchors in JavaScript, ordinary
  *   characters in XML Schema;
- * - backreferences `\\1…\\9` and `(?`-prefixed groups — accepted or rejected
+ * - backreferences `\1…\9` and `(?`-prefixed groups — accepted or rejected
  *   differently, or regex-injection risk in JavaScript;
  * - character-class subtraction `[a-[b]]` and `[]`/`[^]` forms, which XML
  *   Schema treats differently from JavaScript.
@@ -40,7 +37,8 @@ export function compileXsdPattern(pattern: string): RegExp | undefined {
   if (xsdPatternCache.has(pattern)) return xsdPatternCache.get(pattern);
   let compiled: RegExp | undefined;
   if (pattern.length <= MAX_PATTERN_LENGTH && !oversizedQuantifierBound(pattern) && !hasUnboundedNestedQuantifier(pattern) && !usesDivergentConstruct(pattern)) {
-    try { compiled = new RegExp(`^(?:${pattern})$`); } catch { compiled = undefined; }
+    const translated = translateXsdEscapes(pattern);
+    try { compiled = new RegExp(`^(?:${translated})$`, "u"); } catch { compiled = undefined; }
   }
   xsdPatternCache.set(pattern, compiled);
   return compiled;
@@ -55,6 +53,90 @@ function oversizedQuantifierBound(pattern: string): boolean {
   }
   return false;
 }
+
+/**
+ * Translate XSD-specific escape sequences to JavaScript Unicode property
+ * escapes.  Called after the safety guards (length, ReDoS, divergence) pass,
+ * so we know the pattern contains no forbidden constructs — only XSD escapes
+ * that we now support.
+ *
+ * Inside a character class `[...]` the escapes keep their original spelling
+ * (JavaScript interprets `\d \w \s` correctly inside classes).  Outside a
+ * class they are rewritten to Unicode property escapes that match the XSD
+ * semantics:
+ *
+ * | XSD   | Meaning                        | JavaScript                          |
+ * |-------|--------------------------------|-------------------------------------|
+ * | `\d`  | Unicode decimal digits (Nd)    | `\p{Nd}`                            |
+ * | `\D`  | Not decimal digits             | `[^\p{Nd}]`                         |
+ * | `\w`  | Unicode word chars (L+N+Pc+M)  | `\p{Alphabetic}\p{Number}\p{Nonspacing_Mark}\p{Spacing_Mark}\p{Connector_Punctuation}` |
+ * | `\W`  | Not word chars                 | `[^\p{Alphabetic}\p{Number}\p{Nonspacing_Mark}\p{Spacing_Mark}\p{Connector_Punctuation}]` |
+ * | `\s`  | XML whitespace (tab, LF, CR, SP)| `[ \t\n\r]` (explicit, per XSD)    |
+ * | `\S`  | Not XML whitespace             | `[^\s]` → `[^\p{Zs}\t\n\r]`         |
+ * | `\p{…}`| Unicode property (already supported by JS `u` flag) | passed through     |
+ *
+ * `\i \c` remain rejected (no Unicode property equivalent).
+ */
+function translateXsdEscapes(pattern: string): string {
+  const result: string[] = [];
+  let insideClass = false;
+  let i = 0;
+  while (i < pattern.length) {
+    const ch = pattern[i]!;
+    if (ch === "\\") {
+      const next = pattern[i + 1];
+      if (next === undefined) return ""; // trailing backslash: caller's divergence guard catches this, but be safe
+      const pair = next;
+      // Map XSD escapes to JavaScript replacements (outside classes).
+      // Inside a character class, JavaScript handles \d \w \s correctly, so
+      // we leave them unchanged (push the original two-character escape).
+      const replacement = insideClass ? `\\${pair}` : translateXsdToJs[pair];
+      if (replacement !== undefined) {
+        result.push(replacement);
+      } else {
+        // Unknown escape: emit literally (the divergence guard already rejected
+        // i/c, but other unknowns may slip through).
+        result.push("\\", pair);
+      }
+      i += 2;
+      continue;
+    }
+    if (ch === "[") {
+      insideClass = true;
+      result.push("[");
+      i++;
+      continue;
+    }
+    if (ch === "]") {
+      insideClass = false;
+      result.push("]");
+      i++;
+      continue;
+    }
+    result.push(ch);
+    i++;
+  }
+  return result.join("");
+}
+
+/** XSD escape letter → JavaScript replacement (outside character class).
+ *  `undefined` means the escape is not supported (rejected by the divergence
+ *  guard anyway, but this table makes the mapping explicit). */
+const translateXsdToJs: Record<string, string> = {
+  // Decimal digits: XSD \d = all Unicode decimal numbers (Nd), not ASCII [0-9].
+  d: "\\p{Nd}",
+  // Negated decimal digits.
+  D: "[^\\p{Nd}]",
+  // Word characters: XSD \\w = letters + numbers + combining marks +
+  // connector punctuation (XML NameStartChar ∪ XML NameChar minus start).
+  w: "\\p{Alphabetic}\\p{Number}\\p{Nonspacing_Mark}\\p{Spacing_Mark}\\p{Connector_Punctuation}",
+  // Negated word characters.
+  W: "[^\\p{Alphabetic}\\p{Number}\\p{Nonspacing_Mark}\\p{Spacing_Mark}\\p{Connector_Punctuation}]",
+  // XML whitespace: tab, line feed, carriage return, space (per XSD spec §3.7).
+  s: "[\\t\\n\\r ]",
+  // Negated XML whitespace.
+  S: "[^\\t\\n\\r ]",
+};
 
 /**
  * Bounded scan for exponential-backtracking shapes: an unbounded quantifier
@@ -145,8 +227,10 @@ function unboundedBrace(pattern: string, open: number, closing: number): boolean
   return !/^\d+\s*$/.test(body) && !/^\d+\s*,\s*\d+\s*$/.test(body);
 }
 
-/** Map of escape letters where XML Schema and JavaScript regexes disagree. */
-const DIVERGENT_ESCAPES = new Set("dDwWsSpPiIcC".split(""));
+/** Map of escape letters where XML Schema and JavaScript regexes disagree.
+ *  These are still rejected (return `undefined` from `compileXsdPattern`);
+ *  the table documents which ones and why. */
+const DIVERGENT_ESCAPES = new Set("iC".split(""));// i = XML NameStartChar, C = XML NameChar (no Unicode property equivalent)
 
 function usesDivergentConstruct(pattern: string): boolean {
   let inside = false;
@@ -166,7 +250,7 @@ function usesDivergentConstruct(pattern: string): boolean {
       if (character === "[") inside = true;
       continue;
     }
-    if (character === "[" && pattern[index + 1] === "]") return true; // "[...[]" form
+    if (character === "[" && pattern[index + 1] === "]") return true; // "[...[]\" form
     if (character === "-" && pattern[index + 1] === "[") return true; // subtraction
     if (character === "]") inside = false;
   }

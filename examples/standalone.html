@@ -5884,8 +5884,9 @@ var YangEngine = (() => {
     if (xsdPatternCache.has(pattern)) return xsdPatternCache.get(pattern);
     let compiled;
     if (pattern.length <= MAX_PATTERN_LENGTH && !oversizedQuantifierBound(pattern) && !hasUnboundedNestedQuantifier(pattern) && !usesDivergentConstruct(pattern)) {
+      const translated = translateXsdEscapes(pattern);
       try {
-        compiled = new RegExp(`^(?:${pattern})$`);
+        compiled = new RegExp(`^(?:${translated})$`, "u");
       } catch {
         compiled = void 0;
       }
@@ -5901,6 +5902,57 @@ var YangEngine = (() => {
     }
     return false;
   }
+  function translateXsdEscapes(pattern) {
+    const result = [];
+    let insideClass = false;
+    let i = 0;
+    while (i < pattern.length) {
+      const ch = pattern[i];
+      if (ch === "\\") {
+        const next = pattern[i + 1];
+        if (next === void 0) return "";
+        const pair = next;
+        const replacement = insideClass ? `\\${pair}` : translateXsdToJs[pair];
+        if (replacement !== void 0) {
+          result.push(replacement);
+        } else {
+          result.push("\\", pair);
+        }
+        i += 2;
+        continue;
+      }
+      if (ch === "[") {
+        insideClass = true;
+        result.push("[");
+        i++;
+        continue;
+      }
+      if (ch === "]") {
+        insideClass = false;
+        result.push("]");
+        i++;
+        continue;
+      }
+      result.push(ch);
+      i++;
+    }
+    return result.join("");
+  }
+  var translateXsdToJs = {
+    // Decimal digits: XSD \d = all Unicode decimal numbers (Nd), not ASCII [0-9].
+    d: "\\p{Nd}",
+    // Negated decimal digits.
+    D: "[^\\p{Nd}]",
+    // Word characters: XSD \\w = letters + numbers + combining marks +
+    // connector punctuation (XML NameStartChar ∪ XML NameChar minus start).
+    w: "\\p{Alphabetic}\\p{Number}\\p{Nonspacing_Mark}\\p{Spacing_Mark}\\p{Connector_Punctuation}",
+    // Negated word characters.
+    W: "[^\\p{Alphabetic}\\p{Number}\\p{Nonspacing_Mark}\\p{Spacing_Mark}\\p{Connector_Punctuation}]",
+    // XML whitespace: tab, line feed, carriage return, space (per XSD spec §3.7).
+    s: "[\\t\\n\\r ]",
+    // Negated XML whitespace.
+    S: "[^\\t\\n\\r ]"
+  };
   function hasUnboundedNestedQuantifier(pattern) {
     const stack = [{ sawAtom: false, firstAtomCurrent: false, firstUnbounded: false, lastUnbounded: false }];
     const startAtom = () => {
@@ -5986,7 +6038,7 @@ var YangEngine = (() => {
     const body = pattern.slice(open + 1, closing);
     return !/^\d+\s*$/.test(body) && !/^\d+\s*,\s*\d+\s*$/.test(body);
   }
-  var DIVERGENT_ESCAPES = new Set("dDwWsSpPiIcC".split(""));
+  var DIVERGENT_ESCAPES = new Set("iC".split(""));
   function usesDivergentConstruct(pattern) {
     let inside = false;
     for (let index = 0; index < pattern.length; index++) {
