@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  canonicalFormOf, childOf, compileYangModules, createFormModel, moduleNamespacePrefixes,
+  canonicalFormOf, childOf, compileYangModules, createFormModel, evaluateCandidates, moduleNamespacePrefixes,
   parseYang, resolveModuleSet, validateFormValue, validateDataTree, YangSyntaxError,
 } from "../src/index.js";
 import type { CompiledSchemaNode, CompiledYangSchema } from "../src/index.js";
-import { DOMParser } from "@xmldom/xmldom";
+import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 
 const xml = (text: string) => new DOMParser().parseFromString(text, "application/xml");
 
@@ -366,5 +366,94 @@ describe("Stage 7 P1 – form restrictions descriptor and cross references", () 
     expect(validateFormValue(mixed, ["7", "ab"])).toMatchObject({ status: "valid", errors: [] });
     const rejected = validateFormValue(mixed, ["toolong"]);
     expect(rejected.status).toBe("invalid");
+  });
+});
+
+describe("Stage 7 P1 – evaluateCandidates", () => {
+  const moduleSet = async (...sources: string[]) => compileYangModules(
+    await resolveModuleSet(sources.map(parseYang), { async loadModule() { return undefined; } }));
+
+  it("locates targets under choice/case segments and augmented (foreign) namespaces", async () => {
+    const schema = await moduleSet(
+      `module alpha {
+        namespace "urn:alpha"; prefix a;
+        container top {
+          choice transport {
+            case raw { leaf raw-size { type enumeration { enum small; enum big; } } }
+          }
+        }
+      }`,
+      `module beta {
+        namespace "urn:beta"; prefix b;
+        import alpha { prefix a; }
+        augment "/a:top" {
+          container box { leaf mode { type enumeration { enum on; enum off; } } }
+        }
+      }`,
+    );
+    expect(schema.diagnostics).toEqual([]);
+    // A <data> wrapper keeps the document element out of the target path, and
+    // the augmented `box` subtree lives in beta's namespace, not alpha's.
+    const document = xml(`<data><top xmlns="urn:alpha"><raw-size>small</raw-size><box xmlns="urn:beta"><mode>on</mode></box></top></data>`);
+    const mode = evaluateCandidates(schema, document, "/top/box/mode");
+    expect(mode.domain).toBe("enum");
+    expect(mode.candidates.map(candidate => candidate.status)).toEqual(["allowed", "allowed"]);
+    const size = evaluateCandidates(schema, document, "/top/transport/raw/raw-size");
+    expect(size.domain).toBe("enum");
+    expect(size.candidates.map(candidate => candidate.status)).toEqual(["allowed", "allowed"]);
+  });
+
+  it("targets a specific list entry through key predicates", async () => {
+    const schema = await moduleSet(`module probe {
+      namespace "urn:probe"; prefix p;
+      container relay {
+        list upstream {
+          key name;
+          must "name = 'core'";
+          leaf name { type string; }
+          leaf status { type enumeration { enum up; enum down; } }
+        }
+      }
+    }`);
+    const document = xml(`<relay xmlns="urn:probe">
+      <upstream><name>core</name><status>up</status></upstream>
+      <upstream><name>edge</name><status>down</status></upstream>
+    </relay>`);
+    const core = evaluateCandidates(schema, document, "/relay/upstream[name='core']/status");
+    expect(core.candidates.map(candidate => candidate.status)).toEqual(["allowed", "allowed"]);
+    const edge = evaluateCandidates(schema, document, "/relay/upstream[name='edge']/status");
+    expect(edge.candidates.map(candidate => candidate.status)).toEqual(["blocked", "blocked"]);
+    expect(edge.candidates[0]!.reasons.map(reason => reason.code)).toEqual(["must-unmet"]);
+  });
+
+  it("never mutates the caller's document (probe and content both restored)", async () => {
+    const schema = await moduleSet(`module probe {
+      namespace "urn:probe"; prefix p;
+      container session { leaf echo { type enumeration { enum ping; enum discard; } must "../transport = 'tcp' or . = 'discard'"; } }
+    }`);
+    // `ping` violates the must (no transport sibling), `discard` satisfies it.
+    const document = xml(`<session xmlns="urn:probe"><echo/></session>`);
+    const before = new XMLSerializer().serializeToString(document);
+    const evaluated = evaluateCandidates(schema, document, "/session/echo");
+    expect(evaluated.candidates.map(candidate => candidate.status)).toEqual(["blocked", "allowed"]);
+    // An empty element (no text) previously kept the last candidate value.
+    expect(new XMLSerializer().serializeToString(document)).toBe(before);
+  });
+
+  it("honors ancestor and sibling constraints that depend on the node", async () => {
+    const schema = await moduleSet(`module probe {
+      namespace "urn:probe"; prefix p;
+      container eval {
+        must "mode = 'on'";
+        leaf mode { type enumeration { enum on; enum off; } }
+        leaf checked { type string; must "../mode = 'on'"; }
+      }
+    }`);
+    const document = xml(`<eval xmlns="urn:probe"><mode>on</mode><checked>x</checked></eval>`);
+    const candidates = evaluateCandidates(schema, document, "/eval/mode");
+    expect(candidates.candidates.find(candidate => candidate.value === "on")?.status).toBe("allowed");
+    const off = candidates.candidates.find(candidate => candidate.value === "off")!;
+    expect(off.status).toBe("blocked");
+    expect(off.reasons.map(reason => reason.code)).toEqual(["must-unmet", "must-unmet"]);
   });
 });

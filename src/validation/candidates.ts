@@ -1,8 +1,8 @@
 import { YangStatement } from "../yang/ast.js";
 import { childOf, childrenOf } from "../yang/parser.js";
 import { CompiledSchemaNode, CompiledYangSchema } from "../yang/compiler.js";
-import { createConstraintEvaluator } from "../xpath/evaluate-constraints.js";
-import { findSchemaNodeByPath } from "../xpath/accessible-tree.js";
+import { createConstraintEvaluator, ConstraintEvaluation, compileModuleExpression } from "../xpath/evaluate-constraints.js";
+import { schemaNodeChainByPath, flattenDataChildren } from "../xpath/accessible-tree.js";
 
 export type CandidateStatus = "allowed" | "blocked" | "indeterminate";
 export type CandidateDomain = "enum" | "bits" | "boolean" | "none";
@@ -76,28 +76,93 @@ export function finiteDomainOf(node: CompiledSchemaNode): FiniteDomain {
   return { domain: "none", values: [] };
 }
 
+/** One parsed path segment: the (predicate-stripped) name plus key predicates for list entries. */
+interface PathSegment {
+  name: string;
+  predicates: ReadonlyArray<{ key: string; value: string }>;
+}
+
 /**
- * Locate the instance element, walking from the root through path segments
- * that are present. When the element itself is absent (typically a leaf gated
- * by a `when`), returns the parent that would hold it so candidates can be
- * probed with a placeholder.
+ * Split a schema path into segments: key predicates such as `[name='core']`
+ * are parsed off the segment name and kept for entry targeting; choice/case
+ * segments stay in place so positional alignment with the schema chain is kept.
  */
-function locateElement(instance: Document, node: CompiledSchemaNode): { element?: Element; parent?: Element } {
-  const parts = node.path.split("/").filter(Boolean);
+function parsePathSegments(path: string): PathSegment[] {
+  return path.split("/").filter(Boolean).map(part => {
+    const predicates: Array<{ key: string; value: string }> = [];
+    const name = part.replace(/\[([^\[\]]+)\]/g, (_match, inner: string) => {
+      const predicate = /^([\w.:-]+)\s*=\s*(?:'([^']*)'|"([^"]*)")\s*$/.exec(inner.trim());
+      if (predicate) predicates.push({ key: predicate[1]!, value: predicate[2] ?? predicate[3] ?? "" });
+      return "";
+    });
+    return { name, predicates };
+  });
+}
+
+/** Does `entry` satisfy every key predicate of a list segment? Key leaves hang directly under the entry. */
+function entryMatches(
+  entry: Element,
+  listNode: CompiledSchemaNode,
+  predicates: ReadonlyArray<{ key: string; value: string }>,
+): boolean {
+  return predicates.every(({ key, value }) => {
+    const namespace = listNode.children.find(child => child.name === key)?.namespace ?? listNode.namespace;
+    return Array.from(entry.childNodes).some(child => child.nodeType === 1
+      && (child as Element).localName === key
+      && (child as Element).namespaceURI === namespace
+      && (child as Element).textContent === value);
+  });
+}
+
+/**
+ * Locate the instance element for the schema node chain, walking from the
+ * root through path segments that are present, checking each segment against
+ * ITS OWN schema namespace (augmented segments carry another module's
+ * namespace). Key predicates select a specific list entry; without them the
+ * first matching entry is used. When the element itself is absent (typically
+ * a leaf gated by a `when`), returns the parent that would hold it so
+ * candidates can be probed with a placeholder. `ancestors` mirrors
+ * `dataNodes` positionally up to the deepest located segment.
+ */
+function locateElement(
+  instance: Document,
+  dataNodes: readonly CompiledSchemaNode[],
+  segments: readonly PathSegment[],
+): { element?: Element; parent?: Element; ancestors: Element[] } {
   const top = instance.documentElement;
-  if (!top) return {};
-  let current: Element | undefined = top;
-  // The document element may itself be the first path segment.
-  for (let index = top.localName === parts[0] ? 1 : 0; current && index < parts.length; index++) {
-    const next = Array.from(current.childNodes).find(child => child.nodeType === 1 &&
-      (child as Element).localName === parts[index] && (child as Element).namespaceURI === node.namespace);
-    if (!next) {
-      // A missing middle segment means the target context does not exist.
-      return index === parts.length - 1 ? { parent: current } : {};
-    }
-    current = next as Element;
+  if (!top || !dataNodes.length) return { ancestors: [] };
+  const ancestors: Element[] = [];
+  let current: Element;
+  let index: number;
+  if (top.localName === dataNodes[0]!.name && top.namespaceURI === dataNodes[0]!.namespace) {
+    if (!entryMatches(top, dataNodes[0]!, segments[0]?.predicates ?? [])) return { ancestors: [] };
+    current = top;
+    index = 1;
+    ancestors.push(top);
+  } else {
+    // The document element is a wrapper (e.g. `<data>`): every segment is a descendant.
+    current = top;
+    index = 0;
   }
-  return current ? { element: current } : {};
+  for (; index < dataNodes.length; index++) {
+    const schemaNode = dataNodes[index]!;
+    const matches = Array.from(current.childNodes).filter((child): child is Element =>
+      child.nodeType === 1
+      && (child as Element).localName === schemaNode.name
+      && (child as Element).namespaceURI === schemaNode.namespace);
+    if (!matches.length) {
+      // A missing middle segment means the target context does not exist.
+      return index === dataNodes.length - 1 ? { parent: current, ancestors } : { ancestors };
+    }
+    const predicates = segments[index]?.predicates ?? [];
+    const chosen = (predicates.length
+      ? matches.find(entry => entryMatches(entry, schemaNode, predicates))
+      : matches[0]) as Element | undefined;
+    if (!chosen) return { ancestors };
+    ancestors.push(chosen);
+    current = chosen;
+  }
+  return { element: current, ancestors };
 }
 
 function classify(evaluation: { kind: "must" | "when"; expression: string; status: string; source: YangStatement }): {
@@ -131,9 +196,12 @@ function classify(evaluation: { kind: "must" | "when"; expression: string; statu
  * and unmet constraints block the candidate. An unevaluable `must` — one that
  * depends on data outside the document or uses an unsupported function —
  * leaves the candidate indeterminate instead of filtering it statically.
- * Absent (typically when-gated) leaves are probed with a temporary
- * placeholder; every candidate carries per-constraint reasons with the
- * declaring statement as source.
+ * Constraints of ancestors and present siblings that reference the node see
+ * the candidate value too. Absent (typically when-gated) leaves are probed
+ * with a temporary placeholder; every candidate carries per-constraint
+ * reasons with the declaring statement as source. All probing happens on a
+ * private clone — the caller's document is never touched (and key
+ * predicates, choice/case segments and foreign namespaces locate the node).
  */
 export function evaluateCandidates(
   schema: CompiledYangSchema,
@@ -141,14 +209,21 @@ export function evaluateCandidates(
   path: string,
   options: CandidateOptions = {},
 ): CandidateResult {
-  const node = findSchemaNodeByPath(schema, path);
+  const chain = schemaNodeChainByPath(schema, path);
+  const node = chain?.[chain.length - 1];
   if (!node) return { path, domain: "none", candidates: [] };
   const domain = finiteDomainOf(node);
   if (domain.domain === "none") return { path, domain: domain.domain, candidates: [] };
 
+  const dataNodes = chain.filter(node => node.kind !== "choice" && node.kind !== "case");
+  const segments = parsePathSegments(path);
+
+  // Evaluate on a private clone: no candidate value, no placeholder ever
+  // reaches the caller's document, not even via an exceptional constraint.
+  const working = instance.cloneNode(true) as Document;
   const evaluator = createConstraintEvaluator(schema);
-  const { element, parent } = locateElement(instance, node);
-  if (!element && !parent) {
+  const located = locateElement(working, dataNodes, segments);
+  if (!located.element && !located.parent) {
     // No context in the document at all: candidates cannot be classified.
     return {
       path, domain: domain.domain,
@@ -159,13 +234,32 @@ export function evaluateCandidates(
   }
 
   let placeholder: Element | undefined;
-  let context: Element | undefined = element;
-  if (!context && parent) {
-    placeholder = instance.createElementNS(node.namespace, node.name);
-    parent.appendChild(placeholder);
+  let context: Element | undefined = located.element;
+  if (!context && located.parent) {
+    placeholder = working.createElementNS(node.namespace, node.name);
+    located.parent.appendChild(placeholder);
     context = placeholder;
   }
-  const originalText = element ? element.textContent : null;
+  // Constraints that also depend on the node: every located ancestor (its own
+  // element in the chain) plus, at the parent level, present siblings other
+  // than the node itself. The node's own constraints are added separately in
+  // the candidate loop.
+  const dependents: Element[] = [];
+  const ownIndex = located.element ? dataNodes.length - 1 : -1;
+  located.ancestors.forEach((element, index) => {
+    if (index !== ownIndex) dependents.push(element);
+  });
+  const parentNode = dataNodes[located.element ? dataNodes.length - 2 : located.ancestors.length - 1];
+  const parentElement = located.element?.parentElement ?? located.parent;
+  if (parentNode && parentElement) {
+    for (const sibling of flattenDataChildren(parentNode.children)) {
+      if (sibling === node) continue;
+      const siblingElement = Array.from(parentElement.childNodes).find(child => child.nodeType === 1
+        && (child as Element).localName === sibling.name
+        && (child as Element).namespaceURI === sibling.namespace) as Element | undefined;
+      if (siblingElement) dependents.push(siblingElement);
+    }
+  }
   const bitsSelection = options.bitsSelection ?? [];
 
   const candidates = domain.values.map(value => {
@@ -175,20 +269,24 @@ export function evaluateCandidates(
     context!.textContent = tested;
     let status: CandidateStatus = "allowed";
     const reasons: CandidateReason[] = [];
-    for (const evaluation of evaluator.evaluateNode(context!)) {
-      if (evaluation.status === "met") continue;
+    const record = (evaluation: ConstraintEvaluation): void => {
+      if (evaluation.status === "met") return;
       const { status: classification, reason } = classify(evaluation);
       // An unevaluable constraint is a stronger signal than a false one: the
       // candidate must not be filtered out statically, only flagged.
       status = classification === "indeterminate" ? "indeterminate"
         : status === "indeterminate" ? "indeterminate" : "blocked";
       reasons.push(reason);
+    };
+    for (const evaluation of evaluator.evaluateNode(context!)) record(evaluation);
+    for (const element of dependents) {
+      for (const evaluation of evaluator.evaluateNode(element)) record(evaluation);
     }
     return { value, status, reasons };
   });
 
   if (placeholder) {
     placeholder.parentElement?.removeChild(placeholder);
-  } else if (originalText !== null) context!.textContent = originalText;
+  }
   return { path, domain: domain.domain, candidates };
 }

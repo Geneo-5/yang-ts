@@ -3920,6 +3920,7 @@ var YangEngine = (() => {
     evaluateCandidates: () => evaluateCandidates,
     findSchemaNodeByPath: () => findSchemaNodeByPath,
     finiteDomainOf: () => finiteDomainOf,
+    flattenDataChildren: () => flattenDataChildren,
     isIdentityDerivedFrom: () => isIdentityDerivedFrom,
     leafrefPathStatementOf: () => leafrefPathStatementOf,
     matchSchemaChild: () => matchSchemaChild,
@@ -3933,6 +3934,7 @@ var YangEngine = (() => {
     readRestconfRpcOutput: () => readRestconfRpcOutput,
     resolveModuleSet: () => resolveModuleSet,
     restconfRpcPath: () => restconfRpcPath,
+    schemaNodeChainByPath: () => schemaNodeChainByPath,
     schemaNodeForElement: () => schemaNodeForElement,
     validateDataTree: () => validateDataTree,
     validateFormValue: () => validateFormValue,
@@ -5310,17 +5312,25 @@ var YangEngine = (() => {
     }
     return schemaNode;
   }
+  function flattenDataChildren(nodes) {
+    return nodes.flatMap((node) => node.kind === "choice" ? flattenDataChildren(node.children) : node.kind === "case" ? node.children : [node]);
+  }
   function findSchemaNodeByPath(schema, path) {
-    const parts = path.split("/").filter(Boolean).map((part) => part.replace(/\[[^\]]*\]$/, ""));
-    const usable = (nodes) => nodes.flatMap((node) => node.kind === "choice" ? usable(node.children) : node.kind === "case" ? node.children : [node]);
-    let level = usable(schema.roots);
-    let found;
+    const chain = schemaNodeChainByPath(schema, path);
+    return chain ? chain[chain.length - 1] : void 0;
+  }
+  function schemaNodeChainByPath(schema, path) {
+    const parts = path.split("/").filter(Boolean).map((part) => part.replace(/\[[^\]]*\]/g, ""));
+    let level = schema.roots;
+    const chain = [];
     for (const part of parts) {
-      found = level.find((node) => node.name === part);
+      const flat = flattenDataChildren(level);
+      const found = flat.find((node) => node.name === part) ?? level.find((node) => (node.kind === "choice" || node.kind === "case") && node.name === part);
       if (!found) return void 0;
-      level = usable(found.children);
+      chain.push(found);
+      level = found.children;
     }
-    return found;
+    return chain;
   }
 
   // src/types/xsd-pattern.ts
@@ -5954,19 +5964,51 @@ var YangEngine = (() => {
     if (layers[layers.length - 1].argument === "boolean") return { domain: "boolean", values: ["true", "false"] };
     return { domain: "none", values: [] };
   }
-  function locateElement(instance, node) {
-    const parts = node.path.split("/").filter(Boolean);
+  function parsePathSegments(path) {
+    return path.split("/").filter(Boolean).map((part) => {
+      const predicates = [];
+      const name2 = part.replace(/\[([^\[\]]+)\]/g, (_match, inner) => {
+        const predicate = /^([\w.:-]+)\s*=\s*(?:'([^']*)'|"([^"]*)")\s*$/.exec(inner.trim());
+        if (predicate) predicates.push({ key: predicate[1], value: predicate[2] ?? predicate[3] ?? "" });
+        return "";
+      });
+      return { name: name2, predicates };
+    });
+  }
+  function entryMatches(entry, listNode, predicates) {
+    return predicates.every(({ key, value }) => {
+      const namespace = listNode.children.find((child) => child.name === key)?.namespace ?? listNode.namespace;
+      return Array.from(entry.childNodes).some((child) => child.nodeType === 1 && child.localName === key && child.namespaceURI === namespace && child.textContent === value);
+    });
+  }
+  function locateElement(instance, dataNodes, segments) {
     const top = instance.documentElement;
-    if (!top) return {};
-    let current = top;
-    for (let index = top.localName === parts[0] ? 1 : 0; current && index < parts.length; index++) {
-      const next = Array.from(current.childNodes).find((child) => child.nodeType === 1 && child.localName === parts[index] && child.namespaceURI === node.namespace);
-      if (!next) {
-        return index === parts.length - 1 ? { parent: current } : {};
-      }
-      current = next;
+    if (!top || !dataNodes.length) return { ancestors: [] };
+    const ancestors = [];
+    let current;
+    let index;
+    if (top.localName === dataNodes[0].name && top.namespaceURI === dataNodes[0].namespace) {
+      if (!entryMatches(top, dataNodes[0], segments[0]?.predicates ?? [])) return { ancestors: [] };
+      current = top;
+      index = 1;
+      ancestors.push(top);
+    } else {
+      current = top;
+      index = 0;
     }
-    return current ? { element: current } : {};
+    for (; index < dataNodes.length; index++) {
+      const schemaNode = dataNodes[index];
+      const matches = Array.from(current.childNodes).filter((child) => child.nodeType === 1 && child.localName === schemaNode.name && child.namespaceURI === schemaNode.namespace);
+      if (!matches.length) {
+        return index === dataNodes.length - 1 ? { parent: current, ancestors } : { ancestors };
+      }
+      const predicates = segments[index]?.predicates ?? [];
+      const chosen = predicates.length ? matches.find((entry) => entryMatches(entry, schemaNode, predicates)) : matches[0];
+      if (!chosen) return { ancestors };
+      ancestors.push(chosen);
+      current = chosen;
+    }
+    return { element: current, ancestors };
   }
   function classify(evaluation) {
     if (evaluation.status === "indeterminate") {
@@ -5989,13 +6031,17 @@ var YangEngine = (() => {
     };
   }
   function evaluateCandidates(schema, instance, path, options = {}) {
-    const node = findSchemaNodeByPath(schema, path);
+    const chain = schemaNodeChainByPath(schema, path);
+    const node = chain?.[chain.length - 1];
     if (!node) return { path, domain: "none", candidates: [] };
     const domain = finiteDomainOf(node);
     if (domain.domain === "none") return { path, domain: domain.domain, candidates: [] };
+    const dataNodes = chain.filter((node2) => node2.kind !== "choice" && node2.kind !== "case");
+    const segments = parsePathSegments(path);
+    const working = instance.cloneNode(true);
     const evaluator = createConstraintEvaluator(schema);
-    const { element, parent } = locateElement(instance, node);
-    if (!element && !parent) {
+    const located = locateElement(working, dataNodes, segments);
+    if (!located.element && !located.parent) {
       return {
         path,
         domain: domain.domain,
@@ -6007,30 +6053,47 @@ var YangEngine = (() => {
       };
     }
     let placeholder;
-    let context = element;
-    if (!context && parent) {
-      placeholder = instance.createElementNS(node.namespace, node.name);
-      parent.appendChild(placeholder);
+    let context = located.element;
+    if (!context && located.parent) {
+      placeholder = working.createElementNS(node.namespace, node.name);
+      located.parent.appendChild(placeholder);
       context = placeholder;
     }
-    const originalText = element ? element.textContent : null;
+    const dependents = [];
+    const ownIndex = located.element ? dataNodes.length - 1 : -1;
+    located.ancestors.forEach((element, index) => {
+      if (index !== ownIndex) dependents.push(element);
+    });
+    const parentNode = dataNodes[located.element ? dataNodes.length - 2 : located.ancestors.length - 1];
+    const parentElement = located.element?.parentElement ?? located.parent;
+    if (parentNode && parentElement) {
+      for (const sibling of flattenDataChildren(parentNode.children)) {
+        if (sibling === node) continue;
+        const siblingElement = Array.from(parentElement.childNodes).find((child) => child.nodeType === 1 && child.localName === sibling.name && child.namespaceURI === sibling.namespace);
+        if (siblingElement) dependents.push(siblingElement);
+      }
+    }
     const bitsSelection = options.bitsSelection ?? [];
     const candidates = domain.values.map((value) => {
       const tested = domain.domain === "bits" ? Array.from(/* @__PURE__ */ new Set([...bitsSelection, value])).sort().join(" ") : value;
       context.textContent = tested;
       let status = "allowed";
       const reasons = [];
-      for (const evaluation of evaluator.evaluateNode(context)) {
-        if (evaluation.status === "met") continue;
+      const record = (evaluation) => {
+        if (evaluation.status === "met") return;
         const { status: classification, reason } = classify(evaluation);
         status = classification === "indeterminate" ? "indeterminate" : status === "indeterminate" ? "indeterminate" : "blocked";
         reasons.push(reason);
+      };
+      for (const evaluation of evaluator.evaluateNode(context)) record(evaluation);
+      for (const element of dependents) {
+        for (const evaluation of evaluator.evaluateNode(element)) record(evaluation);
       }
       return { value, status, reasons };
     });
     if (placeholder) {
       placeholder.parentElement?.removeChild(placeholder);
-    } else if (originalText !== null) context.textContent = originalText;
+    }
     return { path, domain: domain.domain, candidates };
   }
 

@@ -179,24 +179,43 @@ export function schemaNodeForElement(schema: CompiledYangSchema, element: Elemen
   return schemaNode;
 }
 
+/** Schema-tree children with choice/case indirections removed: members hang at the instance level. */
+export function flattenDataChildren(nodes: readonly CompiledSchemaNode[]): CompiledSchemaNode[] {
+  return nodes.flatMap(node => node.kind === "choice"
+    ? flattenDataChildren(node.children)
+    : node.kind === "case" ? node.children : [node]);
+}
+
 /**
  * Resolve a bare schema path ("/top/list/leaf") to its compiled schema node.
- * Choice and case names are transparent to schema paths, and list segments
- * tolerate the form-model's `[*]` (or `[key='v']`) predicate suffixes.
+ * Choice and case names are transparent to schema paths — a segment may name
+ * the choice/case itself (as the compiler's `path` values do) — and list
+ * segments tolerate the form-model's `[*]` (or `[key='v']`) predicates.
  */
 export function findSchemaNodeByPath(schema: CompiledYangSchema, path: string): CompiledSchemaNode | undefined {
-  const parts = path.split("/").filter(Boolean)
-    .map(part => part.replace(/\[[^\]]*\]$/, ""));
-  const usable = (nodes: readonly CompiledSchemaNode[]): CompiledSchemaNode[] =>
-    nodes.flatMap(node => node.kind === "choice"
-      ? usable(node.children)
-      : node.kind === "case" ? node.children : [node]);
-  let level = usable(schema.roots);
-  let found: CompiledSchemaNode | undefined;
+  const chain = schemaNodeChainByPath(schema, path);
+  return chain ? chain[chain.length - 1] : undefined;
+}
+
+/**
+ * Schema nodes matched segment by segment for a bare schema path, exactly as
+ * `findSchemaNodeByPath` resolves them but keeping every intermediate match:
+ * choice/case segments contribute their kind, data segments their instance
+ * namespaces. Instance navigation (e.g. candidate evaluation) uses this to
+ * namespace-check each ancestor independently.
+ */
+export function schemaNodeChainByPath(schema: CompiledYangSchema, path: string): CompiledSchemaNode[] | undefined {
+  const parts = path.split("/").filter(Boolean).map(part => part.replace(/\[[^\]]*\]/g, ""));
+  let level: readonly CompiledSchemaNode[] = schema.roots;
+  const chain: CompiledSchemaNode[] = [];
   for (const part of parts) {
-    found = level.find(node => node.name === part);
+    const flat = flattenDataChildren(level);
+    // Data node names win over a colliding choice/case segment name.
+    const found = flat.find(node => node.name === part)
+      ?? level.find(node => (node.kind === "choice" || node.kind === "case") && node.name === part);
     if (!found) return undefined;
-    level = usable(found.children);
+    chain.push(found);
+    level = found.children;
   }
-  return found;
+  return chain;
 }
