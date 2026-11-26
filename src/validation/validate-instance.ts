@@ -16,7 +16,8 @@ export type ValidationIssueCode =
   | "instance-identifier-invalid"
   | "instance-identifier-dangling"
   | "must-unmet"
-  | "when-unexpected-node";
+  | "when-unexpected-node"
+  | "cancelled";
 
 export interface ValidationIssue {
   code: ValidationIssueCode;
@@ -33,6 +34,13 @@ export interface InstanceValidationResult {
 export interface InstanceValidationOptions {
   /** Default true: state `config false` data participates in validation. */
   includeState?: boolean;
+  /**
+   * Cooperative cancellation: checked at every element visit; an aborted
+   * signal yields a `cancelled` issue and an `indeterminate` status instead of
+   * a partial verdict. Interrupting a single XPath mid-expression is not
+   * possible in the synchronous evaluator — combine with worker isolation.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -53,6 +61,7 @@ export function validateDataTree(
   const resolveLeafref = createLeafrefResolver(schema);
   const issues: ValidationIssue[] = [];
   let indeterminate = false;
+  let cancelled = false;
 
   const isElement = (node: Node | null): node is Element => node !== null && node.nodeType === 1;
   const issue = (code: ValidationIssueCode, schemaNode: CompiledSchemaNode, message: string): void => {
@@ -68,6 +77,7 @@ export function validateDataTree(
       .flatMap(child => elementsOf(element, child));
 
   function visitElement(element: Element, schemaNode: CompiledSchemaNode): void {
+    if (options.signal?.aborted) { cancelled = true; return; }
     for (const evaluation of evaluator.evaluateNode(element)) {
       if (evaluation.status === "indeterminate") { indeterminate = true; continue; }
       if (evaluation.kind === "must" && evaluation.status === "unmet") {
@@ -252,9 +262,11 @@ export function validateDataTree(
   // document, keeping absolute-path anchors at the data root.
   const rawTop = instance.documentElement;
   if (!rawTop) return { status: indeterminate ? "indeterminate" : "valid", issues };
+  if (options.signal?.aborted) cancelled = true;
   for (const root of schema.roots) {
     if (root.kind === "choice" || root.kind === "case") continue;
     if (!includeState && !root.config) continue;
+    if (cancelled) break;
     const present = rawTop.localName === root.name && rawTop.namespaceURI === root.namespace ? [rawTop] : elementsOf(rawTop, root);
     for (const entry of present) {
       const holder = instance.implementation.createDocument(null, "", null);
@@ -266,7 +278,11 @@ export function validateDataTree(
       visitElement(dataRoot, root);
     }
   }
-  return { status: issues.length ? "invalid" : indeterminate ? "indeterminate" : "valid", issues };
+  // Cancellation replaces the verdict: a partial tree walk says nothing about
+  // the whole instance, so the status is indeterminate and `cancelled` says why.
+  return cancelled
+    ? { status: "indeterminate", issues: [...issues, { code: "cancelled", path: "/", message: "Validation was cancelled before completion." }] }
+    : { status: issues.length ? "invalid" : indeterminate ? "indeterminate" : "valid", issues };
 }
 
 /** One node step of an RFC 7950 instance-identifier (section 9.13): a node

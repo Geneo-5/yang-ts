@@ -1,5 +1,7 @@
+import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
-import { parseYang, resolveModuleSet } from "../src/index.js";
+import { compileYangModules, evaluateCandidates, parseYang, resolveModuleSet, validateDataTree } from "../src/index.js";
+import { compileXsdPattern } from "../src/types/xsd-pattern.js";
 
 const TEST = "urn:test";
 const module = (name: string, imports: string[] = []) => `module ${name} {
@@ -81,5 +83,76 @@ describe("module-set resource budgets and cancellation", () => {
     const result = await moduleSet(["plain", "plain-dep"], { plain: ["plain-dep"] });
     expect(result.diagnostics).toEqual([]);
     expect(result.modules.map(item => item.argument).sort()).toEqual(["plain", "plain-dep"]);
+  });
+});
+
+describe("beyond-loading budgets and cancellation", () => {
+  const compile = async (source: string, budget?: { maxSchemaNodes?: number }) => compileYangModules(
+    await resolveModuleSet([parseYang(source)], { async loadModule() { return undefined; } }),
+    budget ? { budget } : {},
+  );
+
+  const expansion = `module expand {
+    namespace "urn:test"; prefix t;
+    grouping leaf-pair { leaf a { type string; } leaf b { type string; } }
+    grouping wrapper { uses leaf-pair; container side { leaf c { type string; } } }
+    container top {
+      uses wrapper;
+      list grid { key slot; leaf slot { type int16; } }
+    }
+  }`;
+
+  it("caps grouping/uses expansion with a schema-node budget", async () => {
+    // The schema fans out to more nodes than the budget allows: one
+    // diagnostic, and expansion stops rather than growing unbounded.
+    const compiled = await compile(expansion, { maxSchemaNodes: 5 });
+    expect(compiled.diagnostics.map(item => item.code)).toEqual(["budget-exceeded"]);
+    expect(compiled.diagnostics[0]!.message).toMatch(/[Ss]chema node budget 5/);
+
+    const allowed = await compile(expansion, { maxSchemaNodes: 50 });
+    expect(allowed.diagnostics).toEqual([]);
+    // Unconstrained compilation stays unconstrained.
+    const free = await compile(expansion);
+    expect(free.diagnostics).toEqual([]);
+  });
+
+  it("keeps pathological patterns pending instead of compiling them", () => {
+    // Classic exponential-backtracking shapes: an unbounded quantifier over a
+    // group whose first and last atoms are both unboundedly quantified.
+    // Compile stays undefined (pending).
+    expect(compileXsdPattern("(a+)+")).toBeUndefined();
+    expect(compileXsdPattern("(a*b*)*")).toBeUndefined();
+    // Oversized patterns and oversized quantifier bounds never reach the
+    // regex engine.
+    expect(compileXsdPattern(`[a-z]{0,2}[0-9]{1,${"0".repeat(400)}}`)).toBeUndefined();
+    expect(compileXsdPattern("[a-z]{2000}")).toBeUndefined();
+    expect(compileXsdPattern("a".repeat(300))).toBeUndefined();
+    // Ordinary patterns still compile, including shapes a crude detector
+    // would falsely flag.
+    expect(compileXsdPattern("[a-z]+")).toBeInstanceOf(RegExp);
+    expect(compileXsdPattern("(ab|cd)+")).toBeInstanceOf(RegExp);
+    expect(compileXsdPattern("(ab+)+")).toBeInstanceOf(RegExp);
+    expect(compileXsdPattern("[a-z]+(-[a-z]+)*")).toBeInstanceOf(RegExp);
+  });
+
+  it("validates and enumerates candidates cooperatively via AbortSignal", async () => {
+    const schemaText = `module bakery {
+      namespace "urn:pan"; prefix p;
+      container oven {
+        leaf mode { type enumeration { enum off; enum on; } must "../mode = 'on' or ../mode = 'off'"; }
+      }
+    }`;
+    const compiled = await compile(schemaText);
+    const doc = new DOMParser().parseFromString(`<oven xmlns="urn:pan"><mode>on</mode></oven>`, "application/xml");
+    const controller = new AbortController();
+    controller.abort();
+    const result = validateDataTree(compiled, doc, { signal: controller.signal });
+    expect(result.status).toBe("indeterminate");
+    expect(result.issues.map(item => item.code)).toEqual(["cancelled"]);
+
+    const candidates = evaluateCandidates(compiled, new DOMParser().parseFromString(
+      `<oven xmlns="urn:pan"><mode>on</mode></oven>`, "application/xml"), "/oven/mode", { signal: controller.signal });
+    expect(candidates.candidates.length).toBeGreaterThan(0);
+    expect(candidates.candidates.every(item => item.status === "indeterminate")).toBe(true);
   });
 });

@@ -121,7 +121,7 @@ New stage collecting the review findings by priority. Each item is closed by a f
 - [x] Accessible tree: wrapper documents, inactive-case defaults (Stage 4) — closed 2026-11-26, see Stage 4.
 
 **P2 — hardening for untrusted modules**
-- [ ] Budgets beyond loading: grouping/`uses` expansion node count, XPath evaluation steps/time, regex execution (ReDoS), parser nesting depth, CPU cancellation (worker + timeout).
+- [x] Budgets beyond loading: grouping/`uses` expansion node count, XPath evaluation steps/time, regex execution (ReDoS), parser nesting depth, CPU cancellation (worker + timeout) — closed 2026-11-26 by tests in `tests/module-budgets.test.ts`: `compileYangModules({ budget: { maxSchemaNodes } })` stops grouping/`uses` fan-out with one `budget-exceeded` diagnostic; `validateDataTree` and `evaluateCandidates` take an `options.signal` and report `indeterminate` + `cancelled` when aborted; patterns longer than 256 characters, with quantifier bounds ≥ 1000 or with the nested-unbounded-quantifier ReDoS shape stay `pending`; parser nesting was already capped at depth 200 (Stage 0). Boundary made explicit: a single XPath cannot be interrupted mid-expression in the synchronous third-party evaluator — input size is bounded by the source-character budget and long stores need worker isolation at the host.
 - [ ] Schema-scoped caches (`WeakMap<schema, …>`) instead of module-level maps.
 - [ ] Differential testing against libyang (development only) and an XPath-rewrite fuzz corpus.
 

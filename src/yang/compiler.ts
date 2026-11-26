@@ -75,7 +75,7 @@ export interface CompilerDiagnostic {
     "unresolved-feature" | "invalid-feature-expression" | "unresolved-deviation" | "invalid-deviation" |
     "unresolved-refine" | "invalid-refine" | "unresolved-identity" | "identity-cycle" |
     "invalid-augment-target" | "invalid-augment-child" | "invalid-statement-cardinality" |
-    "invalid-type-restriction";
+    "invalid-type-restriction" | "budget-exceeded";
   message: string;
   module: string;
   source: YangStatement;
@@ -92,6 +92,11 @@ export interface CompiledYangSchema {
 export interface YangCompilerOptions {
   /** Feature identifiers use the declaring module name, e.g. `ietf-interfaces:arbitrary-names`. */
   enabledFeatures?: ReadonlySet<string>;
+  /** Resource budget for untrusted modules; expansion stops with one `budget-exceeded` diagnostic when tripped. */
+  budget?: {
+    /** Maximum number of schema nodes the whole module set may expand to (grouping/`uses` fan-out included). */
+    maxSchemaNodes?: number;
+  };
 }
 
 const DATA_KINDS = new Set<SchemaNodeKind>(["container", "list", "leaf", "leaf-list", "choice", "case", "anydata", "anyxml"]);
@@ -129,6 +134,11 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   const diagnostics: CompilerDiagnostic[] = [];
   const modules = moduleSet.modules;
   const roots: CompiledSchemaNode[] = [];
+  // Resource budget for hostile grouping trees: every node makeNode produces
+  // counts; past the ceiling expansion stops dead, so a `uses` fan-out cannot
+  // grow the tree unbounded.
+  let expandedNodes = 0;
+  let nodeBudgetExceeded = false;
   const report = (code: CompilerDiagnostic["code"], message: string, module: YangModule, source: YangStatement) =>
     diagnostics.push({ code, message, module: module.argument, source });
   const singletonChildren: Readonly<Record<string, readonly string[]>> = {
@@ -368,6 +378,13 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     // statement (module or submodule, RFC 7950 §5.6.2), not in the namespace module.
     sourceModule: YangModule = owner,
   ): CompiledSchemaNode[] => {
+    expandedNodes++;
+    const maxSchemaNodes = options.budget?.maxSchemaNodes;
+    if (maxSchemaNodes !== undefined && (expandedNodes > maxSchemaNodes && !nodeBudgetExceeded)) {
+      nodeBudgetExceeded = true;
+      report("budget-exceeded", `Schema node budget ${maxSchemaNodes} exceeded while expanding '${statement.keyword}${statement.argument ? ` ${statement.argument}` : ""}'`, owner, statement);
+    }
+    if (nodeBudgetExceeded) return [];
     if (statement.keyword === "uses") {
       const rawName = statement.argument ?? "";
       // Grouping references resolve with the RFC 7950 §6.2.1 scope of the

@@ -33,6 +33,12 @@ export interface CandidateOptions {
    * selection before the constraints are evaluated against the resulting value.
    */
   bitsSelection?: readonly string[];
+  /**
+   * Cooperative cancellation: an aborted signal leaves every candidate
+   * `indeterminate` with a `constraint-indeterminate` reason instead of
+   * evaluating constraints on a stopped consumer's behalf.
+   */
+  signal?: AbortSignal;
 }
 
 export interface FiniteDomain {
@@ -263,6 +269,17 @@ export function evaluateCandidates(
   const bitsSelection = options.bitsSelection ?? [];
 
   const candidates = domain.values.map(value => {
+    if (options.signal?.aborted) {
+      return {
+        value,
+        status: "indeterminate" as const,
+        reasons: [{
+          code: "constraint-indeterminate" as const,
+          message: "Candidate evaluation was cancelled",
+          source: node.source,
+        }],
+      };
+    }
     const tested = domain.domain === "bits"
       ? Array.from(new Set([...bitsSelection, value])).sort().join(" ")
       : value;

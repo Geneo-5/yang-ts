@@ -4413,6 +4413,8 @@ var YangEngine = (() => {
     const diagnostics = [];
     const modules = moduleSet.modules;
     const roots = [];
+    let expandedNodes = 0;
+    let nodeBudgetExceeded = false;
     const report = (code, message, module, source) => diagnostics.push({ code, message, module: module.argument, source });
     const singletonChildren = {
       module: ["yang-version", "namespace", "prefix", "organization", "contact", "description", "reference"],
@@ -4649,6 +4651,13 @@ var YangEngine = (() => {
     };
     for (const module of modules) for (const source of [module, ...submodulesFor(module)]) validateCardinality(source);
     const makeNode = (statement, owner, parentPath, inheritedConfig, groupingStack = [], inheritedWhen = [], inheritedFeatures = [], instantiatingModule = owner, sourceModule = owner) => {
+      expandedNodes++;
+      const maxSchemaNodes = options.budget?.maxSchemaNodes;
+      if (maxSchemaNodes !== void 0 && (expandedNodes > maxSchemaNodes && !nodeBudgetExceeded)) {
+        nodeBudgetExceeded = true;
+        report("budget-exceeded", `Schema node budget ${maxSchemaNodes} exceeded while expanding '${statement.keyword}${statement.argument ? ` ${statement.argument}` : ""}'`, owner, statement);
+      }
+      if (nodeBudgetExceeded) return [];
       if (statement.keyword === "uses") {
         const rawName = statement.argument ?? "";
         const entry = rawName.includes(":") ? (() => {
@@ -5408,12 +5417,11 @@ var YangEngine = (() => {
 
   // src/types/xsd-pattern.ts
   var xsdPatternCache = /* @__PURE__ */ new Map();
+  var MAX_PATTERN_LENGTH = 256;
   function compileXsdPattern(pattern) {
-    const cached = xsdPatternCache.get(pattern);
-    if (cached !== void 0) return cached;
-    if (xsdPatternCache.has(pattern)) return void 0;
+    if (xsdPatternCache.has(pattern)) return xsdPatternCache.get(pattern);
     let compiled;
-    if (!usesDivergentConstruct(pattern)) {
+    if (pattern.length <= MAX_PATTERN_LENGTH && !oversizedQuantifierBound(pattern) && !hasUnboundedNestedQuantifier(pattern) && !usesDivergentConstruct(pattern)) {
       try {
         compiled = new RegExp(`^(?:${pattern})$`);
       } catch {
@@ -5422,6 +5430,99 @@ var YangEngine = (() => {
     }
     xsdPatternCache.set(pattern, compiled);
     return compiled;
+  }
+  function oversizedQuantifierBound(pattern) {
+    const bounds = pattern.matchAll(/\{(\d+)(?:\s*,\s*(\d*))?\}/g);
+    for (const match of bounds) {
+      if (match[1].length > 3) return true;
+      if (match[2] !== void 0 && match[2].length > 3) return true;
+    }
+    return false;
+  }
+  function hasUnboundedNestedQuantifier(pattern) {
+    const stack = [{ sawAtom: false, firstAtomCurrent: false, firstUnbounded: false, lastUnbounded: false }];
+    const startAtom = () => {
+      const state = stack[stack.length - 1];
+      state.firstAtomCurrent = !state.sawAtom;
+      state.sawAtom = true;
+    };
+    const finalize = (unbounded) => {
+      const state = stack[stack.length - 1];
+      if (state.firstAtomCurrent) state.firstUnbounded = unbounded;
+      state.lastUnbounded = unbounded;
+    };
+    let index = 0;
+    while (index < pattern.length) {
+      const char = pattern[index];
+      if (char === "\\") {
+        index += 2;
+        continue;
+      }
+      if (char === "[") {
+        startAtom();
+        index++;
+        if (pattern[index] === "^") index++;
+        if (pattern[index] === "]") index++;
+        while (index < pattern.length && pattern[index] !== "]") {
+          if (pattern[index] === "\\") index++;
+          index++;
+        }
+        index++;
+        continue;
+      }
+      if (char === "(") {
+        startAtom();
+        stack.push({ sawAtom: false, firstAtomCurrent: false, firstUnbounded: false, lastUnbounded: false });
+        index++;
+        continue;
+      }
+      if (char === ")") {
+        index++;
+        const state = stack.pop();
+        const quantifier = pattern[index];
+        let unbounded;
+        if (quantifier === "+" || quantifier === "*") {
+          unbounded = true;
+          index++;
+        } else if (quantifier === "{") {
+          const closing = pattern.indexOf("}", index);
+          unbounded = unboundedBrace(pattern, index, closing);
+          index = closing < 0 ? pattern.length : closing + 1;
+        } else unbounded = false;
+        if (unbounded && state.sawAtom && state.firstUnbounded && state.lastUnbounded) return true;
+        finalize(unbounded);
+        continue;
+      }
+      if (char === "+" || char === "*") {
+        finalize(true);
+        index++;
+        continue;
+      }
+      if (char === "?") {
+        finalize(false);
+        index++;
+        continue;
+      }
+      if (char === "{") {
+        const closing = pattern.indexOf("}", index);
+        finalize(unboundedBrace(pattern, index, closing));
+        index = closing < 0 ? pattern.length : closing + 1;
+        continue;
+      }
+      if (char === "|") {
+        stack[stack.length - 1].lastUnbounded = false;
+        index++;
+        continue;
+      }
+      startAtom();
+      index++;
+    }
+    return false;
+  }
+  function unboundedBrace(pattern, open, closing) {
+    if (closing < 0) return true;
+    const body = pattern.slice(open + 1, closing);
+    return !/^\d+\s*$/.test(body) && !/^\d+\s*,\s*\d+\s*$/.test(body);
   }
   var DIVERGENT_ESCAPES = new Set("dDwWsSpPiIcC".split(""));
   function usesDivergentConstruct(pattern) {
@@ -5726,6 +5827,7 @@ var YangEngine = (() => {
     const resolveLeafref = createLeafrefResolver(schema);
     const issues = [];
     let indeterminate = false;
+    let cancelled = false;
     const isElement2 = (node) => node !== null && node.nodeType === 1;
     const issue = (code, schemaNode, message) => {
       issues.push({ code, path: schemaNode.path, message });
@@ -5733,6 +5835,10 @@ var YangEngine = (() => {
     const elementsOf = (element, schemaNode) => Array.from(element.childNodes).filter((child) => isElement2(child) && child.localName === schemaNode.name && child.namespaceURI === schemaNode.namespace);
     const choiceEntries = (element, choice) => choice.children.flatMap((caseNode) => caseNode.kind === "case" ? caseNode.children : [caseNode]).filter((child) => child.kind !== "choice" && child.kind !== "case").flatMap((child) => elementsOf(element, child));
     function visitElement(element, schemaNode) {
+      if (options.signal?.aborted) {
+        cancelled = true;
+        return;
+      }
       for (const evaluation of evaluator.evaluateNode(element)) {
         if (evaluation.status === "indeterminate") {
           indeterminate = true;
@@ -5907,9 +6013,11 @@ var YangEngine = (() => {
     }
     const rawTop = instance.documentElement;
     if (!rawTop) return { status: indeterminate ? "indeterminate" : "valid", issues };
+    if (options.signal?.aborted) cancelled = true;
     for (const root of schema.roots) {
       if (root.kind === "choice" || root.kind === "case") continue;
       if (!includeState && !root.config) continue;
+      if (cancelled) break;
       const present = rawTop.localName === root.name && rawTop.namespaceURI === root.namespace ? [rawTop] : elementsOf(rawTop, root);
       for (const entry of present) {
         const holder = instance.implementation.createDocument(null, "", null);
@@ -5921,7 +6029,7 @@ var YangEngine = (() => {
         visitElement(dataRoot, root);
       }
     }
-    return { status: issues.length ? "invalid" : indeterminate ? "indeterminate" : "valid", issues };
+    return cancelled ? { status: "indeterminate", issues: [...issues, { code: "cancelled", path: "/", message: "Validation was cancelled before completion." }] } : { status: issues.length ? "invalid" : indeterminate ? "indeterminate" : "valid", issues };
   }
   function parseInstanceIdentifier(value, requireInstance) {
     if (!requireInstance) {
@@ -6192,6 +6300,17 @@ var YangEngine = (() => {
     }
     const bitsSelection = options.bitsSelection ?? [];
     const candidates = domain.values.map((value) => {
+      if (options.signal?.aborted) {
+        return {
+          value,
+          status: "indeterminate",
+          reasons: [{
+            code: "constraint-indeterminate",
+            message: "Candidate evaluation was cancelled",
+            source: node.source
+          }]
+        };
+      }
       const tested = domain.domain === "bits" ? Array.from(/* @__PURE__ */ new Set([...bitsSelection, value])).sort().join(" ") : value;
       context.textContent = tested;
       let status = "allowed";
