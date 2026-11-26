@@ -16,6 +16,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./next": {
+      "types": "./dist/next/index.d.ts",
+      "import": "./dist/next/index.js"
+    },
     "./react": {
       "types": "./dist/react/index.d.ts",
       "import": "./dist/react/index.js"
@@ -26,10 +30,12 @@
     "examples",
     "README.md",
     "ARCHITECTURE.md",
+    "CONFORMANCE.md",
+    "GUIDE.md",
+    "NEXTJS.md",
     "ROADMAP.md",
     "TESTING.md",
-    "XPATH_SPIKE.md",
-    "CONFORMANCE.md"
+    "XPATH_SPIKE.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-example.mjs",
