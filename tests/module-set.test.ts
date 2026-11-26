@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { parseYang, resolveModuleSet } from "../src/index.js";
+import { compileYangModules, parseYang, resolveModuleSet } from "../src/index.js";
 import type { YangDocument } from "../src/index.js";
 
 function fixture(path: string): string {
@@ -98,5 +98,32 @@ describe("YANG module dependency resolution", () => {
       async loadSubmodule() { return `submodule parts { belongs-to someone-else { prefix x; } }`; },
     });
     expect(invalid.diagnostics.map(item => item.code)).toContain("invalid-belongs-to");
+  });
+
+  it("diagnoses two revisions of one module reached through differently pinned imports and compiles one", async () => {
+    const dep = (revision: string) => `module dep { namespace "urn:dep"; prefix d; revision ${revision}; container offered { leaf id { type string; } } }`;
+    const b = `module b { namespace "urn:b"; prefix b;
+      import dep { prefix d; revision-date 2025-01-01; }
+      import a { prefix x; }
+      container consumer { leaf uses-dep { type string; } }
+    }`;
+    const a = `module a { namespace "urn:a"; prefix a; import dep { prefix d; revision-date 2024-01-01; } }`;
+    const resolved = await resolveModuleSet([parseYang(b)], {
+      async loadModule(name, pinned) {
+        if (name === "dep") return dep(pinned ?? "2025-01-01");
+        if (name === "a") return a;
+        return undefined;
+      },
+    });
+    // RFC 7950 section 5.6.5: imported revisions may differ, but the resolver
+    // reports the conflict instead of silently keeping both.
+    expect(resolved.diagnostics.map(item => item.code)).toContain("duplicate-revision");
+    expect(resolved.modules.map(module => `${module.argument}@${module.children.find(child => child.keyword === "revision")?.argument}`))
+      .toEqual(expect.arrayContaining(["dep@2024-01-01", "dep@2025-01-01"]));
+    // Compilation binds one revision per module name (the newest): dep's nodes
+    // appear once and no misleading per-node duplicate-node is reported.
+    const schema = compileYangModules(resolved);
+    expect(schema.diagnostics).toEqual([]);
+    expect(schema.roots.filter(node => node.module === "dep" && node.name === "offered")).toHaveLength(1);
   });
 });

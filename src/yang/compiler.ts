@@ -137,7 +137,21 @@ function dataChildren(node: YangStatement): YangStatement[] {
 /** Compile data trees and apply schema-node augments; type and expression statements remain source-linked for later passes. */
 export function compileYangModules(moduleSet: YangModuleSet, options: YangCompilerOptions = {}): CompiledYangSchema {
   const diagnostics: CompilerDiagnostic[] = [];
-  const modules = moduleSet.modules;
+  // RFC 7950 section 5.6.5: differently pinned imports may pull several
+  // revisions of one module into the closure, but every reference binds by
+  // module name here, so compilation keeps one revision per name — the
+  // newest. `resolveModuleSet` reports `duplicate-revision` when this happens.
+  const newestPerName = (nodes: readonly YangModule[]): YangModule[] => {
+    const byName = new Map<string, YangModule>();
+    for (const node of nodes) {
+      const revision = childOf(node, "revision")?.argument ?? "";
+      const existing = byName.get(node.argument ?? "");
+      byName.set(node.argument ?? "", existing && (childOf(existing, "revision")?.argument ?? "") >= revision ? existing : node);
+    }
+    return [...byName.values()];
+  };
+  const modules = newestPerName(moduleSet.modules);
+  const submodules = newestPerName(moduleSet.submodules);
   const roots: CompiledSchemaNode[] = [];
   // Resource budget for hostile grouping trees: every node makeNode produces
   // counts; past the ceiling expansion stops dead, so a `uses` fan-out cannot
@@ -210,7 +224,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     if (builtinTypes.has(name)) return name;
     const entry = name.includes(":")
       ? (() => {
-        const resolved = resolveQName(owner, name, modules, moduleSet.submodules);
+        const resolved = resolveQName(owner, name, modules, submodules);
         return resolved ? familyIndexOf(resolved.module).typedefs.get(resolved.name) : undefined;
       })()
       : findSymbol("typedef", scope, owner, name);
@@ -229,7 +243,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       seen.add(key);
     }
   };
-  const submodulesFor = (module: YangModule): YangModule[] => moduleSet.submodules.filter(submodule =>
+  const submodulesFor = (module: YangModule): YangModule[] => submodules.filter(submodule =>
     childOf(submodule, "belongs-to")?.argument === module.argument,
   );
   const parentModuleFor = (context: YangModule): YangModule => {
@@ -285,7 +299,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   const evaluateFeature = (moduleName: string, expression: string, source: YangStatement): boolean => {
     const cacheKey = `${moduleName}:${expression}`;
     if (featureCache.has(cacheKey)) return featureCache.get(cacheKey)!;
-    const context = [...modules, ...moduleSet.submodules].find(module => module.argument === moduleName);
+    const context = [...modules, ...submodules].find(module => module.argument === moduleName);
     if (!context) return false;
     const tokens = expression.match(/[A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?|[()]/g) ?? [];
     if (tokens.join("") !== expression.replace(/\s+/g, "")) {
@@ -306,7 +320,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       }
       const token = tokens[index++];
       if (!token || token === "and" || token === "or" || token === ")") throw new Error("Expected feature identifier");
-      const resolved = resolveQName(context, token, modules, moduleSet.submodules);
+      const resolved = resolveQName(context, token, modules, submodules);
       if (!resolved || !featureExists(resolved.module, resolved.name)) {
         report("unresolved-feature", `Feature '${token}' could not be resolved`, context, source);
         return false;
@@ -341,7 +355,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     if (builtinTypes.has(typeName)) return { name: typeName, chain: [], chainModules: [] };
     const entry = typeName.includes(":")
       ? (() => {
-        const resolved = resolveQName(owner, typeName, modules, moduleSet.submodules);
+        const resolved = resolveQName(owner, typeName, modules, submodules);
         return resolved ? familyIndexOf(resolved.module).typedefs.get(resolved.name) : undefined;
       })()
       : findSymbol("typedef", scope, owner, typeName);
@@ -391,7 +405,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       // names address the family (groupings are never imported).
       const entry = rawName.includes(":")
         ? (() => {
-          const resolved = resolveQName(sourceModule, rawName, modules, moduleSet.submodules);
+          const resolved = resolveQName(sourceModule, rawName, modules, submodules);
           return resolved ? familyIndexOf(resolved.module).groupings.get(resolved.name) : undefined;
         })()
         : findSymbol("grouping", groupingStack, sourceModule, rawName);
@@ -531,7 +545,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     );
     if (kind === "list") {
       for (const key of keys) {
-        const resolvedKey = resolveQName(instantiatingModule, key, modules, moduleSet.submodules);
+        const resolvedKey = resolveQName(instantiatingModule, key, modules, submodules);
         const keyLeaf = resolvedKey && node.children.find(child =>
           child.kind === "leaf" && child.name === resolvedKey.name && child.module === resolvedKey.module.argument,
         );
@@ -578,7 +592,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
 
   const qnamePath = (module: YangModule, path: string): Array<{ module: YangModule; name: string }> | undefined => {
     const parts = path.split("/").filter(Boolean);
-    const resolved = parts.map(part => resolveQName(module, part, modules, moduleSet.submodules));
+    const resolved = parts.map(part => resolveQName(module, part, modules, submodules));
     return resolved.every(Boolean) ? resolved as Array<{ module: YangModule; name: string }> : undefined;
   };
   const findTarget = (path: Array<{ module: YangModule; name: string }>): CompiledSchemaNode | undefined => {
@@ -832,7 +846,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
         if (options.enabledFeatures && !featureRequirementsEnabled(requirements)) continue;
         const bases: string[] = [];
         for (const base of childrenOf(statement, "base")) {
-      const resolved = resolveQName(source, base.argument ?? "", modules, moduleSet.submodules);
+      const resolved = resolveQName(source, base.argument ?? "", modules, submodules);
           if (!resolved) {
             report("unresolved-identity", `Identity base '${base.argument ?? ""}' could not be resolved`, module, base);
             continue;
@@ -868,7 +882,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     visited.add(id);
   };
   for (const identity of identities) checkIdentityCycle(identity);
-  return { roots, operations, identities, diagnostics, modules, submodules: moduleSet.submodules };
+  return { roots, operations, identities, diagnostics, modules, submodules };
 }
 
 /** Test transitive identity derivation using module-qualified `module:name` identities. */

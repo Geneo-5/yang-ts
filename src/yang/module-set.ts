@@ -10,7 +10,7 @@ export interface YangModuleLoader {
 }
 
 export interface ModuleSetDiagnostic {
-  code: "missing-module" | "missing-submodule" | "ambiguous-revision" | "invalid-document" |
+  code: "missing-module" | "missing-submodule" | "ambiguous-revision" | "duplicate-revision" | "invalid-document" |
     "unexpected-document" | "missing-revision" | "include-cycle" | "import-cycle" | "invalid-belongs-to" |
     "cancelled" | "budget-exceeded";
   message: string;
@@ -270,6 +270,31 @@ export async function resolveModuleSet(roots: readonly YangModule[], loader: Yan
     }
     await processModule(root, []);
   }
+  // RFC 7950 section 5.6.5: a server may keep several revisions of one module
+  // as long as only one is implemented, but this engine binds every reference
+  // by module name, so a closure holding two revisions of the same name is
+  // ambiguous — report it once at the module-set level instead of letting the
+  // compiler flood the diagnostics with per-node `duplicate-node` messages.
+  const revisionConflicts = (nodes: readonly YangModule[], kind: "module" | "submodule"): void => {
+    const byName = new Map<string, YangModule[]>();
+    for (const document of nodes) {
+      const bucket = byName.get(document.argument ?? "");
+      if (bucket) bucket.push(document);
+      else byName.set(document.argument ?? "", [document]);
+    }
+    for (const [name, documents] of byName) {
+      const revisions = [...new Set(documents.map(document => revisionOf(document) ?? ""))].sort();
+      if (revisions.length <= 1) continue;
+      diagnostics.push({
+        code: "duplicate-revision",
+        message: `${kind === "module" ? "Module" : "Submodule"} '${name}' is present with several revisions (${revisions.join(", ")}); the imports must agree on one revision (RFC 7950 section 5.6.5)`,
+        sourceModule: name,
+        sourceLocation: documents[0]!.location,
+      });
+    }
+  };
+  revisionConflicts([...modules.values()], "module");
+  revisionConflicts([...submodules.values()], "submodule");
   if (!violationReported && budget.deadlineMs !== undefined && Date.now() - startedAt > budget.deadlineMs) {
     violationReported = true;
     diagnostics.push({

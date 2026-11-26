@@ -4322,6 +4322,26 @@ var YangEngine = (() => {
       }
       await processModule(root, []);
     }
+    const revisionConflicts = (nodes, kind) => {
+      const byName = /* @__PURE__ */ new Map();
+      for (const document2 of nodes) {
+        const bucket = byName.get(document2.argument ?? "");
+        if (bucket) bucket.push(document2);
+        else byName.set(document2.argument ?? "", [document2]);
+      }
+      for (const [name2, documents] of byName) {
+        const revisions = [...new Set(documents.map((document2) => revisionOf(document2) ?? ""))].sort();
+        if (revisions.length <= 1) continue;
+        diagnostics.push({
+          code: "duplicate-revision",
+          message: `${kind === "module" ? "Module" : "Submodule"} '${name2}' is present with several revisions (${revisions.join(", ")}); the imports must agree on one revision (RFC 7950 section 5.6.5)`,
+          sourceModule: name2,
+          sourceLocation: documents[0].location
+        });
+      }
+    };
+    revisionConflicts([...modules.values()], "module");
+    revisionConflicts([...submodules.values()], "submodule");
     if (!violationReported && budget.deadlineMs !== void 0 && Date.now() - startedAt > budget.deadlineMs) {
       violationReported = true;
       diagnostics.push({
@@ -4424,7 +4444,17 @@ var YangEngine = (() => {
   }
   function compileYangModules(moduleSet, options = {}) {
     const diagnostics = [];
-    const modules = moduleSet.modules;
+    const newestPerName = (nodes) => {
+      const byName = /* @__PURE__ */ new Map();
+      for (const node of nodes) {
+        const revision = childOf(node, "revision")?.argument ?? "";
+        const existing = byName.get(node.argument ?? "");
+        byName.set(node.argument ?? "", existing && (childOf(existing, "revision")?.argument ?? "") >= revision ? existing : node);
+      }
+      return [...byName.values()];
+    };
+    const modules = newestPerName(moduleSet.modules);
+    const submodules = newestPerName(moduleSet.submodules);
     const roots = [];
     let expandedNodes = 0;
     let nodeBudgetExceeded = false;
@@ -4490,7 +4520,7 @@ var YangEngine = (() => {
       const name2 = type.argument ?? "";
       if (builtinTypes.has(name2)) return name2;
       const entry = name2.includes(":") ? (() => {
-        const resolved = resolveQName(owner, name2, modules, moduleSet.submodules);
+        const resolved = resolveQName(owner, name2, modules, submodules);
         return resolved ? familyIndexOf(resolved.module).typedefs.get(resolved.name) : void 0;
       })() : findSymbol("typedef", scope, owner, name2);
       if (!entry) return void 0;
@@ -4508,7 +4538,7 @@ var YangEngine = (() => {
         seen.add(key);
       }
     };
-    const submodulesFor = (module) => moduleSet.submodules.filter(
+    const submodulesFor = (module) => submodules.filter(
       (submodule) => childOf(submodule, "belongs-to")?.argument === module.argument
     );
     const parentModuleFor = (context) => {
@@ -4552,7 +4582,7 @@ var YangEngine = (() => {
     const evaluateFeature = (moduleName, expression, source) => {
       const cacheKey = `${moduleName}:${expression}`;
       if (featureCache.has(cacheKey)) return featureCache.get(cacheKey);
-      const context = [...modules, ...moduleSet.submodules].find((module) => module.argument === moduleName);
+      const context = [...modules, ...submodules].find((module) => module.argument === moduleName);
       if (!context) return false;
       const tokens = expression.match(/[A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?|[()]/g) ?? [];
       if (tokens.join("") !== expression.replace(/\s+/g, "")) {
@@ -4576,7 +4606,7 @@ var YangEngine = (() => {
         }
         const token = tokens[index++];
         if (!token || token === "and" || token === "or" || token === ")") throw new Error("Expected feature identifier");
-        const resolved = resolveQName(context, token, modules, moduleSet.submodules);
+        const resolved = resolveQName(context, token, modules, submodules);
         if (!resolved || !featureExists(resolved.module, resolved.name)) {
           report("unresolved-feature", `Feature '${token}' could not be resolved`, context, source);
           return false;
@@ -4617,7 +4647,7 @@ var YangEngine = (() => {
       const typeName = type.argument ?? "";
       if (builtinTypes.has(typeName)) return { name: typeName, chain: [], chainModules: [] };
       const entry = typeName.includes(":") ? (() => {
-        const resolved = resolveQName(owner, typeName, modules, moduleSet.submodules);
+        const resolved = resolveQName(owner, typeName, modules, submodules);
         return resolved ? familyIndexOf(resolved.module).typedefs.get(resolved.name) : void 0;
       })() : findSymbol("typedef", scope, owner, typeName);
       if (!entry) return { chain: [], chainModules: [] };
@@ -4647,7 +4677,7 @@ var YangEngine = (() => {
       if (statement.keyword === "uses") {
         const rawName = statement.argument ?? "";
         const entry = rawName.includes(":") ? (() => {
-          const resolved = resolveQName(sourceModule, rawName, modules, moduleSet.submodules);
+          const resolved = resolveQName(sourceModule, rawName, modules, submodules);
           return resolved ? familyIndexOf(resolved.module).groupings.get(resolved.name) : void 0;
         })() : findSymbol("grouping", groupingStack, sourceModule, rawName);
         if (!entry) {
@@ -4791,7 +4821,7 @@ var YangEngine = (() => {
       );
       if (kind === "list") {
         for (const key of keys) {
-          const resolvedKey = resolveQName(instantiatingModule, key, modules, moduleSet.submodules);
+          const resolvedKey = resolveQName(instantiatingModule, key, modules, submodules);
           const keyLeaf = resolvedKey && node.children.find(
             (child) => child.kind === "leaf" && child.name === resolvedKey.name && child.module === resolvedKey.module.argument
           );
@@ -4846,7 +4876,7 @@ var YangEngine = (() => {
     for (const module of modules) checkDuplicates(roots.filter((node) => node.module === module.argument), module);
     const qnamePath = (module, path) => {
       const parts = path.split("/").filter(Boolean);
-      const resolved = parts.map((part) => resolveQName(module, part, modules, moduleSet.submodules));
+      const resolved = parts.map((part) => resolveQName(module, part, modules, submodules));
       return resolved.every(Boolean) ? resolved : void 0;
     };
     const findTarget = (path) => {
@@ -5120,7 +5150,7 @@ var YangEngine = (() => {
           if (options.enabledFeatures && !featureRequirementsEnabled(requirements)) continue;
           const bases = [];
           for (const base of childrenOf(statement, "base")) {
-            const resolved = resolveQName(source, base.argument ?? "", modules, moduleSet.submodules);
+            const resolved = resolveQName(source, base.argument ?? "", modules, submodules);
             if (!resolved) {
               report("unresolved-identity", `Identity base '${base.argument ?? ""}' could not be resolved`, module, base);
               continue;
@@ -5156,7 +5186,7 @@ var YangEngine = (() => {
       visited.add(id);
     };
     for (const identity of identities) checkIdentityCycle(identity);
-    return { roots, operations, identities, diagnostics, modules, submodules: moduleSet.submodules };
+    return { roots, operations, identities, diagnostics, modules, submodules };
   }
   function isIdentityDerivedFrom(schema, identityRef, baseRef) {
     const toIdentityId = (value) => {

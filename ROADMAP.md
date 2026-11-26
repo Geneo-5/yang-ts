@@ -31,7 +31,7 @@ Defects found by the review, all closed 2026-11-26 by the Stage 7 P1 parser item
 
 Open defects:
 - [x] `ModuleSetBudget.maxDepth` is enforced on import and include chains since 2026-11-26 (single `budget-exceeded` diagnostic, refusing mode), regression-tested in `tests/stage7-p0.test.ts`.
-- [ ] Revisions (partly closed 2026-11-26): `resolveModuleSet` selects the newest unpinned revision per load and reports `ambiguous-revision` for duplicate sources of one revision (`tests/module-set.test.ts`). Two different revisions of one module reached through differently pinned imports both stay in the closure without a module-set diagnostic, and `compileYangModules` then reports a misleading `duplicate-node` per node (probed) — Stage 7b P1.
+- [x] Revisions: `resolveModuleSet` selects the newest unpinned revision per load and reports `ambiguous-revision` for duplicate sources of one revision; differently pinned imports pulling two revisions of one module report one `duplicate-revision` and the compile keeps the newest revision per name (closed 2026-11-26, `tests/module-set.test.ts` — see Stage 7b P0/P1).
 - [ ] Deadline and abort are only checked before each load; synchronous parsing of a large document cannot be interrupted (worker isolation remains the host's responsibility — see the P2 boundaries).
 
 ## Stage 2 — Semantic compiler and effective schema (partial)
@@ -151,7 +151,7 @@ Evidence: *(probed)* = reproduced by running the sources (type-checked copy of `
 - [ ] *(probed)* Feature-to-feature dependencies: a feature whose own `if-feature` is disabled still counts as enabled.
 - [ ] *(probed)* Deviations targeting RPC/action/notification parameter nodes are reported unresolved.
 - [ ] *(probed)* `refine` and `uses`/`augment` targets are matched by plain name, so a prefixed target (`refine m:a`) is reported unresolved.
-- [ ] *(probed)* Two revisions of one module in a closure: no module-set diagnostic, then one `duplicate-node` per node at compile time. Decide and document the policy (RFC 7950 §5.6.5: imported revisions may differ, only implemented modules must be unique) and diagnose accordingly.
+- [x] Two revisions of one module in a closure: the documented policy (RFC 7950 §5.6.5 — imported revisions may differ, but this engine binds every reference by module name) is now `resolveModuleSet` reports ONE `duplicate-revision` diagnostic per conflicting module name (listing the revisions), and `compileYangModules` keeps only the newest revision per module name, so the misleading per-node `duplicate-node` flood is gone and `dep`'s nodes compile once (fixed 2026-11-26, `tests/module-set.test.ts`, written red first: no diagnostic and two compiled copies pre-fix).
 - [ ] *(read)* `evaluateCandidates` evaluates a raw clone, not the accessible tree (defaults missing); the bits candidate string is sorted alphabetically while `canonicalFormOf` orders by bit position; `if-feature` on `enum`/`bit` is ignored by `finiteDomainOf` and by form options.
 - [ ] *(read)* `moduleNamespacePrefixes` merges a module's and its submodules' imports into one map, so an expression can use a prefix declared only by a sibling document.
 - [ ] *(read)* `instance-identifier` steps and predicates are matched by local name only (documented limitation).
