@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
  */
 const PUBLIC_VALUES = [
   "parseYang", "YangSyntaxError", "resolveModuleSet", "compileYangModules",
+  "serializeCompiledSchema", "deserializeCompiledSchema", "CompiledSchemaFormatError",
   "createFormModel", "validateFormValue", "canonicalFormOf",
   "validateDataTree", "evaluateCandidates", "buildAccessibleTree", "createConstraintEvaluator",
   "createRestconfModuleLoader",
@@ -28,6 +29,7 @@ const INTERNAL_ONLY = [
   "childOf", "childrenOf", "moduleNamespacePrefixes", "documentNamespacePrefixes", "yangLibraryEntries", "yangLibraryInventory",
   "BUILTIN_TYPES", "RESTRICTION_BUILTINS", "compileXsdPattern", "finiteDomainOf",
   "UNTRUSTED_MODULE_BUDGET", "UNTRUSTED_SCHEMA_NODE_BUDGET",
+  "COMPILED_SCHEMA_FORMAT", "COMPILED_SCHEMA_VERSION",
 ];
 
 describe("curated public API barrel", () => {

@@ -14,6 +14,11 @@ export {
   compileYangModules,
 } from "./yang/compiler.js";
 export {
+  serializeCompiledSchema,
+  deserializeCompiledSchema,
+  CompiledSchemaFormatError,
+} from "./yang/serialization.js";
+export {
   buildAccessibleTree,
 } from "./xpath/accessible-tree.js";
 export {
@@ -52,6 +57,7 @@ export {
 
 export type { YangDocument, YangModuleSet, ModuleSetDiagnostic, ModuleSetConstraints } from "./yang/module-set.js";
 export type { CompiledSchemaNode, CompiledYangSchema } from "./yang/compiler.js";
+export type { CompiledSchemaJson } from "./yang/serialization.js";
 export type { YangModule, YangStatement } from "./yang/ast.js";
 export type { FormField, FormControlKind, FormValidationStatus, FormRpcOperation } from "./forms/form-model.js";
 export type { InstanceValidationResult, ValidationIssue, ValidationIssueCode } from "./validation/validate-instance.js";
