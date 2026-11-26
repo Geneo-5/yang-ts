@@ -67,8 +67,11 @@ describe("data-tree structural validation", () => {
     const schema = await compileModule(`module refs {
       namespace "urn:refs"; prefix r;
       container refs {
-        leaf positional { type instance-identifier; }
+        leaf positional { config false; type instance-identifier; }
+        leaf config-ref { type instance-identifier; }
         list unkeyed { config false; leaf value { type string; } }
+        leaf-list tags { type string; }
+        list pair { key "name slot"; leaf name { type string; } leaf slot { type string; } }
         list item {
           key name; leaf name { type string; }
           leaf target { type instance-identifier; }
@@ -79,20 +82,20 @@ describe("data-tree structural validation", () => {
     const doc = (target: string, free: string) => instance(
       `<refs xmlns="urn:refs" xmlns:r="urn:refs" xmlns:o="urn:other"><item><name>a</name><target>${target}</target><free>${free}</free></item></refs>`);
 
-    const valid = validateDataTree(schema, doc("/r:refs/r:item[r:name='a']", "/o:missing/o:target"));
+    const valid = validateDataTree(schema, doc("/r:refs/r:item[r:name='a']", "/r:refs/r:unkeyed[3]"));
     expect(valid.issues).toEqual([]);
 
-    const dangling = validateDataTree(schema, doc("/r:refs/r:item[r:name='missing']", "/o:missing/o:target"));
+    const dangling = validateDataTree(schema, doc("/r:refs/r:item[r:name='missing']", "/r:refs/r:unkeyed[3]"));
     expect(dangling.issues.map(item => item.code)).toEqual(["instance-identifier-dangling"]);
 
     const invalid = validateDataTree(schema, doc("refs/item", "count(/refs/item)"));
     expect(invalid.issues.map(item => item.code)).toEqual(["instance-identifier-invalid", "instance-identifier-invalid"]);
 
-    const wrongNamespace = validateDataTree(schema, doc("/o:refs/o:item[o:name='a']", "/o:missing/o:target"));
-    expect(wrongNamespace.issues.map(item => item.code)).toEqual(["instance-identifier-dangling"]);
+    const wrongNamespace = validateDataTree(schema, doc("/o:refs/o:item[o:name='a']", "/r:refs/r:unkeyed[3]"));
+    expect(wrongNamespace.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
 
-    const wrongPredicateNamespace = validateDataTree(schema, doc("/r:refs/r:item[o:name='a']", "/o:missing/o:target"));
-    expect(wrongPredicateNamespace.issues.map(item => item.code)).toEqual(["instance-identifier-dangling"]);
+    const wrongPredicateNamespace = validateDataTree(schema, doc("/r:refs/r:item[o:name='a']", "/r:refs/r:unkeyed[3]"));
+    expect(wrongPredicateNamespace.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
 
     const unboundPrefix = validateDataTree(schema, instance(
       `<refs xmlns="urn:refs"><item><name>a</name><target>/x:refs/x:item</target><free>/x:missing</free></item></refs>`));
@@ -105,6 +108,34 @@ describe("data-tree structural validation", () => {
       `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:unkeyed[2]</positional><unkeyed><value>a</value></unkeyed><unkeyed><value>b</value></unkeyed></refs>`));
     expect(positional.issues).toEqual([]);
 
+    const leafListValue = validateDataTree(schema, instance(
+      `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:tags[.='x']</positional><tags>x</tags></refs>`));
+    expect(leafListValue.issues).toEqual([]);
+
+    const missingListKey = validateDataTree(schema, instance(
+      `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:item</positional><item><name>a</name></item></refs>`));
+    expect(missingListKey.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
+
+    const incompleteMultiKey = validateDataTree(schema, instance(
+      `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:pair[r:name='a']</positional></refs>`));
+    expect(incompleteMultiKey.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
+
+    const completeMultiKey = validateDataTree(schema, instance(
+      `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:pair[r:name='a'][r:slot='1']</positional><pair><name>a</name><slot>1</slot></pair></refs>`));
+    expect(completeMultiKey.issues).toEqual([]);
+
+    const configToState = validateDataTree(schema, instance(
+      `<refs xmlns="urn:refs" xmlns:r="urn:refs"><config-ref>/r:refs/r:unkeyed[1]</config-ref><item><name>a</name></item><unkeyed><value>state</value></unkeyed></refs>`));
+    expect(configToState.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
+
+    const positionOnKeyedList = validateDataTree(schema, instance(
+      `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:item[1]</positional></refs>`));
+    expect(positionOnKeyedList.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
+
+    const predicateOnLeaf = validateDataTree(schema, instance(
+      `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:item[r:name='a']/r:name[.='a']</positional></refs>`));
+    expect(predicateOnLeaf.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
+
     const missingPosition = validateDataTree(schema, instance(
       `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:unkeyed[3]</positional><unkeyed><value>a</value></unkeyed><unkeyed><value>b</value></unkeyed></refs>`));
     expect(missingPosition.issues.map(item => item.code)).toEqual(["instance-identifier-dangling"]);
@@ -116,6 +147,21 @@ describe("data-tree structural validation", () => {
     const incompatiblePredicates = validateDataTree(schema, instance(
       `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:unkeyed[1][r:value='a']</positional></refs>`));
     expect(incompatiblePredicates.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
+
+    const unquotedKeyValue = validateDataTree(schema, instance(
+      `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:item[r:name=a]</positional></refs>`));
+    expect(unquotedKeyValue.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
+  });
+
+  it("resolves instance-identifiers across top-level roots in a datastore wrapper", async () => {
+    const schema = await compileModule(`module roots {
+      namespace "urn:roots"; prefix r;
+      container alpha { leaf target { type instance-identifier; } }
+      container beta { leaf value { type string; } }
+    }`);
+    const verdict = validateDataTree(schema, instance(
+      `<data xmlns="urn:transport" xmlns:r="urn:roots"><r:alpha><r:target>/r:beta/r:value</r:target></r:alpha><r:beta><r:value>present</r:value></r:beta></data>`));
+    expect(verdict).toMatchObject({ status: "valid", issues: [] });
   });
 
   it("detects dangling leafrefs and unmet must constraints", async () => {

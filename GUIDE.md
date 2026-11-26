@@ -801,9 +801,11 @@ de l'artefact.
   `validateDataTree` vérifie les préfixes XML en portée et compare les noms
   d'étape et de prédicat par namespace et nom local. `require-instance false`
   garde ces contrôles lexicaux tout en ignorant l'existence de la cible.
-  Les positions de listes sans clé sont prises en charge. La validation ne
-  vérifie pas encore que les prédicats conviennent au type de nœud, ni
-  l'exhaustivité des clés (voir [CONFORMANCE.md](CONFORMANCE.md)).
+  Les listes avec clés exigent toutes leurs clés, les listes sans clé une
+  position et les leaf-lists une valeur. Une référence de configuration ne
+  peut pas viser un nœud d'état. Les références entre racines de premier
+  niveau fonctionnent dans une enveloppe datastore. Le schema-mount n'est pas
+  pris en charge (voir [CONFORMANCE.md](CONFORMANCE.md)).
   Les annotations de métadonnées (`md:annotation`) ne sont pas évaluées.
   `identityref` et
   `instance-identifier` n'ont pas de forme canonique selon RFC 7950 §§9.10.4

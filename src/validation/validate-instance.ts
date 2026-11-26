@@ -308,8 +308,13 @@ export function validateDataTree(
       const parsed = parseInstanceIdentifier(value, element);
       if (!parsed.ok) {
         issue("instance-identifier-invalid", schemaNode, `instance-identifier '${schemaNode.path}' is not a valid instance-identifier: ${parsed.reason}`);
-      } else if (requireInstance && !resolvesInstanceIdentifier(store, parsed.steps)) {
-        issue("instance-identifier-dangling", schemaNode, `instance-identifier of '${schemaNode.path}' does not resolve in the instance`);
+      } else {
+        const schemaError = validateInstanceIdentifierSchema(schema, parsed.steps, requireInstance ? schemaNode : undefined);
+        if (schemaError) {
+          issue("instance-identifier-invalid", schemaNode, `instance-identifier '${schemaNode.path}' is not valid for the schema: ${schemaError}`);
+        } else if (requireInstance && !resolvesInstanceIdentifier(store, parsed.steps, schema)) {
+          issue("instance-identifier-dangling", schemaNode, `instance-identifier of '${schemaNode.path}' does not resolve in the instance`);
+        }
       }
     }
     for (const child of schemaNode.children) {
@@ -318,27 +323,28 @@ export function validateDataTree(
     }
   }
 
-  // Validate the accessible tree (RFC 7950 §6.4.1) instead of the raw document:
-  // defaults are injected and `config false` state data is hidden in the config
-  // context, so mandatory, unique, leafref and must/when semantics match the
-  // datastore being checked. Every matching root becomes its own datastore
-  // document, keeping absolute-path anchors at the data root.
+  // Validate one shared accessible datastore (RFC 7950 §6.4.1): defaults are
+  // injected, config-false state data is filtered when requested, and absolute
+  // instance-identifiers can resolve siblings under a transport wrapper.
   const rawTop = instance.documentElement;
   if (!rawTop) return { status: indeterminate ? "indeterminate" : "valid", issues };
   if (cancelledNow()) cancelled = true;
-  for (const root of schema.roots) {
-    if (root.kind === "choice" || root.kind === "case") continue;
-    if (!includeState && !root.config) continue;
-    if (cancelled) break;
-    const present = rawTop.localName === root.name && rawTop.namespaceURI === root.namespace ? [rawTop] : elementsOf(rawTop, root);
-    for (const entry of present) {
-      const holder = instance.implementation.createDocument(null, "", null);
-      holder.appendChild(holder.importNode(entry, true));
-      const accessible = buildAccessibleTree(schema, holder, { context: includeState ? "datastore-state" : "datastore-config" });
-      const dataRoot = accessible.document.documentElement!;
-      checkLeafrefs(dataRoot, root);
-      checkInstanceIdentifiers(dataRoot, root, accessible.document);
-      visitElement(dataRoot, root);
+  const roots = schema.roots.filter(root => root.kind !== "choice" && root.kind !== "case" && (includeState || root.config));
+  const hasDataRoot = roots.some(root => rawTop.localName === root.name && rawTop.namespaceURI === root.namespace || elementsOf(rawTop, root).length > 0);
+  if (!cancelled && hasDataRoot) {
+    const accessible = buildAccessibleTree(schema, instance, { context: includeState ? "datastore-state" : "datastore-config" });
+    const accessibleTop = accessible.document.documentElement!;
+    for (const root of roots) {
+      if (cancelled) break;
+      const present = accessibleTop.localName === root.name && accessibleTop.namespaceURI === root.namespace
+        ? [accessibleTop]
+        : elementsOf(accessibleTop, root);
+      for (const entry of present) {
+        if (cancelled) break;
+        checkLeafrefs(entry, root);
+        checkInstanceIdentifiers(entry, root, accessible.document);
+        visitElement(entry, root);
+      }
     }
   }
   // Cancellation replaces the verdict: a partial tree walk says nothing about
@@ -454,6 +460,74 @@ function resolveInstanceQName(value: string, context: Element): QualifiedInstanc
   return namespace ? { localName: match[2]!, namespace } : undefined;
 }
 
+/** Validate each step and its predicate form against the compiled schema (§9.13). */
+function validateInstanceIdentifierSchema(
+  schema: CompiledYangSchema,
+  steps: IdentifierStep[],
+  referenceNode?: CompiledSchemaNode,
+): string | undefined {
+  let candidates = schemaDataNodes(schema.roots);
+  for (const [index, step] of steps.entries()) {
+    const matches = candidates.filter(candidate =>
+      candidate.name === step.name.localName && candidate.namespace === step.name.namespace);
+    if (matches.length !== 1) return `node '${step.name.localName}' is not a unique schema node`;
+    const node = matches[0]!;
+    const predicates = step.predicates;
+    if (node.kind === "list") {
+      const keys = schemaListKeys(schema, node);
+      if (keys === undefined) return `list '${node.name}' has an unresolvable key definition`;
+      if (keys.length === 0) {
+        if (predicates.length !== 1 || predicates[0]?.kind !== "position") {
+          return `list '${node.name}' without keys requires one positional predicate`;
+        }
+      } else {
+        const actual = predicates.filter((predicate): predicate is Extract<IdentifierPredicate, { kind: "key" }> =>
+          predicate.kind === "key" && predicate.key !== ".");
+        if (actual.length !== predicates.length || actual.length !== keys.length ||
+            keys.some(key => !actual.some(predicate => sameQualifiedName(predicate.key as QualifiedInstanceName, key)))) {
+          return `list '${node.name}' requires one equality predicate for every key`;
+        }
+      }
+    } else if (node.kind === "leaf-list") {
+      if (predicates.length !== 1 || predicates[0]?.kind !== "key" || predicates[0].key !== ".") {
+        return `leaf-list '${node.name}' requires one value predicate`;
+      }
+    } else if (predicates.length) {
+      return `node '${node.name}' does not allow predicates`;
+    }
+    if (index === steps.length - 1 && referenceNode?.config && !node.config) {
+      return "a configuration instance-identifier cannot reference state data";
+    }
+    candidates = schemaDataNodes(node.children);
+  }
+  return undefined;
+}
+
+function schemaDataNodes(nodes: readonly CompiledSchemaNode[]): CompiledSchemaNode[] {
+  return nodes.flatMap(node => node.kind === "choice" || node.kind === "case"
+    ? schemaDataNodes(node.children)
+    : [node]);
+}
+
+function schemaListKeys(schema: CompiledYangSchema, list: CompiledSchemaNode): QualifiedInstanceName[] | undefined {
+  const prefixes = documentNamespacePrefixes(schema, list.declaredIn);
+  const resolved = list.keys.map(key => {
+    const colon = key.indexOf(":");
+    if (colon < 0) return { localName: key, namespace: list.namespace };
+    const namespace = prefixes[key.slice(0, colon)];
+    return namespace ? { localName: key.slice(colon + 1), namespace } : undefined;
+  });
+  if (resolved.some(key => key === undefined)) return undefined;
+  const keys = resolved as QualifiedInstanceName[];
+  const children = schemaDataNodes(list.children);
+  return keys.every(key => children.some(child => child.kind === "leaf" &&
+    child.name === key.localName && child.namespace === key.namespace)) ? keys : undefined;
+}
+
+function sameQualifiedName(left: QualifiedInstanceName, right: QualifiedInstanceName): boolean {
+  return left.localName === right.localName && left.namespace === right.namespace;
+}
+
 /** Index (within a string starting at `[`) of the matching `]`, honoring quotes. */
 function closingBracket(text: string): number {
   let quote: string | null = null;
@@ -483,7 +557,7 @@ function parsePredicate(text: string): ParsedPredicate {
       : { ok: false, reason: `positional predicate is outside the safe integer range '[${text}]'` };
   }
   const match = text.match(
-    /^\s*([A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*|\.)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^"'[\]/]*)\s*$/,
+    /^\s*([A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*|\.)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\s*$/,
   );
   if (!match) return { ok: false, reason: `malformed predicate '[${text}]'` };
   const raw = match[2] ?? "";
@@ -493,9 +567,16 @@ function parsePredicate(text: string): ParsedPredicate {
 }
 
 /** Resolve parsed steps against the instance document by expanded QName. */
-function resolvesInstanceIdentifier(instance: Document, steps: IdentifierStep[]): boolean {
+function resolvesInstanceIdentifier(instance: Document, steps: IdentifierStep[], schema: CompiledYangSchema): boolean {
   let current: Element | undefined;
-  let siblings: Element[] = instance.documentElement ? [instance.documentElement] : [];
+  const documentRoot = instance.documentElement;
+  const isDataRoot = documentRoot && schemaDataNodes(schema.roots).some(root =>
+    root.name === documentRoot.localName && root.namespace === documentRoot.namespaceURI);
+  let siblings: Element[] = documentRoot
+    ? isDataRoot
+      ? [documentRoot]
+      : Array.from(documentRoot.childNodes).filter((node): node is Element => node.nodeType === 1)
+    : [];
   for (const step of steps) {
     const matches = siblings.filter(element => matchesQualifiedName(element, step.name));
     const positional = step.predicates.find(predicate => predicate.kind === "position");
