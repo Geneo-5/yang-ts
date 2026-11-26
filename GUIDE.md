@@ -508,6 +508,54 @@ const restconfPath = nodeToRestconfDataPath(path);  // /restconf/data/…, ident
 nodeToRestconfDataPath(path) === createRestconfGetRequest(path).path;
 ```
 
+### 8.5 Le client RESTCONF (exécution des requêtes)
+
+Les constructeurs produisent les requêtes ; `createRestconfClient` les
+exécute avec un fetch injectable (aucun accès global à l'import), fusionne
+les en-têtes (`Accept`/`Content-Type` du requête < en-têtes statiques ou
+fournisseur dynamique < en-têtes d'appel) et retourne statut + lecture
+d'en-têtes (`Location`, `ETag`, `Last-Modified`) + JSON paresseux
+(`undefined` pour un 204). Toute réponse non-2xx lève une
+`RestconfRequestError` typée : `status` plus, pour un corps RFC 8040 §7
+`ietf-restconf:errors`, les champs `errorType`/`errorTag`/`errorPath` et la
+liste `errorMessages` — y compris les conflits d'édition 409/412.
+
+**Authentification (bonnes pratiques)** : le jeton reste dans un état
+mémoire de l'application (jamais `localStorage`, jamais une variable
+`NEXT_PUBLIC_*`) fourni par le callback `headers` ; les sessions à cookies
+passent par `credentials: "include"`.
+
+```ts
+import { createRestconfClient, RestconfRequestError } from "yang-browser-engine";
+
+const client = createRestconfClient({
+  baseUrl: window.location.origin,
+  headers: ({ method, path }) => ({ Authorization: `Bearer ${token}`, "X-Sent-For": `${method} ${path}` }),
+  credentials: "include",
+  signal: controller.signal,
+});
+
+const read = await client.send(createRestconfGetRequest(path));
+const etag = read.headers.get("ETag");
+
+try {
+  await client.send(createRestconfSetRequest(
+    path,
+    { module: "acme-router", name: "interface", data: target },
+  ), { headers: etag ? { "If-Match": etag } : {} });
+} catch (error) {
+  if (error instanceof RestconfRequestError) {
+    console.error(error.status, error.errorTag, error.errorMessages);
+  }
+  throw error;
+}
+```
+
+La navigation paginée (parcourir une grande liste via `depth`), la sonde NMDA
+(`createRestconfNmdaProbeRequest`) et les tests correspondants vivent dans
+`tests/restconf-client.test.ts`. La politique de reprise (retry) et les flux
+de notification (`EventSource`) restent ouverts dans la roadmap.
+
 ## 9. Sécurité des sources non fiables
 
 Le moteur parse du YANG **venu du réseau**. Trois lignes de défense :

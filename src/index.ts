@@ -43,7 +43,10 @@ export {
 export {
   createRestconfModuleLoader,
   yangLibraryInventory,
-} from "./restconf/library-loader.js";
+} from "./restconf/library-loader.js";export {
+  createRestconfClient,
+  RestconfRequestError,
+} from "./restconf/client.js";
 export {
   findSchemaLibraryMismatches,
 } from "./restconf/schema-mismatch.js";

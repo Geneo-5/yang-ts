@@ -14,7 +14,7 @@ const PUBLIC_VALUES = [
   "createFormModel", "validateFormValue", "canonicalFormOf",
   "formValuesToRestconfBody", "formInputToRestconfBody", "formPathToYangPathSegments",
   "validateDataTree", "evaluateCandidates", "buildAccessibleTree", "createConstraintEvaluator",
-  "createRestconfModuleLoader", "findSchemaLibraryMismatches", "yangLibraryInventory", "yangJsonToDocument", "documentToYangJson", "YangJsonError",
+  "createRestconfModuleLoader", "findSchemaLibraryMismatches", "yangLibraryInventory", "yangJsonToDocument", "documentToYangJson", "YangJsonError", "createRestconfClient", "RestconfRequestError",
   "createRestconfGetRequest", "createRestconfDatastoreRequest", "createRestconfNmdaProbeRequest",
   "createRestconfSetRequest", "createRestconfAddRequest", "createRestconfUpdateRequest", "createRestconfDeleteRequest",
   "createRestconfRpcRequest", "readRestconfData", "readRestconfRpcOutput",

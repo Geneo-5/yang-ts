@@ -3894,6 +3894,7 @@ var YangEngine = (() => {
   var index_exports = {};
   __export(index_exports, {
     CompiledSchemaFormatError: () => CompiledSchemaFormatError,
+    RestconfRequestError: () => RestconfRequestError,
     YangJsonError: () => YangJsonError,
     YangSyntaxError: () => YangSyntaxError,
     buildAccessibleTree: () => buildAccessibleTree,
@@ -3903,6 +3904,7 @@ var YangEngine = (() => {
     createConstraintEvaluator: () => createConstraintEvaluator,
     createFormModel: () => createFormModel,
     createRestconfAddRequest: () => createRestconfAddRequest,
+    createRestconfClient: () => createRestconfClient,
     createRestconfDatastoreRequest: () => createRestconfDatastoreRequest,
     createRestconfDeleteRequest: () => createRestconfDeleteRequest,
     createRestconfGetRequest: () => createRestconfGetRequest,
@@ -7764,6 +7766,83 @@ var YangEngine = (() => {
       async loadSubmodule(name2, revision) {
         const entry = await find("submodule", name2, revision);
         return entry ? sourceText(entry) : void 0;
+      }
+    };
+  }
+
+  // src/restconf/client.ts
+  var RestconfRequestError = class extends Error {
+    constructor(status, message, details = {}) {
+      super(message);
+      __publicField(this, "status");
+      __publicField(this, "errorType");
+      __publicField(this, "errorTag");
+      __publicField(this, "errorPath");
+      __publicField(this, "errorMessages");
+      this.name = "RestconfRequestError";
+      this.status = status;
+      this.errorType = details.errorType;
+      this.errorTag = details.errorTag;
+      this.errorPath = details.errorPath;
+      this.errorMessages = details.errorMessages ?? [];
+    }
+  };
+  var textOf = (value) => {
+    if (typeof value === "string") return value;
+    if (value && typeof value === "object" && typeof value["#text"] === "string") {
+      return value["#text"];
+    }
+    return void 0;
+  };
+  var ERROR_KEYS = ["ietf-restconf:errors", "errors"];
+  var errorPlaceholders = [];
+  async function typedError(response, body) {
+    const payload = body && typeof body === "object" && !Array.isArray(body) ? body : void 0;
+    const wrapper = payload ? ERROR_KEYS.map((key) => payload[key]).find((entry) => entry && typeof entry === "object") : void 0;
+    const list = wrapper && Array.isArray(wrapper.error) ? wrapper.error : [];
+    const first = list[0];
+    if (!first) {
+      return new RestconfRequestError(response.status, `RESTCONF request failed with ${response.status} ${response.statusText}`);
+    }
+    const messages = list.map((entry) => textOf(entry["error-message"])).filter((message) => message !== void 0 && message !== "");
+    return new RestconfRequestError(response.status, `RESTCONF request failed with ${response.status} (${textOf(first["error-tag"]) ?? response.statusText})`, {
+      errorType: textOf(first["error-type"]),
+      errorTag: textOf(first["error-tag"]),
+      errorPath: textOf(first["error-path"]),
+      ...messages.length > 0 ? { errorMessages: messages } : { errorMessages: errorPlaceholders }
+    });
+  }
+  function createRestconfClient(options) {
+    const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
+    if (!fetchImpl) throw new Error("No fetch implementation available: pass fetchImpl in RestconfClientOptions");
+    const base = options.baseUrl.replace(/\/+$/, "");
+    const closure = options.signal;
+    const headerSource = options.headers;
+    return {
+      async send(request, extras = {}) {
+        const extra = typeof headerSource === "function" ? await headerSource({ method: request.method, path: request.path }) : headerSource;
+        const headers = { ...request.headers, ...extra ?? {}, ...extras.headers };
+        const signal = extras.signal ?? closure;
+        const response = await fetchImpl(`${base}${request.path}`, {
+          method: request.method,
+          headers,
+          ...request.body === void 0 ? {} : { body: JSON.stringify(request.body) },
+          ...options.credentials ? { credentials: options.credentials } : {},
+          ...signal ? { signal } : {}
+        });
+        if (response.status === 204) {
+          return { status: 204, headers: response.headers, json: async () => void 0 };
+        }
+        if (response.ok) {
+          return { status: response.status, headers: response.headers, json: () => response.json() };
+        }
+        let body;
+        try {
+          body = await response.json();
+        } catch {
+          body = void 0;
+        }
+        throw await typedError(response, body);
       }
     };
   }
