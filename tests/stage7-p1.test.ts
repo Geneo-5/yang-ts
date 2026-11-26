@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  canonicalFormOf, childOf, compileYangModules, createFormModel, evaluateCandidates, moduleNamespacePrefixes,
+  buildAccessibleTree, canonicalFormOf, childOf, compileYangModules, compileYangXPath, createFormModel, evaluateCandidates, moduleNamespacePrefixes,
   parseYang, resolveModuleSet, validateFormValue, validateDataTree, YangSyntaxError,
 } from "../src/index.js";
 import type { CompiledSchemaNode, CompiledYangSchema } from "../src/index.js";
@@ -638,5 +638,71 @@ describe("Stage 7 P1 – identityref XML prefixes and enum-value by node type", 
     expect(validateFormValue(gateway, "gre", context).status).toBe("valid");
     // A prefix bound to a namespace outside the schema is not the identity.
     expect(validateFormValue(gateway, "z:gre", context).status).toBe("invalid");
+  });
+});
+
+describe("Stage 7 P1 – accessible tree wrapper documents and case defaults", () => {
+  const compileOne = async (source: string) => compileYangModules(
+    await resolveModuleSet([parseYang(source)], { async loadModule() { return undefined; } }));
+
+  it("builds one datastore document from a wrapper holding several top-level roots", async () => {
+    const schema = await compileOne(`module oven {
+      namespace "urn:oven"; prefix o;
+      container oven { leaf temperature { type int16; default 180; } }
+      list tray { key slot; leaf slot { type int16; } leaf contents { type string; } }
+    }`);
+    expect(schema.diagnostics).toEqual([]);
+    // RFC 7950 §5.3: top-level nodes are encoded as children of a transport
+    // wrapper (NETCONF/RESTCONF-ish <data>), one element per root instance.
+    const wrapper = xml(`<data xmlns:o="urn:oven" xmlns:extra="urn:extra">
+      <o:oven></o:oven>
+      <o:tray><o:slot>1</o:slot><o:contents>bread</o:contents></o:tray>
+      <o:tray><o:slot>2</o:slot><o:contents>cake</o:contents></o:tray>
+      <extra:bogus>ignored</extra:bogus>
+    </data>`);
+    const tree = buildAccessibleTree(schema, wrapper, { context: "datastore-state" });
+    expect(tree.contextNode).toBe(tree.document.documentElement);
+    expect(Array.from(tree.document.getElementsByTagNameNS("urn:oven", "oven"))).toHaveLength(1);
+    expect(Array.from(tree.document.getElementsByTagNameNS("urn:oven", "tray"))).toHaveLength(2);
+    // Relative paths span all roots from the datastore element; cross-root
+    // references reach sibling roots through the parent step (RFC 7950 §6.4.1).
+    expect(compileYangXPath("count(o:tray[o:slot='2']/o:contents) = 1 and o:tray[o:slot='2']/o:contents = 'cake'", "urn:oven", { o: "urn:oven" })
+      .evaluateBoolean({ node: tree.contextNode })).toBe(true);
+    expect(Array.from(tree.document.getElementsByTagNameNS("urn:oven", "oven"))[0]!.getAttribute("xmlns:o")).toBe("urn:oven");
+    expect(compileYangXPath("count(../o:tray) = 2 and count(o:temperature) = 1", "urn:oven", { o: "urn:oven" })
+      .evaluateBoolean({ node: Array.from(tree.document.getElementsByTagNameNS("urn:oven", "oven"))[0]! })).toBe(true);
+  });
+
+  it("scopes case default injection by RFC 7950 section 7.9.3", async () => {
+    const schema = await compileOne(`module pantry {
+      namespace "urn:pantry"; prefix p;
+      container pantry {
+        choice filler {
+          default grain;
+          case grain { leaf cereal { type string; default oats; } }
+          case sweet {
+            leaf honey { type string; }
+            leaf molasses { type string; default dark; }
+          }
+        }
+      }
+    }`);
+    expect(schema.diagnostics).toEqual([]);
+    const build = (instanceText: string) =>
+      buildAccessibleTree(schema, xml(`<pantry xmlns="urn:pantry">${instanceText}</pantry>`), { context: "datastore-state" });
+    const textOf = (tree: ReturnType<typeof buildAccessibleTree>, name: string) =>
+      Array.from(tree.document.getElementsByTagName(name)).map(node => node.textContent ?? "").join(",");
+
+    // Nothing present: only the default case (grain) contributes defaults.
+    const empty = build("");
+    expect(textOf(empty, "cereal")).toBe("oats");
+    expect(textOf(empty, "molasses")).toBe("");
+
+    // The sweet case is present: its own default applies, the inactive
+    // default case's default is suppressed per section 7.9.3.
+    const sweet = build("<honey>amber</honey>");
+    expect(textOf(sweet, "honey")).toBe("amber");
+    expect(textOf(sweet, "molasses")).toBe("dark");
+    expect(textOf(sweet, "cereal")).toBe("");
   });
 });

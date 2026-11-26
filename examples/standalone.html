@@ -5259,16 +5259,26 @@ var YangEngine = (() => {
     if (options.context === "datastore-config" || options.context === "datastore-state") {
       const scope = { includeState: options.context === "datastore-state", defaults: true };
       const top = instance.documentElement;
-      let contextNode;
-      for (const rootNode of schema.roots) {
-        if (rootNode.kind === "choice" || rootNode.kind === "case") continue;
-        if (!scope.includeState && !rootNode.config) continue;
-        if (top.localName !== rootNode.name || top.namespaceURI !== rootNode.namespace) continue;
-        contextNode = accessibleDataRoot(rootNode, top, scope, document2);
+      const usableRoots = (rootNode) => rootNode.kind !== "choice" && rootNode.kind !== "case" && (scope.includeState || rootNode.config !== false);
+      const matchingRoot = schema.roots.find((rootNode) => usableRoots(rootNode) && top.localName === rootNode.name && top.namespaceURI === rootNode.namespace);
+      if (matchingRoot) {
+        const contextNode = accessibleDataRoot(matchingRoot, top, scope, document2);
         document2.appendChild(contextNode);
+        return { document: document2, contextNode: document2 };
       }
-      if (!contextNode) throw new Error(`Instance root <${top.localName}> does not match any root of the compiled schema`);
-      return { document: document2, contextNode: document2 };
+      const datastore = document2.createElementNS("urn:ietf:params:xml:ns:netconf:base:1.0", "data");
+      copyNamespaceDeclarations(top, datastore);
+      let copied = 0;
+      for (const rootNode of schema.roots) {
+        if (!usableRoots(rootNode)) continue;
+        for (const entry of matchingElements(top, rootNode.namespace, rootNode.name)) {
+          datastore.appendChild(accessibleDataRoot(rootNode, entry, scope, document2, top));
+          copied++;
+        }
+      }
+      if (!copied) throw new Error(`Instance root <${top.localName}> does not match any root of the compiled schema`);
+      document2.appendChild(datastore);
+      return { document: document2, contextNode: datastore };
     }
     const separator = options.operation.indexOf(":");
     const moduleFilter = separator >= 0 ? options.operation.slice(0, separator) : void 0;
@@ -5297,16 +5307,21 @@ var YangEngine = (() => {
       }
     }
   }
-  function accessibleDataRoot(rootNode, source, scope, document2) {
+  function accessibleDataRoot(rootNode, source, scope, document2, wrapper) {
     const copy = document2.createElementNS(rootNode.namespace, rootNode.name);
+    if (wrapper) copyNamespaceDeclarations(wrapper, copy);
     copyNamespaceDeclarations(source, copy);
     copyScope(rootNode.children, source, copy, scope, document2);
     return copy;
   }
   function copyScope(nodes, source, target, scope, document2) {
     for (const node of nodes) {
-      if (node.kind === "choice" || node.kind === "case") {
+      if (node.kind === "case") {
         copyScope(node.children, source, target, scope, document2);
+        continue;
+      }
+      if (node.kind === "choice") {
+        copyChoiceScope(node, source, target, scope, document2);
         continue;
       }
       if (!scope.includeState && !node.config) continue;
@@ -5319,6 +5334,20 @@ var YangEngine = (() => {
         target.appendChild(copy);
       }
       if (scope.defaults) applyDefaults(node, present.length, target, document2);
+    }
+  }
+  function copyChoiceScope(choice, source, target, scope, document2) {
+    const defaultCase = choice.properties.default?.[0]?.argument;
+    const caseMembers = (caseNode) => caseNode.kind === "case" ? caseNode.children : [caseNode];
+    const casePresent = (caseNode) => caseMembers(caseNode).some((member) => matchingElements(source, member.namespace, member.name).length > 0);
+    const anyPresent = choice.children.some((caseNode) => casePresent(caseNode));
+    for (const caseNode of choice.children) {
+      if (caseNode.kind === "choice") {
+        copyChoiceScope(caseNode, source, target, scope, document2);
+        continue;
+      }
+      const useDefaults = scope.defaults && (casePresent(caseNode) || caseNode.kind === "case" && caseNode.name === defaultCase && !anyPresent);
+      copyScope(caseMembers(caseNode), source, target, { ...scope, defaults: useDefaults }, document2);
     }
   }
   function applyDefaults(node, present, target, document2) {

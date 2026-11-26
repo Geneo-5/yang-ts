@@ -53,16 +53,36 @@ export function buildAccessibleTree(
     // data root (deref(pool/chosen)) while absolute /module:root/... paths see
     // the data root as the top-level node, matching real instance documents.
     const top = instance.documentElement!;
-    let contextNode: Element | undefined;
-    for (const rootNode of schema.roots) {
-      if (rootNode.kind === "choice" || rootNode.kind === "case") continue;
-      if (!scope.includeState && !rootNode.config) continue;
-      if (top.localName !== rootNode.name || top.namespaceURI !== rootNode.namespace) continue;
-      contextNode = accessibleDataRoot(rootNode, top, scope, document);
+    const usableRoots = (rootNode: CompiledSchemaNode) =>
+      rootNode.kind !== "choice" && rootNode.kind !== "case" && (scope.includeState || rootNode.config !== false);
+    const matchingRoot = schema.roots.find(rootNode =>
+      usableRoots(rootNode) && top.localName === rootNode.name && top.namespaceURI === rootNode.namespace);
+    if (matchingRoot) {
+      const contextNode = accessibleDataRoot(matchingRoot, top, scope, document);
       document.appendChild(contextNode);
+      return { document, contextNode: document };
     }
-    if (!contextNode) throw new Error(`Instance root <${top.localName}> does not match any root of the compiled schema`);
-    return { document, contextNode: document };
+    // RFC 7950 section 5.3: top-level nodes may arrive as children of a
+    // transport wrapper (e.g. NETCONF <data>); copy one accessible root per
+    // matching child — including several entries of a top-level list — under
+    // a synthetic datastore element (a Document hosts one element child), the
+    // stand-in for the section 6.4.1 virtual root: relative paths span all
+    // roots and cross-root references reach sibling roots through the parent
+    // step. Absolute paths still anchor at the document node, i.e. above the
+    // wrapper, so they resolve reliably only in single-root documents.
+    const datastore = document.createElementNS("urn:ietf:params:xml:ns:netconf:base:1.0", "data");
+    copyNamespaceDeclarations(top, datastore);
+    let copied = 0;
+    for (const rootNode of schema.roots) {
+      if (!usableRoots(rootNode)) continue;
+      for (const entry of matchingElements(top, rootNode.namespace, rootNode.name)) {
+        datastore.appendChild(accessibleDataRoot(rootNode, entry, scope, document, top));
+        copied++;
+      }
+    }
+    if (!copied) throw new Error(`Instance root <${top.localName}> does not match any root of the compiled schema`);
+    document.appendChild(datastore);
+    return { document, contextNode: datastore };
   }
   const separator = options.operation!.indexOf(":");
   const moduleFilter = separator >= 0 ? options.operation!.slice(0, separator) : undefined;
@@ -117,8 +137,9 @@ function copyNamespaceDeclarations(source: Element, copy: Element): void {
  * content copied under `scope` (state filter, with-defaults injection). Used
  * by buildAccessibleTree and by whole-datastore validation passes.
  */
-export function accessibleDataRoot(rootNode: CompiledSchemaNode, source: Element, scope: ScopeOptions, document: Document): Element {
+export function accessibleDataRoot(rootNode: CompiledSchemaNode, source: Element, scope: ScopeOptions, document: Document, wrapper?: Element): Element {
   const copy = document.createElementNS(rootNode.namespace, rootNode.name);
+  if (wrapper) copyNamespaceDeclarations(wrapper, copy);
   copyNamespaceDeclarations(source, copy);
   copyScope(rootNode.children, source, copy, scope, document);
   return copy;
@@ -131,8 +152,12 @@ export function accessibleDataRoot(rootNode: CompiledSchemaNode, source: Element
  */
 function copyScope(nodes: readonly CompiledSchemaNode[], source: Element, target: Element, scope: ScopeOptions, document: Document): void {
   for (const node of nodes) {
-    if (node.kind === "choice" || node.kind === "case") {
+    if (node.kind === "case") {
       copyScope(node.children, source, target, scope, document);
+      continue;
+    }
+    if (node.kind === "choice") {
+      copyChoiceScope(node, source, target, scope, document);
       continue;
     }
     if (!scope.includeState && !node.config) continue;
@@ -145,6 +170,30 @@ function copyScope(nodes: readonly CompiledSchemaNode[], source: Element, target
       target.appendChild(copy);
     }
     if (scope.defaults) applyDefaults(node, present.length, target, document);
+  }
+}
+
+/**
+ * RFC 7950 section 7.9.3: a case's defaults apply when a node of that case is
+ * present, or the case is the choice's `default` case and no node under any
+ * case is present. Present data is always copied; only default injection is
+ * scoped by these rules.
+ */
+function copyChoiceScope(choice: CompiledSchemaNode, source: Element, target: Element, scope: ScopeOptions, document: Document): void {
+  const defaultCase = choice.properties.default?.[0]?.argument;
+  const caseMembers = (caseNode: CompiledSchemaNode) =>
+    caseNode.kind === "case" ? caseNode.children : [caseNode];
+  const casePresent = (caseNode: CompiledSchemaNode) =>
+    caseMembers(caseNode).some(member => matchingElements(source, member.namespace, member.name).length > 0);
+  const anyPresent = choice.children.some(caseNode => casePresent(caseNode));
+  for (const caseNode of choice.children) {
+    if (caseNode.kind === "choice") {
+      copyChoiceScope(caseNode, source, target, scope, document);
+      continue;
+    }
+    const useDefaults = scope.defaults
+      && (casePresent(caseNode) || (caseNode.kind === "case" && caseNode.name === defaultCase && !anyPresent));
+    copyScope(caseMembers(caseNode), source, target, { ...scope, defaults: useDefaults }, document);
   }
 }
 
