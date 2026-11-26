@@ -4,6 +4,7 @@ import {
   buildAccessibleTree, compileYangModules, parseYang, resolveModuleSet,
 } from "../src/index.js";
 import type { CompiledYangSchema } from "../src/index.js";
+import { parseXml } from "./dom.js";
 
 // Stage 7 P0 regressions: wrong "valid" answers or wrong namespaces.
 // Each test mirrors a ROADMAP.md Stage 7 finding.
@@ -15,7 +16,7 @@ async function compile(source: string, extra: string[] = []): Promise<CompiledYa
   return compileYangModules(await resolveModuleSet(modules, loaderNone));
 }
 
-const xml = (text: string) => new DOMParser().parseFromString(text, "application/xml");
+const xml = (text: string) => parseXml(text);
 
 describe("stage 7 P0 correctness regressions", () => {
   it("resolves a module's own prefix in must/when XPath expressions", async () => {
@@ -162,7 +163,7 @@ describe("stage 7 P0 correctness regressions", () => {
         }
       }
     }`]);
-    expect(schema.diagnostics, schema.diagnostics.map(d => `${d.code}: ${d.message}`)).toEqual([]);
+    expect(schema.diagnostics.map(d => `${d.code}: ${d.message}`)).toEqual([]);
 
     const list = schema.roots.find(root => root.name === "box")!.children.find(child => child.name === "item")!;
     expect(list.module).toBe("user");

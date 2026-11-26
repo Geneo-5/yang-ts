@@ -1,6 +1,7 @@
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
 import { compileYangXPath, qualifyYangXPathNodeTests } from "../src/index.js";
+import { parseXml, serializeNode } from "./dom.js";
 
 const NAMESPACE = "urn:example:if";
 const PREFIX = "if";
@@ -20,12 +21,12 @@ function pick<T>(rng: () => number, items: readonly T[]): T {
   return items[Math.floor(rng() * items.length) % items.length]!;
 }
 
-const document = new DOMParser().parseFromString(`<interfaces xmlns="${NAMESPACE}" xmlns:old="urn:example:old">
+const document = parseXml(`<interfaces xmlns="${NAMESPACE}" xmlns:old="urn:example:old">
   <interface><name>eth0</name><speed>100</speed><mtu>1500</mtu><enabled>true</enabled></interface>
   <interface><name>eth1</name><speed>10</speed><mtu>900</mtu><enabled>false</enabled></interface>
   <interface><name>wifi0</name><speed>10</speed><mtu>1500</mtu><enabled>true</enabled></interface>
   <foreign xmlns="urn:example:other"><interface><name>not-ours</name></interface></foreign>
-</interfaces>`, "application/xml");
+</interfaces>`);
 const contextNode = document.documentElement;
 
 interface Step {
@@ -96,7 +97,7 @@ function wrapAsExpression(caseIndex: number, path: string): string {
 /** Node-set identity independent of document order conventions: serialize each node. */
 function stamp(node: Node): string {
   if (node.nodeType === 2) return `@${node.nodeName}=${node.nodeValue}`;
-  return new XMLSerializer().serializeToString(node);
+  return serializeNode(node);
 }
 
 interface Outcome {
@@ -188,6 +189,6 @@ describe("XPath rewrite differential fuzz corpus (qualifyYangXPathNodeTests)", (
     expect(compiled.evaluateBoolean({ node: contextNode })).toBe(false);
     const prefixed = compileYangXPath("if:name = 'oops __yang_ns:name'", NAMESPACE, { if: NAMESPACE });
     expect(prefixed.evaluateBoolean({ node: contextNode })).toBe(false);
-    expect(new XMLSerializer().serializeToString(document)).toContain("eth1");
+    expect(serializeNode(document)).toContain("eth1");
   });
 });

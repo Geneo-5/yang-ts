@@ -1,6 +1,7 @@
 import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
 import { compileYangModules, compileYangXPath, createYangFunctionLibrary, parseYang, qualifyYangXPathNodeTests, resolveModuleSet } from "../src/index.js";
+import { parseXml } from "./dom.js";
 
 describe("browser-compatible YANG XPath 1.0 adapter", () => {
   it("qualifies unprefixed node tests without changing functions, operators or literals", () => {
@@ -9,9 +10,9 @@ describe("browser-compatible YANG XPath 1.0 adapter", () => {
   });
 
   it("evaluates prefixed and current-module node tests with custom functions", () => {
-    const document = new DOMParser().parseFromString(`<root xmlns="urn:base">
+    const document = parseXml(`<root xmlns="urn:base">
       <value>7</value><foreign xmlns="urn:other"><value>12</value></foreign>
-    </root>`, "application/xml");
+    </root>`);
     const expression = compileYangXPath(
       "number(value) = 7 and count(other:foreign/other:value) = 1 and yang:is-positive(value)",
       "urn:base",
@@ -27,18 +28,18 @@ describe("browser-compatible YANG XPath 1.0 adapter", () => {
   });
 
   it("keeps unprefixed names bound to the current module namespace", () => {
-    const document = new DOMParser().parseFromString(`<root xmlns="urn:base"><value>1</value>
+    const document = parseXml(`<root xmlns="urn:base"><value>1</value>
       <nested xmlns="urn:other"><value>2</value></nested>
-    </root>`, "application/xml");
+    </root>`);
     const expression = compileYangXPath("count(value)", "urn:base");
     expect(expression.evaluateNumber({ node: document.documentElement })).toBe(1);
   });
 
   it("navigates a YANG-shaped data tree with list predicates and relative paths", () => {
-    const document = new DOMParser().parseFromString(`<interfaces xmlns="urn:ietf:params:xml:ns:yang:ietf-interfaces">
+    const document = parseXml(`<interfaces xmlns="urn:ietf:params:xml:ns:yang:ietf-interfaces">
       <interface><name>eth0</name><enabled>true</enabled></interface>
       <interface><name>eth1</name><enabled>false</enabled></interface>
-    </interfaces>`, "application/xml");
+    </interfaces>`);
     const xpath = compileYangXPath(
       "count(interface[enabled='true']) = 1 and string(interface[enabled='true']/name) = 'eth0'",
       "urn:ietf:params:xml:ns:yang:ietf-interfaces",
@@ -68,10 +69,10 @@ describe("browser-compatible YANG XPath 1.0 adapter", () => {
     const module = interfaces;
     const library = createYangFunctionLibrary({ schema: compiled, module: module.argument, prefixModules: { t: "types", y: "types" } });
 
-    const document = new DOMParser().parseFromString(`<interfaces xmlns="urn:if" xmlns:t="urn:types">
+    const document = parseXml(`<interfaces xmlns="urn:if" xmlns:t="urn:types">
       <interface><name>eth0</name><type>types:ethernetCsmacd</type><speed>ten</speed><flags>up broadcast</flags></interface>
       <control>eth0</control>
-    </interfaces>`, "application/xml");
+    </interfaces>`);
     const root = document.documentElement!;
     const evaluate = (expression: string) => compileYangXPath(expression, "urn:if", {
       t: "urn:types", yang: "urn:ietf:params:xml:ns:yang:1",

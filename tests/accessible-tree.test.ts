@@ -1,6 +1,7 @@
 import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
 import { buildAccessibleTree, compileYangModules, compileYangXPath, createYangFunctionLibrary, parseYang, resolveModuleSet } from "../src/index.js";
+import { parseXml } from "./dom.js";
 
 const schema = compileYangModules(await resolveModuleSet([
   parseYang(`module system {
@@ -20,7 +21,7 @@ const schema = compileYangModules(await resolveModuleSet([
 ], { async loadModule() { return undefined; } }));
 
 function datatree(instanceText: string): Document {
-  return new DOMParser().parseFromString(instanceText, "application/xml");
+  return parseXml(instanceText);
 }
 
 const text = (document: Document, path: string): string => Array.from(document.getElementsByTagName(path)).map(node => node.textContent ?? "").join("|");
@@ -64,7 +65,7 @@ describe("RFC 7950 accessible tree construction", () => {
   it("scopes RPC input and output into fictional operation trees", () => {
     const input = buildAccessibleTree(schema, datatree(
       `<reset xmlns="urn:system"><force>true</force></reset>`), { context: "rpc-input", operation: "system:reset" });
-    expect(input.contextNode.localName).toBe("reset");
+    expect((input.contextNode as Element).localName).toBe("reset");
     const mustForce = compileYangXPath("force", "urn:system");
     expect(mustForce.evaluateBoolean({ node: input.contextNode })).toBe(true);
     // Output leaves are not visible in the input scope.
@@ -80,7 +81,7 @@ describe("RFC 7950 accessible tree construction", () => {
     const tree = buildAccessibleTree(schema, datatree(
       `<changed xmlns="urn:system"><id>42</id></changed>`), { context: "notification", operation: "changed" });
     expect(compileYangXPath("id = '42'", "urn:system").evaluateBoolean({ node: tree.contextNode })).toBe(true);
-    expect(tree.contextNode.localName).toBe("changed");
+    expect((tree.contextNode as Element).localName).toBe("changed");
   });
 
   it("rejects operation contexts without compilable targets", () => {

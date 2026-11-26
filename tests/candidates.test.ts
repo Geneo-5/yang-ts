@@ -1,8 +1,9 @@
 import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
 import { compileYangModules, evaluateCandidates, finiteDomainOf, parseYang, resolveModuleSet } from "../src/index.js";
+import { parseXml } from "./dom.js";
 
-const instance = (xml: string) => new DOMParser().parseFromString(xml, "application/xml");
+const instance = (xml: string) => parseXml(xml);
 
 async function compileModule(text: string) {
   const schema = compileYangModules(await resolveModuleSet([parseYang(text)], { async loadModule() { return undefined; } }));

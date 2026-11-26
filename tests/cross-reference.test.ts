@@ -1,8 +1,9 @@
 import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
 import { compileYangModules, createFormModel, parseYang, resolveModuleSet, validateFormValue } from "../src/index.js";
+import { parseXml } from "./dom.js";
 
-const instance = (xml: string) => new DOMParser().parseFromString(xml, "application/xml");
+const instance = (xml: string) => parseXml(xml);
 
 const schema = compileYangModules(await resolveModuleSet([parseYang(`module routing {
   namespace "urn:routing"; prefix r;

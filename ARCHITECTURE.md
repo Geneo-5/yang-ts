@@ -70,5 +70,5 @@ Candidate values are contextual. A finite enumeration can be filtered when const
 1. Parser fixtures and negative grammar cases.
 2. RFC section-linked unit cases for type restrictions, XPath contexts/functions and constraint timing, each with a negative case.
 3. Differential checks: an XPath-rewrite fuzz corpus runs in-repo (`tests/differential.test.ts`, seeded and grammar-generated); checks against libyang remain a development/CI-only option when it becomes available — libyang is not shipped or run in users' browsers, and no `yanglint`/`pyang` toolchain exists in this environment.
-4. Browser bundle inspection (done, as a source audit) and tests in a real browser (not yet done: all suites run under Node with `@xmldom/xmldom`) before declaring the package browser-ready.
+4. Browser bundle inspection (done, as a source audit) and tests in a real browser (`tests/real-browser.test.ts`, Playwright headless Chromium, dev-only; skip-announced when Chromium is absent).
 5. Conformance matrix labels each feature as implemented, partial, unsupported or untested; a known open defect keeps a row at partial.

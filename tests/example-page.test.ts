@@ -50,7 +50,7 @@ describe("example pages", () => {
     const html = readFileSync(`${examplesDir}/standalone.html`, "utf8");
     expect(html).toContain("</html>");
     expect(html).not.toContain("<script type=\"module\"");
-    expect(html).not.toMatch(/fetch\s*\(/, "standalone page must not fetch anything");
+    expect(html).not.toMatch(/fetch\s*\(/);
     for (const match of html.matchAll(/<script[^>]*(\ssrc=)?/g)) {
       expect(match[1], "standalone page must not load external scripts").toBeUndefined();
     }
@@ -94,7 +94,7 @@ describe("example pages", () => {
       createElement: makeEl,
       createTextNode: (text: string) => ({ text }),
     };
-    const Event = class { constructor(type: string) { (this as { type: string }).type = type; } };
+    const Event = class { constructor(type: string) { (this as unknown as { type: string }).type = type; } };
     new Function("document", "Event", script)(document, Event);
 
     expect(result.textContent).toBe("Ready. Edit the fields, then preview requests below.");

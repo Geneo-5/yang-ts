@@ -2,6 +2,7 @@ import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
 import { compileYangModules, evaluateCandidates, parseYang, resolveModuleSet, validateDataTree } from "../src/index.js";
 import { compileXsdPattern } from "../src/types/xsd-pattern.js";
+import { parseXml } from "./dom.js";
 
 const TEST = "urn:test";
 const module = (name: string, imports: string[] = []) => `module ${name} {
@@ -143,15 +144,15 @@ describe("beyond-loading budgets and cancellation", () => {
       }
     }`;
     const compiled = await compile(schemaText);
-    const doc = new DOMParser().parseFromString(`<oven xmlns="urn:pan"><mode>on</mode></oven>`, "application/xml");
+    const doc = parseXml(`<oven xmlns="urn:pan"><mode>on</mode></oven>`);
     const controller = new AbortController();
     controller.abort();
     const result = validateDataTree(compiled, doc, { signal: controller.signal });
     expect(result.status).toBe("indeterminate");
     expect(result.issues.map(item => item.code)).toEqual(["cancelled"]);
 
-    const candidates = evaluateCandidates(compiled, new DOMParser().parseFromString(
-      `<oven xmlns="urn:pan"><mode>on</mode></oven>`, "application/xml"), "/oven/mode", { signal: controller.signal });
+    const candidates = evaluateCandidates(compiled, parseXml(
+      `<oven xmlns="urn:pan"><mode>on</mode></oven>`), "/oven/mode", { signal: controller.signal });
     expect(candidates.candidates.length).toBeGreaterThan(0);
     expect(candidates.candidates.every(item => item.status === "indeterminate")).toBe(true);
   });
@@ -166,15 +167,15 @@ describe("schema-scoped caches", () => {
     const first = compileYangModules(await resolveModuleSet([parseYang(shopWith("urn:shop:first"))], { async loadModule() { return undefined; } }));
     expect(first.diagnostics).toEqual([]);
     // A valid document caches the compiled must under (module, expression).
-    expect(validateDataTree(first, new DOMParser().parseFromString(
-      `<cart xmlns="urn:shop:first"><total>5</total></cart>`, "application/xml")).status).toBe("valid");
+    expect(validateDataTree(first, parseXml(
+      `<cart xmlns="urn:shop:first"><total>5</total></cart>`)).status).toBe("valid");
 
     // A second schema reuses the module and expression names but binds a
     // different namespace: the cached first-schema path must not answer it.
     const second = compileYangModules(await resolveModuleSet([parseYang(shopWith("urn:shop:second"))], { async loadModule() { return undefined; } }));
     expect(second.diagnostics).toEqual([]);
-    expect(validateDataTree(second, new DOMParser().parseFromString(
-      `<cart xmlns="urn:shop:second"><total>5</total></cart>`, "application/xml")).status).toBe("valid");
+    expect(validateDataTree(second, parseXml(
+      `<cart xmlns="urn:shop:second"><total>5</total></cart>`)).status).toBe("valid");
   });
 
   it("answers repeated compiles of the same expression with the same result", async () => {
@@ -182,10 +183,10 @@ describe("schema-scoped caches", () => {
       namespace "urn:shop"; prefix s;
       container cart { leaf total { type int16; } must "total > 0"; }
     }`)], { async loadModule() { return undefined; } }));
-    expect(validateDataTree(schema, new DOMParser().parseFromString(
-      `<cart xmlns="urn:shop"><total>-1</total></cart>`, "application/xml")).issues.map(item => item.code)).toEqual(["must-unmet"]);
+    expect(validateDataTree(schema, parseXml(
+      `<cart xmlns="urn:shop"><total>-1</total></cart>`)).issues.map(item => item.code)).toEqual(["must-unmet"]);
     // Second pass hits the cache: same verdict, no drift.
-    expect(validateDataTree(schema, new DOMParser().parseFromString(
-      `<cart xmlns="urn:shop"><total>-1</total></cart>`, "application/xml")).issues.map(item => item.code)).toEqual(["must-unmet"]);
+    expect(validateDataTree(schema, parseXml(
+      `<cart xmlns="urn:shop"><total>-1</total></cart>`)).issues.map(item => item.code)).toEqual(["must-unmet"]);
   });
 });

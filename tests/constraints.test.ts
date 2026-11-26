@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
 import { buildAccessibleTree, compileYangModules, createConstraintEvaluator, parseYang, resolveModuleSet } from "../src/index.js";
+import { parseXml } from "./dom.js";
 
 const fixtures = new URL("./fixtures/yang/", import.meta.url);
 function load(path: string) {
@@ -26,9 +27,8 @@ async function compiledFixtureSchema() {
 
 function interfaceDocument(type: string, extras: Array<[string, string]>): Document {
   const extrasText = extras.map(([name, value]) => `<${name} xmlns="${EXT_NS}">${value ?? ""}</${name}>`).join("");
-  return new DOMParser().parseFromString(
+  return parseXml(
     `<interfaces xmlns="${IF_NS}"><interface><name>veth0</name><type>${type}</type>${extrasText}</interface></interfaces>`,
-    "application/xml",
   );
 }
 
@@ -70,7 +70,7 @@ describe("fixture when/must constraints over accessible trees", () => {
       }`),
     ], { async loadModule() { return undefined; } }));
     const evaluator = createConstraintEvaluator(schema);
-    const instance = (nodes: string) => new DOMParser().parseFromString(`<pool xmlns="urn:pool-must">${nodes}</pool>`, "application/xml");
+    const instance = (nodes: string) => parseXml(`<pool xmlns="urn:pool-must">${nodes}</pool>`);
     const poolElement = (nodes: string) =>
       buildAccessibleTree(schema, instance(nodes), { context: "datastore-state" }).document.getElementsByTagName("pool")[0]!;
 
@@ -79,6 +79,6 @@ describe("fixture when/must constraints over accessible trees", () => {
     const unmet = evaluator.evaluateNode(poolElement(""));
     expect(unmet.map(item => item.status)).toEqual(["unmet", "met"]);
     // A node outside the effective schema has no constraints to report.
-    expect(evaluator.evaluateNode(new DOMParser().parseFromString("<x/>", "application/xml").documentElement!)).toEqual([]);
+    expect(evaluator.evaluateNode(parseXml("<x/>").documentElement!)).toEqual([]);
   });
 });

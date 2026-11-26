@@ -89,7 +89,7 @@ Open defects (several return *valid* where the result is unknown — highest pri
 Delivered: browser-readiness source audit, conformance matrix and versioning policy, YANG Library/RESTCONF loading adapter, resource budgets for loading, release workflow, standalone example build.
 
 Open defects:
-- [ ] Tests run under Node with `@xmldom/xmldom`; there is no real-browser run (Vitest browser mode or Playwright). The "browser smoke suite" is only a Node import of `dist`.
+- [x] Real-browser run in place (P3, 2026-11-26): `tests/real-browser.test.ts` drives `examples/standalone.html` in headless Chromium (Playwright, devDependency only) so the bundled engine runs with the browser's own DOM. The Node suites keep `@xmldom/xmldom` for the DOM.
 - [ ] `npm test` fails on a clean checkout (bundle-smoke requires `dist/`), while README and `TESTING.md` order `npm test` before `npm run build`.
 - [ ] Tests are not type-checked (`tsconfig` includes only `src`).
 - [x] RESTCONF loader requests the library under the RFC 8040 `/data/` subtree by default (absolute URLs and pre-qualified `data/`/`operations/` resources pass through), reads the RFC 8525 nested `submodule` lists (with a fallback to flat rows for RFC 7895 payloads), accepts the RFC 7895 `schema` leaf as a source URL before the `yang?module=` probe, and forwards an `AbortSignal` to every request (`yangLibraryInventory`, fixed 2026-11-26, `tests/restconf-loader.test.ts`).
@@ -128,7 +128,7 @@ New stage collecting the review findings by priority. Each item is closed by a f
 **P3 — project hygiene**
 - [ ] Align `capabilities`, README, `ARCHITECTURE.md`, `CONFORMANCE.md` and this file; make `CONFORMANCE.md` rows downgrade to *partial* until their stage defects close.
 - [ ] Curate `src/index.ts` into named exports; move helpers to an internal entry point.
-- [ ] Real-browser test run; type-check tests; make `npm test` self-sufficient (build `dist` in a `pretest` or skip the bundle suite with a clear message); add `prepack` to build before publishing.
+- [x] Real-browser test run; type-check tests; make `npm test` self-sufficient; add `prepack` — closed 2026-11-26. `npm run typecheck` runs both `tsc --noEmit` sources and `tsconfig.tests.json` (src + tests, `@types/node`, one documented xmldom→dom cast in `tests/dom.ts`); a sweep fixed the latent type errors it exposed (hunt-down xmldom typing bridges in every suite, `loadModule` missing on a loader stub, vitest-4 incompatible `expect(value, message)`/`toMatch` message arguments). `npm test` is self-sufficient through a `pretest` build, and `prepack` builds before publishing. The real-browser run is `tests/real-browser.test.ts`: Playwright headless Chromium loads `examples/standalone.html` over a local server (page renders the oven form without page errors; the engine compiles and validates a data tree inside the page using the browser's own DOMParser), and the suite announces a clear skip when `playwright install chromium` was not run on a dev machine. Playwright is a devDependency only, never a runtime dependency.
 - [ ] Extract shared `types/` code and remove the duplicated pattern/builtin logic.
 
 ## Stage 8 — Next.js static-export integration (planned)

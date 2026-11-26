@@ -78,7 +78,7 @@ Last updated: 2026-11-26, after a full source review and the closure of the Stag
 - **XPath beyond 1.0 semantics** (e.g. full XML Schema datatypes in comparisons): the evaluator is XPath 1.0; conversions are IEEE-754 per XPath where applicable.
 - **No transport**: RESTCONF requests are constructed/validated but never sent by this package.
 - **Untrusted-module resource limits**: loading budgets (module/submodule counts, source characters, deadline, import depth) plus a schema-node expansion budget for `uses`/grouping fan-out, pending-pattern guards against oversized or ReDoS-shaped regexes, a parser nesting-depth cap of 200, and cooperative `AbortSignal` cancellation in `resolveModuleSet`, `validateDataTree` and `evaluateCandidates`. Compiled XPath expressions live in a schema-scoped `WeakMap` (a reused module name in a second schema compiles its own paths) and the pattern text cache is bounded (cleared past 2048 entries). A single XPath expression cannot be interrupted mid-evaluation: long-running stores need worker isolation (worker + `terminate`), which is the host's responsibility.
-- **Real-browser testing**: all suites run under Node with `@xmldom/xmldom`; no browser run exists yet.
+- **Real-browser testing**: `tests/real-browser.test.ts` (since 2026-11-26) loads `examples/standalone.html` in Playwright headless Chromium (dev-only dependency, clear skip when Chromium is absent) and drives `compileYangModules`/`validateDataTree` inside the page with the browser's native `DOMParser`. The Node suites keep `@xmldom/xmldom`.
 
 ## Migration and versioning policy
 

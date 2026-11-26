@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it } from "vitest";
+import { parseXml } from "./dom.js";
 
 // Stage 6 browser smoke suite. The example page (examples/browser-usage.html)
 // imports ../dist/index.js; this suite imports the built bundle directly so
@@ -41,10 +42,8 @@ describe("browser smoke suite over the built bundle", () => {
     const schema = compileYangModules(set);
     expect(schema.diagnostics).toEqual([]);
 
-    const { DOMParser } = await import("@xmldom/xmldom");
-    const doc = new DOMParser().parseFromString(
-      `<relay xmlns="urn:smoke"><phase><name>night</name><first>main</first></phase><upstream>main</upstream></relay>`,
-      "application/xml");
+    const doc = parseXml(
+      `<relay xmlns="urn:smoke"><phase><name>night</name><first>main</first></phase><upstream>main</upstream></relay>`);
     const validated = validateDataTree(schema, doc);
     // The must on upstream needs ../phase/active, which the document omits.
     expect(validated.issues.map(issue => issue.code)).toEqual(["must-unmet"]);

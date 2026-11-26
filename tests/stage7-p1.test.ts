@@ -4,9 +4,9 @@ import {
   parseYang, resolveModuleSet, validateFormValue, validateDataTree, YangSyntaxError,
 } from "../src/index.js";
 import type { CompiledSchemaNode, CompiledYangSchema } from "../src/index.js";
-import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
+import { parseXml, serializeNode } from "./dom.js";
 
-const xml = (text: string) => new DOMParser().parseFromString(text, "application/xml");
+const xml = (text: string) => parseXml(text);
 
 /** Builds a module wrapping the given inner statements. */
 const wrap = (inner: string, indent = "        ") => `module sample {\n${indent}namespace "urn:sample";\n${indent}prefix s;\n${indent}${inner}\n}`;
@@ -54,6 +54,7 @@ describe("Stage 7 P1 – submodule compile context (RFC 7950 §5.6.2)", () => {
 
   const compileSet: Promise<CompiledYangSchema> = (async () => {
     const resolved = await resolveModuleSet([parseYang(ownerYang), parseYang(depYang)], {
+      async loadModule() { return undefined; },
       async loadSubmodule() { return parseYang(submoduleYang); },
     });
     return compileYangModules(resolved);
@@ -288,7 +289,7 @@ describe("Stage 7 P1 – form restrictions descriptor and cross references", () 
     const box = model.fields.filter(field => field.path.startsWith("/box/"));
     expect(box.length).toBe(3);
     const [code, codeName, precision] = box;
-    expect(() => JSON.stringify(code.restrictions)).not.toThrow();
+    expect(() => JSON.stringify(code!.restrictions)).not.toThrow();
     // A shallow copy must not silently lose range/length/pattern/digits.
     expect(validateFormValue({ ...code! }, 300).status).toBe("invalid");
     expect(validateFormValue({ ...codeName! }, "abcd").status).toBe("invalid");
@@ -313,8 +314,8 @@ describe("Stage 7 P1 – form restrictions descriptor and cross references", () 
     const model = createFormModel(parseYang(source));
     const peer = model.fields.find(field => field.path === "/devices/device[*]/peer");
     expect(peer).toBeDefined();
-    const document = new DOMParser().parseFromString(
-      `<devices xmlns="urn:forms"><device><name>a</name></device></devices>`, "application/xml");
+    const document = parseXml(
+      `<devices xmlns="urn:forms"><device><name>a</name></device></devices>`);
     // Leafref paths evaluate from the field's own node, so probe with a
     // placeholder `peer` element inside the list entry it would occupy.
     const entry = Array.from(document.getElementsByTagNameNS("urn:forms", "device"))[0]!;
@@ -343,8 +344,8 @@ describe("Stage 7 P1 – form restrictions descriptor and cross references", () 
     const model = createFormModel(parseYang(source));
     const peers = model.fields.find(field => field.path === "/devices/device[*]/peers");
     expect(peers).toBeDefined();
-    const document = new DOMParser().parseFromString(
-      `<devices xmlns="urn:forms"><device><name>a</name><peers>a</peers></device></devices>`, "application/xml");
+    const document = parseXml(
+      `<devices xmlns="urn:forms"><device><name>a</name><peers>a</peers></device></devices>`);
     const anchor = Array.from(document.getElementsByTagNameNS("urn:forms", "device"))[0]!;
     const context = { schema, anchor };
     expect(validateFormValue(peers!, ["a"], context).status).toBe("valid");
@@ -433,11 +434,11 @@ describe("Stage 7 P1 – evaluateCandidates", () => {
     }`);
     // `ping` violates the must (no transport sibling), `discard` satisfies it.
     const document = xml(`<session xmlns="urn:probe"><echo/></session>`);
-    const before = new XMLSerializer().serializeToString(document);
+    const before = serializeNode(document);
     const evaluated = evaluateCandidates(schema, document, "/session/echo");
     expect(evaluated.candidates.map(candidate => candidate.status)).toEqual(["blocked", "allowed"]);
     // An empty element (no text) previously kept the last candidate value.
-    expect(new XMLSerializer().serializeToString(document)).toBe(before);
+    expect(serializeNode(document)).toBe(before);
   });
 
   it("honors ancestor and sibling constraints that depend on the node", async () => {

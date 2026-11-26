@@ -26,12 +26,17 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-example.mjs",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "pretest": "npm run build",
+    "test:watch": "vitest",
+    "prepack": "npm run build"
   },
   "devDependencies": {
+    "@types/node": "^26.6.10",
     "@xmldom/xmldom": "^0.9.12",
     "esbuild": "^0.28.2",
+    "playwright": "^1.65.1",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12"
   },
