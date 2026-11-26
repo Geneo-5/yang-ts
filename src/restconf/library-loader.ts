@@ -61,16 +61,20 @@ export interface YangLibraryInventory {
 
 /**
  * Modules and submodules of an ietf-yang-library payload. Accepts the RFC 7895
- * `modules-state` shape and the RFC 8525 `yang-library`/`module-set` shape
- * (whose `module-set` entries carry separate `module` and `submodule` lists),
+ * `modules-state` shape and the RFC 8525 `yang-library`/`module-set` shape,
  * with or without the `ietf-yang-library` prefix, or an already-unwrapped
  * module list.
+ *
+ * RFC 7895 section 5.2 and RFC 8525 (2019-01-04) nest the `submodule` list
+ * inside each `module` — and RFC 8525 also inside each `import-only-module`
+ * — row, and RFC 8525 lists import-only modules under their own
+ * `import-only-module` list; both are flattened into the inventory.
  */
 export function yangLibraryInventory(payload: unknown): YangLibraryInventory {
   const object = asRecord(payload);
   if (!object) throw new Error("YANG Library payload is not a JSON object");
   const modulesState = firstRecord(object, ["ietf-yang-library:modules-state", "modules-state"]);
-  if (modulesState) return { modules: rowsToEntries(modulesState["module"]), submodules: [] };
+  if (modulesState) return inventoryOfModuleRows(modulesState["module"]);
   const yangLibrary = firstRecord(object, ["ietf-yang-library:yang-library", "yang-library"]);
   if (yangLibrary) {
     const sets = yangLibrary["module-set"];
@@ -78,14 +82,38 @@ export function yangLibraryInventory(payload: unknown): YangLibraryInventory {
     return setList.reduce<YangLibraryInventory>((inventory, set) => {
       const record = asRecord(set);
       if (!record) return inventory;
+      // RFC 8525: an import-only module can only be imported, so missing
+      // conformance-type rows default to `import`.
+      const importOnly = rowsToEntries(record["import-only-module"])
+        .map(entry => entry.conformance ? entry : { ...entry, conformance: "import" as const });
       return {
-        modules: [...inventory.modules, ...rowsToEntries(record["module"])],
-        submodules: [...inventory.submodules, ...rowsToEntries(record["submodule"])],
+        modules: [...inventory.modules, ...rowsToEntries(record["module"]), ...importOnly],
+        submodules: [...inventory.submodules,
+          ...submodulesOfRows(record["module"]),
+          ...submodulesOfRows(record["import-only-module"]),
+        ],
       };
     }, { modules: [], submodules: [] });
   }
-  if (object["module"]) return { modules: rowsToEntries(object["module"]), submodules: rowsToEntries(object["submodule"]) };
+  if (object["module"]) {
+    const inventory = inventoryOfModuleRows(object["module"]);
+    return { modules: inventory.modules, submodules: [...inventory.submodules, ...rowsToEntries(object["submodule"])] };
+  }
   throw new Error("YANG Library payload has no module list (expected modules-state or yang-library module-set)");
+}
+
+/** Flatten the `submodule` lists nested in each module/import-only-module row. */
+function submodulesOfRows(rows: unknown): YangLibraryModuleEntry[] {
+  const list = Array.isArray(rows) ? rows : rows !== undefined ? [rows] : [];
+  return list.flatMap(row => {
+    const record = asRecord(row);
+    return record ? rowsToEntries(record["submodule"]) : [];
+  });
+}
+
+/** Module rows whose nested `submodule` lists become inventory submodules. */
+function inventoryOfModuleRows(rows: unknown): YangLibraryInventory {
+  return { modules: rowsToEntries(rows), submodules: submodulesOfRows(rows) };
 }
 
 /**

@@ -50,6 +50,21 @@ describe("RESTCONF YANG Library adapter", () => {
       },
     });
     expect(rfc8525).toEqual([{ name: "bread", revision: "2023-05-01", location: "https://host/schemas/bread.yang" }]);
+    // RFC 8525: submodules nest inside each module and import-only-module
+    // row; import-only modules are their own list and count as `import`.
+    const importOnly = yangLibraryEntries({
+      "ietf-yang-library:yang-library": {
+        "module-set": [{
+          name: "main",
+          module: [{ name: "bread", revision: "2023-05-01", submodule: [{ name: "bread-parts", revision: "2023-05-01" }] }],
+          "import-only-module": [{ name: "types", revision: "2023-01-01", location: "https://host/schemas/types.yang" }],
+        }],
+      },
+    });
+    expect(importOnly).toEqual([
+      { name: "bread", revision: "2023-05-01" },
+      { name: "types", revision: "2023-01-01", location: "https://host/schemas/types.yang", conformance: "import" },
+    ]);
     expect(() => yangLibraryEntries({ unexpected: true })).toThrow("no module list");
     expect(() => yangLibraryEntries("text")).toThrow("not a JSON object");
   });
@@ -133,6 +148,62 @@ describe("RESTCONF loader hardening (RFC 8040/8525)", () => {
     expect(calls.some(call => call.url === "https://host/restconf/ietf-yang-library:modules-state")).toBe(false);
   });
 
+  it("loads import-only-module entries and their nested submodules", async () => {
+    const calls: Call[] = [];
+    const types = `module types { namespace "urn:types"; prefix t; typedef percent { type uint8; } }`;
+    const sizesParts = `submodule sizes-parts { belongs-to sizes { prefix s; } cup { } }`;
+    const sizes = `module sizes { namespace "urn:sizes"; prefix s; include sizes-parts; leaf size { type uint8; } }`;
+    const bread = `module bread { namespace "urn:bread"; prefix b; import types { prefix t; } leaf crust { type t:percent; } }`;
+    const library = {
+      "ietf-yang-library:yang-library": {
+        "module-set": [{
+          name: "main",
+          module: [
+            { name: "bread", revision: "2024-01-01", namespace: "urn:bread", location: "https://host/s/bread.yang" },
+            { name: "sizes", revision: "2024-01-01", namespace: "urn:sizes", location: "https://host/s/sizes.yang",
+              submodule: [{ name: "sizes-parts", revision: "2024-01-01", location: "https://host/s/sizes-parts.yang" }] },
+          ],
+          "import-only-module": [{ name: "types", revision: "2024-01-01", namespace: "urn:types", location: "https://host/s/types.yang" }],
+        }],
+      },
+    };
+    const loader = createRestconfModuleLoader({
+      baseUrl: "https://host/restconf",
+      fetchImpl: fakeFetch(library, { "bread.yang": bread, "types.yang": types, "sizes.yang": sizes, "sizes-parts.yang": sizesParts }, calls),
+    });
+    const set = await resolveModuleSet([parseYang(bread)], loader);
+    expect(set.diagnostics).toEqual([]);
+    expect(calls.some(call => call.url === "https://host/s/types.yang")).toBe(true);
+    const schema = compileYangModules(set);
+    expect(schema.diagnostics.map(item => item.code)).toEqual([]);
+    // The import-only module's typedef resolved the crust leaf's type.
+    const crust = schema.roots.find(root => root.name === "crust");
+    expect(crust).toBeDefined();
+    expect(crust!.resolvedType).toBe("uint8");
+  });
+
+  it("loads the RFC 7895 submodule lists nested in each module row", async () => {
+    const calls: Call[] = [];
+    const breadParts = `submodule bread-parts { belongs-to bread { prefix b; } leaf crumb { type string; } }`;
+    const plainBread = `module bread { namespace "urn:bread"; prefix b; include bread-parts; leaf crust { type string; } }`;
+    const library = {
+      "ietf-yang-library:modules-state": {
+        module: [{
+          name: "bread", revision: "2024-01-01", namespace: "urn:bread", "conformance-type": "implement",
+          location: "https://host/s/bread.yang",
+          submodule: [{ name: "bread-parts", revision: "2024-01-01", location: "https://host/s/bread-parts.yang" }],
+        }],
+      },
+    };
+    const loader = createRestconfModuleLoader({
+      baseUrl: "https://host/restconf",
+      fetchImpl: fakeFetch(library, { "bread.yang": plainBread, "bread-parts.yang": breadParts }, calls),
+    });
+    const set = await resolveModuleSet([parseYang(plainBread)], loader);
+    expect(set.diagnostics).toEqual([]);
+    expect(calls.some(call => call.url === "https://host/s/bread-parts.yang")).toBe(true);
+  });
+
   it("loads submodules from the RFC 8525 nested submodule lists", async () => {
     const calls: Call[] = [];
     const breadParts = `submodule bread-parts { belongs-to bread { prefix b; } leaf crumb { type string; } }`;
@@ -145,8 +216,11 @@ describe("RESTCONF loader hardening (RFC 8040/8525)", () => {
       "ietf-yang-library:yang-library": {
         "module-set": [{
           name: "main",
-          module: [{ name: "bread", revision: "2024-01-01", namespace: "urn:bread", "conformance-type": "implement", location: "https://host/s/bread.yang" }],
-          submodule: [{ name: "bread-parts", revision: "2024-01-01", location: "https://host/s/bread-parts.yang" }],
+          module: [{
+            name: "bread", revision: "2024-01-01", namespace: "urn:bread", "conformance-type": "implement",
+            location: "https://host/s/bread.yang",
+            submodule: [{ name: "bread-parts", revision: "2024-01-01", location: "https://host/s/bread-parts.yang" }],
+          }],
         }],
       },
     };

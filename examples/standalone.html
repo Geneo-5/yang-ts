@@ -7115,7 +7115,7 @@ var YangEngine = (() => {
     const object = asRecord(payload);
     if (!object) throw new Error("YANG Library payload is not a JSON object");
     const modulesState = firstRecord(object, ["ietf-yang-library:modules-state", "modules-state"]);
-    if (modulesState) return { modules: rowsToEntries(modulesState["module"]), submodules: [] };
+    if (modulesState) return inventoryOfModuleRows(modulesState["module"]);
     const yangLibrary = firstRecord(object, ["ietf-yang-library:yang-library", "yang-library"]);
     if (yangLibrary) {
       const sets = yangLibrary["module-set"];
@@ -7123,14 +7123,32 @@ var YangEngine = (() => {
       return setList.reduce((inventory, set) => {
         const record = asRecord(set);
         if (!record) return inventory;
+        const importOnly = rowsToEntries(record["import-only-module"]).map((entry) => entry.conformance ? entry : { ...entry, conformance: "import" });
         return {
-          modules: [...inventory.modules, ...rowsToEntries(record["module"])],
-          submodules: [...inventory.submodules, ...rowsToEntries(record["submodule"])]
+          modules: [...inventory.modules, ...rowsToEntries(record["module"]), ...importOnly],
+          submodules: [
+            ...inventory.submodules,
+            ...submodulesOfRows(record["module"]),
+            ...submodulesOfRows(record["import-only-module"])
+          ]
         };
       }, { modules: [], submodules: [] });
     }
-    if (object["module"]) return { modules: rowsToEntries(object["module"]), submodules: rowsToEntries(object["submodule"]) };
+    if (object["module"]) {
+      const inventory = inventoryOfModuleRows(object["module"]);
+      return { modules: inventory.modules, submodules: [...inventory.submodules, ...rowsToEntries(object["submodule"])] };
+    }
     throw new Error("YANG Library payload has no module list (expected modules-state or yang-library module-set)");
+  }
+  function submodulesOfRows(rows) {
+    const list = Array.isArray(rows) ? rows : rows !== void 0 ? [rows] : [];
+    return list.flatMap((row) => {
+      const record = asRecord(row);
+      return record ? rowsToEntries(record["submodule"]) : [];
+    });
+  }
+  function inventoryOfModuleRows(rows) {
+    return { modules: rowsToEntries(rows), submodules: submodulesOfRows(rows) };
   }
   function joinUrl(base, path) {
     return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
