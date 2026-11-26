@@ -503,9 +503,15 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     // Nested nodes belong to the instantiating module too: only the grouping's
     // defining module resolves their type/prefix references, not their
     // namespace. Inherited when/if-feature keep propagating from the parent.
+    // RFC 7950 §6.2.1: definitions declared inside this data node are visible
+    // only to it and its descendants, so the node itself becomes a scope level
+    // for its children (innermost levels are searched first and shadow outer
+    // and top-level ones).
+    const kindScopesSymbols = ["container", "list", "grouping", "rpc", "action", "notification", "input", "output"].includes(kind);
+    const childGroupingStack = kindScopesSymbols ? [...groupingStack, { statement, document: sourceModule }] : groupingStack;
     node.children = normalizeChoiceChildren(
       dataChildren(statement).flatMap(child =>
-        makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatureRequirements, instantiatingModule, sourceModule)),
+        makeNode(child, owner, path, config, childGroupingStack, nodeWhen, nodeFeatureRequirements, instantiatingModule, sourceModule)),
       node,
     );
     if (kind === "list") {
@@ -733,11 +739,15 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   ) => {
     if (statement.keyword !== "rpc" && statement.keyword !== "action" && statement.keyword !== "notification") return;
     const operationPath = `${parentPath}/${statement.argument ?? ""}`;
+    // RFC 7950 §6.2.1: the operation and its input/output each scope the
+    // definitions declared inside them to themselves and their descendants.
+    const operationScope: ScopeLevel[] = [{ statement, document: sourceModule }];
     const compileScope = (scope: YangStatement | undefined, name: "input" | "output") => scope
-      ? dataChildren(scope).flatMap(child => makeNode(child, module, `${operationPath}/${name}`, true, [], [], [], module, sourceModule))
+      ? dataChildren(scope).flatMap(child => makeNode(child, module, `${operationPath}/${name}`, true,
+        [...operationScope, { statement: scope, document: sourceModule }], [], [], module, sourceModule))
       : [];
     const data = statement.keyword === "notification"
-      ? dataChildren(statement).flatMap(child => makeNode(child, module, operationPath, false, [], [], [], module, sourceModule))
+      ? dataChildren(statement).flatMap(child => makeNode(child, module, operationPath, false, operationScope, [], [], module, sourceModule))
       : [];
     operations.push({
       kind: statement.keyword, name: statement.argument ?? "", module: module.argument, path: operationPath, source: statement,

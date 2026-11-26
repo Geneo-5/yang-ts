@@ -4777,8 +4777,10 @@ var YangEngine = (() => {
         source: statement,
         children: []
       };
+      const kindScopesSymbols = ["container", "list", "grouping", "rpc", "action", "notification", "input", "output"].includes(kind);
+      const childGroupingStack = kindScopesSymbols ? [...groupingStack, { statement, document: sourceModule }] : groupingStack;
       node.children = normalizeChoiceChildren(
-        dataChildren(statement).flatMap((child) => makeNode(child, owner, path, config, groupingStack, nodeWhen, nodeFeatureRequirements, instantiatingModule, sourceModule)),
+        dataChildren(statement).flatMap((child) => makeNode(child, owner, path, config, childGroupingStack, nodeWhen, nodeFeatureRequirements, instantiatingModule, sourceModule)),
         node
       );
       if (kind === "list") {
@@ -5027,8 +5029,19 @@ var YangEngine = (() => {
     const compileOperation = (module, statement, parentPath = "", parentSchemaPath = [], sourceModule = module) => {
       if (statement.keyword !== "rpc" && statement.keyword !== "action" && statement.keyword !== "notification") return;
       const operationPath = `${parentPath}/${statement.argument ?? ""}`;
-      const compileScope = (scope, name2) => scope ? dataChildren(scope).flatMap((child) => makeNode(child, module, `${operationPath}/${name2}`, true, [], [], [], module, sourceModule)) : [];
-      const data = statement.keyword === "notification" ? dataChildren(statement).flatMap((child) => makeNode(child, module, operationPath, false, [], [], [], module, sourceModule)) : [];
+      const operationScope = [{ statement, document: sourceModule }];
+      const compileScope = (scope, name2) => scope ? dataChildren(scope).flatMap((child) => makeNode(
+        child,
+        module,
+        `${operationPath}/${name2}`,
+        true,
+        [...operationScope, { statement: scope, document: sourceModule }],
+        [],
+        [],
+        module,
+        sourceModule
+      )) : [];
+      const data = statement.keyword === "notification" ? dataChildren(statement).flatMap((child) => makeNode(child, module, operationPath, false, operationScope, [], [], module, sourceModule)) : [];
       operations.push({
         kind: statement.keyword,
         name: statement.argument ?? "",
