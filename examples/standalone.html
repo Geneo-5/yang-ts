@@ -4661,7 +4661,7 @@ var YangEngine = (() => {
         const childScope = [...entry.scope, { statement: entry.statement, document: entry.document }];
         const features = [...inheritedFeatures, ...childrenOf(statement, "if-feature").map((item) => ({ module: owner.argument, expression: item.argument ?? "", source: item }))];
         if (options.enabledFeatures && !featureRequirementsEnabled(features)) return [];
-        const when = [...inheritedWhen, ...childrenOf(statement, "when")];
+        const when = [...inheritedWhen, ...childrenOf(statement, "when").map((item) => ({ statement: item, holder: parentPath }))];
         const expanded = dataChildren(entry.statement).flatMap((child) => makeNode(child, entry.document, parentPath, inheritedConfig, childScope, when, features, instantiatingModule, entry.document));
         const refineAllowed = {
           // RFC 7950 §7.13.2: a refine may change a leaf's mandatory statement.
@@ -4720,7 +4720,7 @@ var YangEngine = (() => {
             report("invalid-augment-target", `Node '${target.path}' of kind '${target.kind}' cannot be augmented`, owner, augment);
             continue;
           }
-          const augmentWhen = [...when, ...childrenOf(augment, "when")];
+          const augmentWhen = [...when, ...childrenOf(augment, "when").map((item) => ({ statement: item, holder: target.path }))];
           const augmentFeatures = [...features, ...childrenOf(augment, "if-feature").map((feature) => ({ module: owner.argument, expression: feature.argument ?? "", source: feature }))];
           if (options.enabledFeatures && !featureRequirementsEnabled(augmentFeatures)) continue;
           const additions = normalizeChoiceChildren(
@@ -4751,7 +4751,7 @@ var YangEngine = (() => {
       const configStatement = childOf(statement, "config")?.argument;
       const config = configStatement === "false" ? false : configStatement === "true" ? true : inheritedConfig;
       const keys = (childOf(statement, "key")?.argument ?? "").split(/\s+/).filter(Boolean);
-      const nodeWhen = [...inheritedWhen, ...childrenOf(statement, "when")];
+      const nodeWhen = [...inheritedWhen, ...childrenOf(statement, "when").map((item) => ({ statement: item, holder: path }))];
       const nodeFeatures = nodeFeatureRequirements.map((requirement) => requirement.expression);
       const typeStatement = childOf(statement, "type");
       const resolvedType = typeStatement ? resolveType2(sourceModule, typeStatement, [], groupingStack) : void 0;
@@ -4769,7 +4769,8 @@ var YangEngine = (() => {
         typedefChain: resolvedType?.chain ?? [],
         typedefChainModules: resolvedType?.chainModules ?? [],
         must: childrenOf(statement, "must"),
-        whenConstraints: nodeWhen,
+        whenConstraints: nodeWhen.map((origin) => origin.statement),
+        whenHolders: nodeWhen.map((origin) => origin.holder),
         ifFeatures: nodeFeatures,
         featureRequirements: nodeFeatureRequirements.map(({ module, expression }) => ({ module, expression })),
         properties: statement.children.reduce((properties, child) => {
@@ -4826,6 +4827,7 @@ var YangEngine = (() => {
           typedefChainModules: [],
           must: [],
           whenConstraints: [],
+          whenHolders: [],
           ifFeatures: [],
           featureRequirements: [],
           properties: {},
@@ -4894,7 +4896,7 @@ var YangEngine = (() => {
           }
           continue;
         }
-        const augmentWhen = childrenOf(item.statement, "when");
+        const augmentWhen = childrenOf(item.statement, "when").map((item2) => ({ statement: item2, holder: target.path }));
         const augmentFeatures = childrenOf(item.statement, "if-feature").map((feature) => ({ module: item.module.argument, expression: feature.argument ?? "", source: feature }));
         if (options.enabledFeatures && !featureRequirementsEnabled(augmentFeatures)) {
           pending.splice(index, 1);
@@ -5102,7 +5104,7 @@ var YangEngine = (() => {
         }
         return false;
       });
-      const additions = augmentChildren.flatMap((child) => makeNode(child, augment.module, targetPath, inheritedConfig, [], childrenOf(augment.statement, "when"), childrenOf(augment.statement, "if-feature").map((feature) => ({ module: augment.module.argument, expression: feature.argument ?? "", source: feature })), augment.module, augment.source));
+      const additions = augmentChildren.flatMap((child) => makeNode(child, augment.module, targetPath, inheritedConfig, [], childrenOf(augment.statement, "when").map((item) => ({ statement: item, holder: targetPath })), childrenOf(augment.statement, "if-feature").map((feature) => ({ module: augment.module.argument, expression: feature.argument ?? "", source: feature })), augment.module, augment.source));
       for (const addition of additions) {
         if (targetNodes.some((child) => child.module === addition.module && child.name === addition.name)) {
           report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${targetPath}'`, augment.module, addition.source);
@@ -5796,25 +5798,46 @@ var YangEngine = (() => {
         const schemaNode = schemaNodeForElement(schema, element);
         if (!schemaNode) return [];
         const moduleName = schemaNode.module;
-        const evaluate = (kind, statement) => {
-          const context = kind === "when" && !ownWhens.has(statement) && element.parentElement ? element.parentElement : element;
+        const contextForWhen = (holder) => {
+          let current = element;
+          while (current && current.nodeType === 1) {
+            const candidate = schemaNodeForElement(schema, current);
+            if (candidate?.path === holder) return current;
+            current = current.parentNode;
+          }
+          return void 0;
+        };
+        const evaluate = (kind, statement, holder) => {
+          if (kind === "when") {
+            const context = holder ? contextForWhen(holder) : element;
+            if (!context) return finish(kind, statement, "indeterminate");
+            const compiled2 = compiledFor(moduleName, statement.argument ?? "");
+            if (!compiled2) return finish(kind, statement, "indeterminate");
+            try {
+              return finish(kind, statement, compiled2.evaluateBoolean({
+                node: context,
+                // The evaluator keys custom functions by local name only, so the
+                // per-module library also answers `yang:`-prefixed calls.
+                functions: libraryFor(moduleName)
+              }) ? "met" : "unmet");
+            } catch {
+              return finish(kind, statement, "indeterminate");
+            }
+          }
           const compiled = compiledFor(moduleName, statement.argument ?? "");
           if (!compiled) return finish(kind, statement, "indeterminate");
           try {
             return finish(kind, statement, compiled.evaluateBoolean({
-              node: context,
-              // The evaluator keys custom functions by local name only, so the
-              // per-module library also answers `yang:`-prefixed calls.
+              node: element,
               functions: libraryFor(moduleName)
             }) ? "met" : "unmet");
           } catch {
             return finish(kind, statement, "indeterminate");
           }
         };
-        const ownWhens = new Set(childrenOf(schemaNode.source, "when"));
         return [
           ...schemaNode.must.map((statement) => evaluate("must", statement)),
-          ...schemaNode.whenConstraints.map((statement) => evaluate("when", statement))
+          ...schemaNode.whenConstraints.map((statement, index) => evaluate("when", statement, schemaNode.whenHolders[index]))
         ];
       }
     };

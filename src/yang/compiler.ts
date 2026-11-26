@@ -46,6 +46,8 @@ export interface CompiledSchemaNode {
   typedefChainModules: readonly string[];
   must: readonly YangStatement[];
   whenConstraints: readonly YangStatement[];
+  /** Schema path of the node each whenConstraints entry applies to (same order). */
+  whenHolders: readonly string[];
   ifFeatures: readonly string[];
   featureRequirements: readonly { module: string; expression: string }[];
   properties: Record<string, YangStatement[]>;
@@ -363,9 +365,11 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   };
   for (const module of modules) for (const source of [module, ...submodulesFor(module)]) validateCardinality(source);
 
+  /** A `when` statement and the schema path of the node it constrains (RFC 7950 §7.21.5 context). */
+  type WhenOrigin = { statement: YangStatement; holder: string };
   const makeNode = (
     statement: YangStatement, owner: YangModule, parentPath: string, inheritedConfig: boolean,
-    groupingStack: readonly ScopeLevel[] = [], inheritedWhen: readonly YangStatement[] = [],
+    groupingStack: readonly ScopeLevel[] = [], inheritedWhen: readonly WhenOrigin[] = [],
     inheritedFeatures: readonly { module: string; expression: string; source: YangStatement }[] = [],
     instantiatingModule: YangModule = owner,
     // Prefixes of type/uses references resolve in the document that carries the
@@ -399,7 +403,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       const childScope = [...entry.scope, { statement: entry.statement, document: entry.document }];
       const features = [...inheritedFeatures, ...childrenOf(statement, "if-feature").map(item => ({ module: owner.argument, expression: item.argument ?? "", source: item }))];
       if (options.enabledFeatures && !featureRequirementsEnabled(features)) return [];
-      const when = [...inheritedWhen, ...childrenOf(statement, "when")];
+      const when = [...inheritedWhen, ...childrenOf(statement, "when").map(item => ({ statement: item, holder: parentPath }))];
       const expanded = dataChildren(entry.statement).flatMap(child => makeNode(child, entry.document, parentPath, inheritedConfig, childScope, when, features, instantiatingModule, entry.document));
       const refineAllowed: Record<string, ReadonlySet<string>> = {
         // RFC 7950 §7.13.2: a refine may change a leaf's mandatory statement.
@@ -452,7 +456,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
           report("invalid-augment-target", `Node '${target.path}' of kind '${target.kind}' cannot be augmented`, owner, augment);
           continue;
         }
-        const augmentWhen = [...when, ...childrenOf(augment, "when")];
+        const augmentWhen = [...when, ...childrenOf(augment, "when").map(item => ({ statement: item, holder: target.path }))];
         const augmentFeatures = [...features, ...childrenOf(augment, "if-feature").map(feature => ({ module: owner.argument, expression: feature.argument ?? "", source: feature }))];
         if (options.enabledFeatures && !featureRequirementsEnabled(augmentFeatures)) continue;
         const additions = normalizeChoiceChildren(
@@ -486,7 +490,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     const configStatement = childOf(statement, "config")?.argument;
     const config = configStatement === "false" ? false : configStatement === "true" ? true : inheritedConfig;
     const keys = (childOf(statement, "key")?.argument ?? "").split(/\s+/).filter(Boolean);
-    const nodeWhen = [...inheritedWhen, ...childrenOf(statement, "when")];
+    const nodeWhen = [...inheritedWhen, ...childrenOf(statement, "when").map(item => ({ statement: item, holder: path }))];
     const nodeFeatures = nodeFeatureRequirements.map(requirement => requirement.expression);
     const typeStatement = childOf(statement, "type");
     const resolvedType = typeStatement ? resolveType(sourceModule, typeStatement, [], groupingStack) : undefined;
@@ -499,7 +503,8 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       typedefChain: resolvedType?.chain ?? [],
       typedefChainModules: resolvedType?.chainModules ?? [],
       must: childrenOf(statement, "must"),
-      whenConstraints: nodeWhen,
+      whenConstraints: nodeWhen.map(origin => origin.statement),
+      whenHolders: nodeWhen.map(origin => origin.holder),
       ifFeatures: nodeFeatures,
       featureRequirements: nodeFeatureRequirements.map(({ module, expression }) => ({ module, expression })),
       properties: statement.children.reduce<Record<string, YangStatement[]>>((properties, child) => {
@@ -556,7 +561,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       rebase(child, child.path, `${path}/${child.name}`);
       return {
         kind: "case", name: child.name, module: child.module, namespace: child.namespace,
-        path, config: child.config, keys: [], typedefChain: [], typedefChainModules: [], must: [], whenConstraints: [],
+        path, config: child.config, keys: [], typedefChain: [], typedefChainModules: [], must: [], whenConstraints: [], whenHolders: [],
         ifFeatures: [], featureRequirements: [], properties: {}, deviations: [], source: child.source,
         children: [child],
       };
@@ -617,7 +622,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
         }
         continue;
       }
-      const augmentWhen = childrenOf(item.statement, "when");
+      const augmentWhen = childrenOf(item.statement, "when").map(item2 => ({ statement: item2, holder: target.path }));
       const augmentFeatures = childrenOf(item.statement, "if-feature").map(feature => ({ module: item.module.argument, expression: feature.argument ?? "", source: feature }));
       if (options.enabledFeatures && !featureRequirementsEnabled(augmentFeatures)) { pending.splice(index, 1); madeProgress = true; continue; }
       if (!["container", "list", "choice", "case"].includes(target.kind)) {
@@ -811,7 +816,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       }
       return false;
     });
-    const additions = augmentChildren.flatMap(child => makeNode(child, augment.module, targetPath, inheritedConfig, [], childrenOf(augment.statement, "when"), childrenOf(augment.statement, "if-feature").map(feature => ({ module: augment.module.argument, expression: feature.argument ?? "", source: feature })), augment.module, augment.source));
+    const additions = augmentChildren.flatMap(child => makeNode(child, augment.module, targetPath, inheritedConfig, [], childrenOf(augment.statement, "when").map(item => ({ statement: item, holder: targetPath })), childrenOf(augment.statement, "if-feature").map(feature => ({ module: augment.module.argument, expression: feature.argument ?? "", source: feature })), augment.module, augment.source));
     for (const addition of additions) {
       if (targetNodes.some(child => child.module === addition.module && child.name === addition.name)) {
         report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${targetPath}'`, augment.module, addition.source);

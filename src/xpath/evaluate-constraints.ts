@@ -66,28 +66,53 @@ export function createConstraintEvaluator(schema: CompiledYangSchema): Constrain
       const schemaNode = schemaNodeForElement(schema, element);
       if (!schemaNode) return [];
       const moduleName = schemaNode.module;
-      const evaluate = (kind: "must" | "when", statement: YangStatement): ConstraintEvaluation => {
-        const context = kind === "when" && !ownWhens.has(statement) && element.parentElement ? element.parentElement : element;
+      // RFC 7950 section 7.21.5: a `when`'s context node is the element of the
+      // schema node it applies to — the node itself for its own `when`; for
+      // ones inherited from a uses, an augment or an ancestor data node, the
+      // element resolving to the recorded holder path. An ancestor-declared
+      // `when` evaluated at the immediate parent rewrites `../` expressions
+      // against the wrong level of the tree.
+      const contextForWhen = (holder: string): Node | undefined => {
+        let current: Node | null = element;
+        while (current && current.nodeType === 1) {
+          const candidate = schemaNodeForElement(schema, current as Element);
+          if (candidate?.path === holder) return current;
+          current = current.parentNode;
+        }
+        return undefined;
+      };
+      const evaluate = (kind: "must" | "when", statement: YangStatement, holder?: string): ConstraintEvaluation => {
+        if (kind === "when") {
+          const context = holder ? contextForWhen(holder) : element;
+          if (!context) return finish(kind, statement, "indeterminate");
+          const compiled = compiledFor(moduleName, statement.argument ?? "");
+          if (!compiled) return finish(kind, statement, "indeterminate");
+          try {
+            return finish(kind, statement, compiled.evaluateBoolean({
+              node: context,
+              // The evaluator keys custom functions by local name only, so the
+              // per-module library also answers `yang:`-prefixed calls.
+              functions: libraryFor(moduleName),
+            }) ? "met" : "unmet");
+          } catch {
+            return finish(kind, statement, "indeterminate");
+          }
+        }
         const compiled = compiledFor(moduleName, statement.argument ?? "");
         if (!compiled) return finish(kind, statement, "indeterminate");
         try {
           return finish(kind, statement, compiled.evaluateBoolean({
-            node: context,
-            // The evaluator keys custom functions by local name only, so the
-            // per-module library also answers `yang:`-prefixed calls.
+            node: element,
             functions: libraryFor(moduleName),
           }) ? "met" : "unmet");
         } catch {
           return finish(kind, statement, "indeterminate");
         }
       };
-      // Whens inherited from an augment/uses/ancestor statement were
-      // introduced by the parent schema node, so the parent element is their
-      // context (e.g. an augment when evaluates at its target).
-      const ownWhens = new Set(childrenOf(schemaNode.source, "when"));
       return [
         ...schemaNode.must.map(statement => evaluate("must", statement)),
-        ...schemaNode.whenConstraints.map(statement => evaluate("when", statement)),
+        ...schemaNode.whenConstraints.map((statement, index) =>
+          evaluate("when", statement, schemaNode.whenHolders[index])),
       ];
     },
   };

@@ -142,3 +142,44 @@ describe("leafref declared through a typedef across modules", () => {
     expect(result.issues.map(item => item.code)).not.toContain("leafref-dangling");
   });
 });
+
+/** Stage 7b P0 (ROADMAP §143): inherited `when` constraints evaluate at their declarer (RFC 7950 §7.21.5). */
+describe("when inherited through several levels", () => {
+  it("evaluates an ancestor's when at the ancestor, not at the immediate parent", async () => {
+    const schema = await compile(`module whendep {
+      namespace "urn:whendep"; prefix w;
+      container top {
+        container a {
+          when "../mode = 'on'";
+          container b { leaf c { type string; } }
+        }
+        leaf mode { type string; }
+      }
+    }`);
+    // Valid data: mode='on' satisfies a's when; b and c inherit it. Pre-fix
+    // the when is re-evaluated at <b>/<c>'s immediate parent where `../mode`
+    // misses, reporting false when-unexpected-node.
+    const result = validateDataTree(schema, parseXml(`<top xmlns="urn:whendep"><mode>on</mode><a><b><c>x</c></b></a></top>`));
+    expect(result).toMatchObject({ status: "valid", issues: [] });
+    expect(validateDataTree(schema, parseXml(`<top xmlns="urn:whendep"><mode>off</mode><a><b><c>x</c></b></a></top>`)))
+      .toEqual(expect.objectContaining({ status: "invalid" }));
+  });
+
+  it("evaluates a uses' when at the node hosting the uses, at any depth", async () => {
+    const schema = await compile(`module whenuses {
+      namespace "urn:whenuses"; prefix w;
+      grouping payload { container inner { container deeper { leaf level { type string; } } } }
+      container host {
+        container core {
+          leaf flag { type boolean; }
+          uses payload { when "flag = 'true'"; }
+        }
+      }
+    }`);
+    // The uses' when applies at <core>; <deeper> inherits it from two levels
+    // up, so it must not be re-evaluated at <inner> where `../flag` misses.
+    const result = validateDataTree(schema, parseXml(
+      `<host xmlns="urn:whenuses"><core><flag>true</flag><inner><deeper><level>hi</level></deeper></inner></core></host>`));
+    expect(result).toMatchObject({ status: "valid", issues: [] });
+  });
+});
