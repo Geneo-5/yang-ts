@@ -48,7 +48,8 @@
     "next-static:e2e:basepath": "NEXT_PUBLIC_BASE_PATH=/yang-console npm run next-static:build && NEXT_PUBLIC_BASE_PATH=/yang-console npm run next-static:check && NEXT_PUBLIC_BASE_PATH=/yang-console node scripts/next-static-e2e.mjs",
     "pretest": "npm run build",
     "test:watch": "vitest",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "dev": "node scripts/dev-server.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.10",
