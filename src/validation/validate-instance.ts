@@ -71,10 +71,14 @@ export function validateDataTree(
     Array.from(element.childNodes)
       .filter((child): child is Element =>
         isElement(child) && child.localName === schemaNode.name && child.namespaceURI === schemaNode.namespace);
+  // A choice member may itself be a choice (RFC 7950 §7.9.2): its elements
+  // are its nested case members', not an element of its own name.
+  const choiceMemberElements = (element: Element, member: CompiledSchemaNode): Element[] =>
+    member.kind === "choice" ? choiceEntries(element, member) : elementsOf(element, member);
   const choiceEntries = (element: Element, choice: CompiledSchemaNode): Element[] =>
     choice.children.flatMap(caseNode => caseNode.kind === "case" ? caseNode.children : [caseNode])
-      .filter(child => child.kind !== "choice" && child.kind !== "case")
-      .flatMap(child => elementsOf(element, child));
+      .filter(child => child.kind !== "case")
+      .flatMap(child => choiceMemberElements(element, child));
 
   function visitElement(element: Element, schemaNode: CompiledSchemaNode): void {
     if (options.signal?.aborted) { cancelled = true; return; }
@@ -89,21 +93,7 @@ export function validateDataTree(
     }
     for (const child of schemaNode.children) {
       if (child.kind === "choice") {
-        // RFC 7950 section 7.9: instance nodes sit directly under the parent,
-        // so descent must continue through choice/case. A mandatory leaf
-        // inside a case only applies when that case is the active one.
-        for (const caseNode of child.children) {
-          const members = caseNode.kind === "case" ? caseNode.children : [caseNode];
-          const active = members.some(member => member.kind !== "choice" && member.kind !== "case"
-            && elementsOf(element, member).length > 0);
-          for (const member of members) {
-            visitChildNode(element, member, { enforceAbsentRequirements: active });
-          }
-        }
-        if (!choiceEntries(element, child).length && child.properties.mandatory?.[0]?.argument === "true") {
-          if (child.whenConstraints.length) { indeterminate = true; continue; }
-          issue("missing-choice", child, `choice '${child.name}' requires one case`);
-        }
+        visitChoiceNodes(element, child, true);
         continue;
       }
       if (child.kind === "case") continue;
@@ -111,7 +101,36 @@ export function validateDataTree(
     }
   }
 
+  /**
+   * RFC 7950 sections 7.9/7.9.2: choice and case hold no instance data; their
+   * members sit directly under the parent element, and a case member may
+   * itself be a choice whose cases activate only when the enclosing case does.
+   * `enforced` is set when the choice is required to have a case selected: at
+   * the top level always, and for a nested choice only when its enclosing
+   * case is the active one.
+   */
+  function visitChoiceNodes(element: Element, choice: CompiledSchemaNode, enforced: boolean): void {
+    if (options.signal?.aborted) { cancelled = true; return; }
+    for (const caseNode of choice.children) {
+      const members = caseNode.kind === "case" ? caseNode.children : [caseNode];
+      const active = members.some(member => choiceMemberElements(element, member).length > 0);
+      for (const member of members) {
+        visitChildNode(element, member, { enforceAbsentRequirements: active });
+      }
+    }
+    if (enforced && !choiceEntries(element, choice).length && choice.properties.mandatory?.[0]?.argument === "true") {
+      if (choice.whenConstraints.length) { indeterminate = true; return; }
+      issue("missing-choice", choice, `choice '${choice.name}' requires one case`);
+    }
+  }
+
   function visitChildNode(element: Element, child: CompiledSchemaNode, options: { enforceAbsentRequirements: boolean }): void {
+    if (child.kind === "choice") {
+      // A choice reached through the children walk (nested in a case): its
+      // case-exclusivity applies only where its enclosing site is active.
+      visitChoiceNodes(element, child, options.enforceAbsentRequirements);
+      return;
+    }
     const entries = elementsOf(element, child);
     if (entries.length > 1 && child.kind !== "list" && child.kind !== "leaf-list") {
       issue("too-many-elements", child, `node '${child.path}' may appear at most once, found ${entries.length}`);

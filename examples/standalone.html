@@ -5876,7 +5876,8 @@ var YangEngine = (() => {
       issues.push({ code, path: schemaNode.path, message });
     };
     const elementsOf = (element, schemaNode) => Array.from(element.childNodes).filter((child) => isElement2(child) && child.localName === schemaNode.name && child.namespaceURI === schemaNode.namespace);
-    const choiceEntries = (element, choice) => choice.children.flatMap((caseNode) => caseNode.kind === "case" ? caseNode.children : [caseNode]).filter((child) => child.kind !== "choice" && child.kind !== "case").flatMap((child) => elementsOf(element, child));
+    const choiceMemberElements = (element, member) => member.kind === "choice" ? choiceEntries(element, member) : elementsOf(element, member);
+    const choiceEntries = (element, choice) => choice.children.flatMap((caseNode) => caseNode.kind === "case" ? caseNode.children : [caseNode]).filter((child) => child.kind !== "case").flatMap((child) => choiceMemberElements(element, child));
     function visitElement(element, schemaNode) {
       if (options.signal?.aborted) {
         cancelled = true;
@@ -5896,27 +5897,38 @@ var YangEngine = (() => {
       }
       for (const child of schemaNode.children) {
         if (child.kind === "choice") {
-          for (const caseNode of child.children) {
-            const members = caseNode.kind === "case" ? caseNode.children : [caseNode];
-            const active = members.some((member) => member.kind !== "choice" && member.kind !== "case" && elementsOf(element, member).length > 0);
-            for (const member of members) {
-              visitChildNode(element, member, { enforceAbsentRequirements: active });
-            }
-          }
-          if (!choiceEntries(element, child).length && child.properties.mandatory?.[0]?.argument === "true") {
-            if (child.whenConstraints.length) {
-              indeterminate = true;
-              continue;
-            }
-            issue("missing-choice", child, `choice '${child.name}' requires one case`);
-          }
+          visitChoiceNodes(element, child, true);
           continue;
         }
         if (child.kind === "case") continue;
         visitChildNode(element, child, { enforceAbsentRequirements: true });
       }
     }
+    function visitChoiceNodes(element, choice, enforced) {
+      if (options.signal?.aborted) {
+        cancelled = true;
+        return;
+      }
+      for (const caseNode of choice.children) {
+        const members = caseNode.kind === "case" ? caseNode.children : [caseNode];
+        const active = members.some((member) => choiceMemberElements(element, member).length > 0);
+        for (const member of members) {
+          visitChildNode(element, member, { enforceAbsentRequirements: active });
+        }
+      }
+      if (enforced && !choiceEntries(element, choice).length && choice.properties.mandatory?.[0]?.argument === "true") {
+        if (choice.whenConstraints.length) {
+          indeterminate = true;
+          return;
+        }
+        issue("missing-choice", choice, `choice '${choice.name}' requires one case`);
+      }
+    }
     function visitChildNode(element, child, options2) {
+      if (child.kind === "choice") {
+        visitChoiceNodes(element, child, options2.enforceAbsentRequirements);
+        return;
+      }
       const entries = elementsOf(element, child);
       if (entries.length > 1 && child.kind !== "list" && child.kind !== "leaf-list") {
         issue("too-many-elements", child, `node '${child.path}' may appear at most once, found ${entries.length}`);

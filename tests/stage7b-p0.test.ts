@@ -183,3 +183,57 @@ describe("when inherited through several levels", () => {
     expect(result).toMatchObject({ status: "valid", issues: [] });
   });
 });
+
+/** Stage 7b P0 (ROADMAP §144): a `choice` nested in a `case` (RFC 7950 §7.9.2). */
+describe("choice nested in a case", () => {
+  const instance = (inner: string) => parseXml(`<top xmlns="urn:nested-choice">${inner}</top>`);
+  const schemaModel = `module nested-choice {
+    namespace "urn:nested-choice"; prefix n;
+    container top {
+      choice transport {
+        case wired {
+          leaf mode { type string; }
+          choice wiring {
+            mandatory true;
+            case copper {
+              leaf gauge { type string; must "starts-with(., 'AWG')"; }
+            }
+            case optical {
+              leaf wavelength { type string; }
+            }
+          }
+        }
+        case wireless { leaf band { type string; } }
+      }
+    }
+  }`;
+
+  it("visits the members of a nested choice, so their must surfaces", async () => {
+    const schema = await compile(schemaModel);
+    // Case `wired` is active through <mode>, nested case `copper` through
+    // <gauge>; its must is violated. Pre-fix the nested choice's members are
+    // never visited and the violated must goes unreported.
+    const result = validateDataTree(schema, instance("<mode>copper</mode><gauge>SWG-12</gauge>"));
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "must-unmet", path: "/top/transport/wired/wiring/copper/gauge",
+    }));
+    expect(validateDataTree(schema, instance("<mode>copper</mode><gauge>AWG-12</gauge>")).status).toBe("valid");
+  });
+
+  it("reports missing-choice, not missing-mandatory, for an absent mandatory nested choice in an active case", async () => {
+    const schema = await compile(schemaModel);
+    // Case `wired` is active through <mode>, but no case of the mandatory
+    // nested `wiring` choice is selected.
+    const result = validateDataTree(schema, instance("<mode>copper</mode>"));
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "missing-choice", path: "/top/transport/wired/wiring",
+    }));
+    expect(result.issues.map(issue => issue.code)).not.toContain("missing-mandatory");
+  });
+
+  it("does not require the nested choice when the enclosing case is inactive", async () => {
+    const schema = await compile(schemaModel);
+    const result = validateDataTree(schema, instance("<band>2.4GHz</band>"));
+    expect(result).toMatchObject({ status: "valid", issues: [] });
+  });
+});
