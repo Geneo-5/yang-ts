@@ -300,10 +300,29 @@ l'UI doit les considérer comme **peut-être invalides**, pas valides. Enfin,
 avant envoi.
 
 **Limites connues (honnêteté)** : les notifications ne sont pas modélisées
-(leur payload arrive par flux, pas par formulaire) ; l'exclusion mutuelle des
-cases actifs s'évalue côté UI/validateur via `model.choices` ; les champs sous
-`case` restent `pending` sur leurs vérifications croisées `leafref` s'ils sont
+(leur payload arrive par flux, pas par formulaire) ; les champs sous `case`
+restent `pending` sur leurs vérifications croisées `leafref` s'ils sont
 trouvés par chemin nu.
+
+L'**API de binding** (§212 de la roadmap) assiste l'UI pour la sélection du
+case actif et le ciblage d'une entrée de liste, alignée sur le contrat de
+`formValuesToRestconfBody` (les entrées vivent à la liste `[*]`, chaque
+enregistrement clé par les chemins complets des champs enfants) :
+
+```ts
+import { activeCaseFields, activeRequiredValues, listEntryFields, listEntryValues, withListEntry } from "yang-browser-engine";
+
+const visible = activeCaseFields(model, new Map([["/conn/transport", "tls"]]));
+const requiredNow = activeRequiredValues(model, new Map([["/conn/transport", "tls"]]));
+const routeFields = listEntryFields(model, "/conn/routes/route[*]");
+const row = listEntryValues(values, "/conn/routes/route[*]", 1);
+const edited = withListEntry(values, "/conn/routes/route[*]", 1, { ...row, "/conn/routes/route[*]/target": "10.0.0.9" });
+```
+
+`activeCaseFields` retourne les champs hors choix + ceux du case actif ; un
+choix ou un case inconnu est une erreur de binding signalée. La carte de
+sélection accepte `undefined` (aucun case actif). `withListEntry` ne modifie
+jamais la carte d'entrée (snapshot immuable).
 
 ## 6. React (`yang-browser-engine/react`)
 

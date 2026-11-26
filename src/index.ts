@@ -36,6 +36,13 @@ export {
   canonicalFormOf,
 } from "./forms/form-model.js";
 export {
+  activeCaseFields,
+  activeRequiredValues,
+  listEntryFields,
+  listEntryValues,
+  withListEntry,
+} from "./forms/binding.js";
+export {
   formValuesToRestconfBody,
   formInputToRestconfBody,
   formPathToYangPathSegments,

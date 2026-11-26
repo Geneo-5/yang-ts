@@ -13,6 +13,7 @@ const DOCUMENTED_APIS = [
   "serializeCompiledSchema", "deserializeCompiledSchema", "CompiledSchemaFormatError",
   "buildAccessibleTree", "createConstraintEvaluator", "validateDataTree", "evaluateCandidates",
   "createFormModel", "validateFormValue", "canonicalFormOf",
+  "activeCaseFields", "activeRequiredValues", "listEntryFields", "listEntryValues", "withListEntry",
   "yangJsonToDocument", "documentToYangJson", "YangJsonError",
   "createRestconfModuleLoader", "findSchemaLibraryMismatches", "yangLibraryInventory",
   "nodeToRestconfDataPath", "nodeToRestconfDatastorePath", "nodeToXPath",

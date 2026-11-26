@@ -3898,6 +3898,8 @@ var YangEngine = (() => {
     RestconfRequestError: () => RestconfRequestError,
     YangJsonError: () => YangJsonError,
     YangSyntaxError: () => YangSyntaxError,
+    activeCaseFields: () => activeCaseFields,
+    activeRequiredValues: () => activeRequiredValues,
     buildAccessibleTree: () => buildAccessibleTree,
     canonicalFormOf: () => canonicalFormOf,
     capabilities: () => capabilities,
@@ -3922,6 +3924,8 @@ var YangEngine = (() => {
     formInputToRestconfBody: () => formInputToRestconfBody,
     formPathToYangPathSegments: () => formPathToYangPathSegments,
     formValuesToRestconfBody: () => formValuesToRestconfBody,
+    listEntryFields: () => listEntryFields,
+    listEntryValues: () => listEntryValues,
     nodeToRestconfDataPath: () => nodeToRestconfDataPath,
     nodeToRestconfDatastorePath: () => nodeToRestconfDatastorePath,
     nodeToXPath: () => nodeToXPath,
@@ -3933,6 +3937,7 @@ var YangEngine = (() => {
     serializeCompiledSchema: () => serializeCompiledSchema,
     validateDataTree: () => validateDataTree,
     validateFormValue: () => validateFormValue,
+    withListEntry: () => withListEntry,
     yangJsonToDocument: () => yangJsonToDocument,
     yangLibraryInventory: () => yangLibraryInventory
   });
@@ -7583,6 +7588,64 @@ var YangEngine = (() => {
   function sortByBitPosition(field, selected) {
     const positions = new Map(field.restrictions.bits.map((bit) => [bit.name, bit.position]));
     return selected.slice().sort((left, right) => (positions.get(left) ?? 0) - (positions.get(right) ?? 0));
+  }
+
+  // src/forms/binding.ts
+  function choicesOf(model) {
+    const choices = /* @__PURE__ */ new Map();
+    for (const choice of model.choices) {
+      choices.set(choice.path, new Map(choice.cases.map((casus) => [casus.name, casus.name])));
+    }
+    return choices;
+  }
+  function activeCaseFields(model, selected = /* @__PURE__ */ new Map()) {
+    const known = choicesOf(model);
+    for (const [choicePath, caseName] of selected) {
+      const choice = known.get(choicePath);
+      if (!choice) throw new Error(`Unknown choice '${choicePath}' (form model has: ${[...known.keys()].join(", ") || "none"})`);
+      if (caseName && !choice.has(caseName)) {
+        throw new Error(`Unknown case '${caseName}' for choice '${choicePath}' (form model has: ${[...choice.keys()].join(", ") || "none"})`);
+      }
+    }
+    return model.fields.filter((field) => field.casePath === void 0 || field.caseName === void 0 || (selected.get(field.casePath) ?? "") === field.caseName);
+  }
+  function activeRequiredValues(model, selected = /* @__PURE__ */ new Map()) {
+    const required = model.fields.filter((field) => field.required && field.casePath === void 0).map((field) => field.path);
+    for (const choice of model.choices) {
+      const caseName = selected.get(choice.path);
+      if (!caseName) continue;
+      const casus = choice.cases.find((candidat) => candidat.name === caseName);
+      if (casus) required.push(...casus.requiredFieldPaths);
+    }
+    return required;
+  }
+  function listEntryFields(model, listPath) {
+    const prefix = listPath.endsWith("/") ? listPath : `${listPath}/`;
+    const fields = model.fields.filter((field) => field.path.startsWith(prefix));
+    if (!fields.length) {
+      throw new Error(`No form fields under '${listPath}' (unknown or childless list)`);
+    }
+    return fields;
+  }
+  function listEntryValues(values, listPath, index) {
+    const entries = values[listPath];
+    if (entries === void 0) return {};
+    if (!Array.isArray(entries)) {
+      throw new Error(`List value for '${listPath}' must be an array of entry records`);
+    }
+    return entries[index] ?? {};
+  }
+  function withListEntry(values, listPath, index, entry) {
+    const entries = values[listPath] ?? [];
+    if (!Array.isArray(entries)) {
+      throw new Error(`List value for '${listPath}' must be an array of entry records`);
+    }
+    if (index > entries.length) {
+      throw new Error(`Entry index ${index} is out of range for '${listPath}' (${entries.length} entries; append at ${entries.length})`);
+    }
+    const next = entries.slice();
+    next[index] = entry;
+    return { ...values, [listPath]: next };
   }
 
   // src/forms/restconf-body.ts
