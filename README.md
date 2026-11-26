@@ -127,6 +127,8 @@ const schema = deserializeCompiledSchema(payload); // → CompiledYangSchema
 
 `deserializeCompiledSchema` throws `CompiledSchemaFormatError` with a `code` (`format`, `version`, `structure`) when the artifact is stale or corrupt — recompile with the matching release. Parse errors, module-set diagnostics and compile diagnostics make the CLI exit 2 and write nothing.
 
+For devices whose models are not known at build time, `createRestconfModuleLoader` fetches the device's YANG Library and compiles in the browser. Check a precompiled bundle against the device before using it: `findSchemaLibraryMismatches(schema, yangLibraryInventory(payload))` returns the actionable differences (revision drift, modules the device dropped, `implement` modules the bundle lacks). The page chooses precompiled or discovered explicitly — a non-empty mismatch list is a decision, not an error the engine makes for you.
+
 ## Browser example
 
 After building, serve the repository root over HTTP and open [`examples/browser-usage.html`](./examples/browser-usage.html). It parses the Sysrepo oven model in the browser, populates the `insert-food` timing enum, validates the selected value, and previews the corresponding RESTCONF RPC request. The example does not send the request, resolve typedefs, apply augments, or evaluate `must`/`when` constraints.

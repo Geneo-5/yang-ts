@@ -3912,6 +3912,7 @@ var YangEngine = (() => {
     createRestconfUpdateRequest: () => createRestconfUpdateRequest,
     deserializeCompiledSchema: () => deserializeCompiledSchema,
     evaluateCandidates: () => evaluateCandidates,
+    findSchemaLibraryMismatches: () => findSchemaLibraryMismatches,
     nodeToRestconfDataPath: () => nodeToRestconfDataPath,
     nodeToRestconfDatastorePath: () => nodeToRestconfDatastorePath,
     nodeToXPath: () => nodeToXPath,
@@ -7638,6 +7639,45 @@ var YangEngine = (() => {
         return entry ? sourceText(entry) : void 0;
       }
     };
+  }
+
+  // src/restconf/schema-mismatch.ts
+  var revisionOf3 = (module) => childOf(module, "revision")?.argument || void 0;
+  function findSchemaLibraryMismatches(schema, inventory) {
+    const libraryByModule = new Map(inventory.modules.map((entry) => [entry.name, entry]));
+    const libraryBySubmodule = new Map(inventory.submodules.map((entry) => [entry.name, entry]));
+    const mismatches = [];
+    const compare = (name2, schemaRevision, libraryRevision) => {
+      if (schemaRevision === void 0 && libraryRevision === void 0) return;
+      if (schemaRevision !== void 0 && libraryRevision === void 0) {
+        mismatches.push({ name: name2, kind: "only-in-schema", schemaRevision });
+        return;
+      }
+      if (schemaRevision === void 0 && libraryRevision !== void 0) {
+        mismatches.push({ name: name2, kind: "only-in-library", libraryRevision });
+        return;
+      }
+      if (schemaRevision !== libraryRevision) {
+        mismatches.push({ name: name2, kind: "different-revision", schemaRevision, libraryRevision });
+      }
+    };
+    for (const module of schema.modules) compare(module.argument, revisionOf3(module), libraryByModule.get(module.argument)?.revision);
+    for (const submodule of schema.submodules) compare(submodule.argument, revisionOf3(submodule), libraryBySubmodule.get(submodule.argument)?.revision);
+    const compiledNames = /* @__PURE__ */ new Set([
+      ...schema.modules.map((module) => module.argument),
+      ...schema.submodules.map((submodule) => submodule.argument)
+    ]);
+    for (const entry of inventory.modules) {
+      if (compiledNames.has(entry.name)) continue;
+      if (entry.conformance === "import") continue;
+      mismatches.push({ name: entry.name, kind: "only-in-library", libraryRevision: entry.revision });
+    }
+    for (const entry of inventory.submodules) {
+      if (compiledNames.has(entry.name)) continue;
+      if (entry.conformance === "import") continue;
+      mismatches.push({ name: entry.name, kind: "only-in-library", libraryRevision: entry.revision });
+    }
+    return mismatches.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   // src/restconf/paths.ts

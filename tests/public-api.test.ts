@@ -13,7 +13,7 @@ const PUBLIC_VALUES = [
   "serializeCompiledSchema", "deserializeCompiledSchema", "CompiledSchemaFormatError",
   "createFormModel", "validateFormValue", "canonicalFormOf",
   "validateDataTree", "evaluateCandidates", "buildAccessibleTree", "createConstraintEvaluator",
-  "createRestconfModuleLoader",
+  "createRestconfModuleLoader", "findSchemaLibraryMismatches",
   "createRestconfGetRequest", "createRestconfDatastoreRequest", "createRestconfNmdaProbeRequest",
   "createRestconfSetRequest", "createRestconfAddRequest", "createRestconfUpdateRequest", "createRestconfDeleteRequest",
   "createRestconfRpcRequest", "readRestconfData", "readRestconfRpcOutput",
