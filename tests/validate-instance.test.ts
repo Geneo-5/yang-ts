@@ -67,6 +67,8 @@ describe("data-tree structural validation", () => {
     const schema = await compileModule(`module refs {
       namespace "urn:refs"; prefix r;
       container refs {
+        leaf positional { type instance-identifier; }
+        list unkeyed { config false; leaf value { type string; } }
         list item {
           key name; leaf name { type string; }
           leaf target { type instance-identifier; }
@@ -98,6 +100,22 @@ describe("data-tree structural validation", () => {
 
     const emptyFreeForm = validateDataTree(schema, doc("/r:refs/r:item[r:name='a']", " "));
     expect(emptyFreeForm.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
+
+    const positional = validateDataTree(schema, instance(
+      `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:unkeyed[2]</positional><unkeyed><value>a</value></unkeyed><unkeyed><value>b</value></unkeyed></refs>`));
+    expect(positional.issues).toEqual([]);
+
+    const missingPosition = validateDataTree(schema, instance(
+      `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:unkeyed[3]</positional><unkeyed><value>a</value></unkeyed><unkeyed><value>b</value></unkeyed></refs>`));
+    expect(missingPosition.issues.map(item => item.code)).toEqual(["instance-identifier-dangling"]);
+
+    const invalidPosition = validateDataTree(schema, instance(
+      `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:unkeyed[0]</positional></refs>`));
+    expect(invalidPosition.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
+
+    const incompatiblePredicates = validateDataTree(schema, instance(
+      `<refs xmlns="urn:refs" xmlns:r="urn:refs"><positional>/r:refs/r:unkeyed[1][r:value='a']</positional></refs>`));
+    expect(incompatiblePredicates.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
   });
 
   it("detects dangling leafrefs and unmet must constraints", async () => {

@@ -211,16 +211,18 @@ export function validateDataTree(
   function checkList(child: CompiledSchemaNode, entries: Element[]): void {
     const keyNames = (child.properties.key?.[0]?.argument ?? "").split(/\s+/).filter(Boolean);
     const seenKeys = new Set<string>();
-    for (const entry of entries) {
-      const keyElements = keyNames.map(name =>
-        Array.from(entry.childNodes).find(candidate => isElement(candidate)
-          && candidate.localName === name && candidate.namespaceURI === child.namespace));
-      if (keyNames.length && keyElements.some(key => key === undefined)) {
-        issue("missing-key", child, `entry of list '${child.name}' requires keys ${keyNames.join(" ")}`);
-      } else {
-        const signature = keyElements.map(key => (key as Element).textContent ?? "").join("\u0000");
-        if (seenKeys.has(signature)) issue("duplicate-key", child, `duplicate key combination in list '${child.name}'`);
-        seenKeys.add(signature);
+    if (keyNames.length) {
+      for (const entry of entries) {
+        const keyElements = keyNames.map(name =>
+          Array.from(entry.childNodes).find(candidate => isElement(candidate)
+            && candidate.localName === name && candidate.namespaceURI === child.namespace));
+        if (keyElements.some(key => key === undefined)) {
+          issue("missing-key", child, `entry of list '${child.name}' requires keys ${keyNames.join(" ")}`);
+        } else {
+          const signature = keyElements.map(key => (key as Element).textContent ?? "").join("\u0000");
+          if (seenKeys.has(signature)) issue("duplicate-key", child, `duplicate key combination in list '${child.name}'`);
+          seenKeys.add(signature);
+        }
       }
     }
     checkUnique(child, entries);
@@ -349,9 +351,12 @@ export function validateDataTree(
 /** One node step of an RFC 7950 instance-identifier (section 9.13): a node
  *  name plus key/value predicates; a `.` predicate key addresses leaf-lists. */
 interface QualifiedInstanceName { localName: string; namespace: string }
+type IdentifierPredicate =
+  | { kind: "key"; key: QualifiedInstanceName | "."; value: string }
+  | { kind: "position"; position: number };
 interface IdentifierStep {
   name: QualifiedInstanceName;
-  predicates: { key: QualifiedInstanceName | "."; value: string }[];
+  predicates: IdentifierPredicate[];
 }
 
 type ParsedIdentifier =
@@ -410,7 +415,7 @@ function parseStep(segment: string, context: Element): ParsedStep {
   const name = bracketStart >= 0 ? segment.slice(0, bracketStart) : segment;
   const qualifiedName = resolveInstanceQName(name, context);
   if (!qualifiedName) return { ok: false, reason: `invalid or unbound qualified node name '${name}'` };
-  const predicates: { key: QualifiedInstanceName | "."; value: string }[] = [];
+  const predicates: IdentifierPredicate[] = [];
   let rest = segment.slice(name.length);
   while (rest.length) {
     if (!rest.startsWith("[")) return { ok: false, reason: `malformed predicate in '${segment}'` };
@@ -418,14 +423,27 @@ function parseStep(segment: string, context: Element): ParsedStep {
     if (end < 0) return { ok: false, reason: "unbalanced brackets" };
     const predicate = parsePredicate(rest.slice(1, end));
     if (!predicate.ok) return predicate;
-    if (predicate.keyValue.key === ".") predicates.push({ key: ".", value: predicate.keyValue.value });
+    if (predicate.kind === "position") predicates.push(predicate);
+    else if (predicate.key === ".") predicates.push({ kind: "key", key: ".", value: predicate.value });
     else {
-      const key = resolveInstanceQName(predicate.keyValue.key, context);
-      if (!key) return { ok: false, reason: `invalid or unbound predicate name '${predicate.keyValue.key}'` };
-      predicates.push({ key, value: predicate.keyValue.value });
+      const key = resolveInstanceQName(predicate.key, context);
+      if (!key) return { ok: false, reason: `invalid or unbound predicate name '${predicate.key}'` };
+      predicates.push({ kind: "key", key, value: predicate.value });
     }
     rest = rest.slice(end + 1);
   }
+  const positions = predicates.filter(predicate => predicate.kind === "position");
+  const leafListValues = predicates.filter(predicate => predicate.kind === "key" && predicate.key === ".");
+  if ((positions.length && predicates.length !== 1) || (leafListValues.length && predicates.length !== 1)) {
+    return { ok: false, reason: `incompatible predicates in '${segment}'` };
+  }
+  const keys = predicates.filter((predicate): predicate is Extract<IdentifierPredicate, { kind: "key" }> =>
+    predicate.kind === "key" && predicate.key !== ".");
+  const keyNames = keys.map(predicate => {
+    const key = predicate.key as QualifiedInstanceName;
+    return `${key.namespace}\0${key.localName}`;
+  });
+  if (new Set(keyNames).size !== keyNames.length) return { ok: false, reason: `duplicate key predicate in '${segment}'` };
   return { ok: true, step: { name: qualifiedName, predicates } };
 }
 
@@ -452,10 +470,18 @@ function closingBracket(text: string): number {
 }
 
 type ParsedPredicate =
-  | { ok: true; keyValue: { key: string | "."; value: string } }
+  | { ok: true; kind: "key"; key: string | "."; value: string }
+  | { ok: true; kind: "position"; position: number }
   | { ok: false; reason: string };
 
 function parsePredicate(text: string): ParsedPredicate {
+  const positional = text.match(/^\s*([1-9][0-9]*)\s*$/);
+  if (positional) {
+    const position = Number(positional[1]);
+    return Number.isSafeInteger(position)
+      ? { ok: true, kind: "position", position }
+      : { ok: false, reason: `positional predicate is outside the safe integer range '[${text}]'` };
+  }
   const match = text.match(
     /^\s*([A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*|\.)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^"'[\]/]*)\s*$/,
   );
@@ -463,40 +489,41 @@ function parsePredicate(text: string): ParsedPredicate {
   const raw = match[2] ?? "";
   const quoted = raw.length > 1 && ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'")));
   const value = quoted ? raw.slice(1, -1).replace(/\\(.)/g, "$1") : raw.trim();
-  return { ok: true, keyValue: { key: match[1]!, value } };
+  return { ok: true, kind: "key", key: match[1]!, value };
 }
 
 /** Resolve parsed steps against the instance document by expanded QName. */
 function resolvesInstanceIdentifier(instance: Document, steps: IdentifierStep[]): boolean {
-  let current: Element | undefined = instance.documentElement;
-  if (!current) return false;
-  const first = steps[0]!;
-  if (!matchesQualifiedName(current, first.name)) return false;
-  if (!matchPredicates(current, first.predicates)) return false;
-  for (const step of steps.slice(1)) {
-    const next = Array.from(current.childNodes).find(child => child.nodeType === 1 &&
-      matchesQualifiedName(child as Element, step.name)) as Element | undefined;
-    if (!next) return false;
-    current = next;
+  let current: Element | undefined;
+  let siblings: Element[] = instance.documentElement ? [instance.documentElement] : [];
+  for (const step of steps) {
+    const matches = siblings.filter(element => matchesQualifiedName(element, step.name));
+    const positional = step.predicates.find(predicate => predicate.kind === "position");
+    const selected = positional
+      ? (step.predicates.length === 1 ? matches[positional.position - 1] : undefined)
+      : matches.filter(element => matchPredicates(element, step.predicates));
+    if (!selected || (Array.isArray(selected) ? selected.length !== 1 : false)) return false;
+    current = Array.isArray(selected) ? selected[0] : selected;
     if (!current) return false;
-    if (!matchPredicates(current, step.predicates)) return false;
+    siblings = Array.from(current.childNodes).filter((node): node is Element => node.nodeType === 1);
   }
-  return true;
+  return current !== undefined;
 }
 
 function matchesQualifiedName(element: Element, name: QualifiedInstanceName): boolean {
   return element.localName === name.localName && (element.namespaceURI ?? "") === name.namespace;
 }
 
-function matchPredicates(element: Element, predicates: { key: QualifiedInstanceName | "."; value: string }[]): boolean {
-  // A list entry identifier must carry all of the entry's keys; a bare node
-  // without predicates matches any entry.
+function matchPredicates(element: Element, predicates: IdentifierPredicate[]): boolean {
+  // Check each supplied equality here. Whether a list needs every key
+  // predicate is a schema-aware check and remains outside this helper.
   for (const predicate of predicates) {
+    if (predicate.kind === "position") return false;
     if (predicate.key === ".") {
       if ((element.textContent ?? "") !== predicate.value) return false;
       continue;
     }
-    const predicateKey = predicate.key as QualifiedInstanceName;
+    const predicateKey = predicate.key;
     const key = Array.from(element.childNodes).find(child => child.nodeType === 1 &&
       matchesQualifiedName(child as Element, predicateKey)) as Element | undefined;
     if (!key || (key.textContent ?? "") !== predicate.value) return false;

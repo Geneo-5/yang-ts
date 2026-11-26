@@ -6485,14 +6485,16 @@ var YangEngine = (() => {
     function checkList(child, entries) {
       const keyNames = (child.properties.key?.[0]?.argument ?? "").split(/\s+/).filter(Boolean);
       const seenKeys = /* @__PURE__ */ new Set();
-      for (const entry of entries) {
-        const keyElements = keyNames.map((name2) => Array.from(entry.childNodes).find((candidate) => isElement2(candidate) && candidate.localName === name2 && candidate.namespaceURI === child.namespace));
-        if (keyNames.length && keyElements.some((key) => key === void 0)) {
-          issue("missing-key", child, `entry of list '${child.name}' requires keys ${keyNames.join(" ")}`);
-        } else {
-          const signature = keyElements.map((key) => key.textContent ?? "").join("\0");
-          if (seenKeys.has(signature)) issue("duplicate-key", child, `duplicate key combination in list '${child.name}'`);
-          seenKeys.add(signature);
+      if (keyNames.length) {
+        for (const entry of entries) {
+          const keyElements = keyNames.map((name2) => Array.from(entry.childNodes).find((candidate) => isElement2(candidate) && candidate.localName === name2 && candidate.namespaceURI === child.namespace));
+          if (keyElements.some((key) => key === void 0)) {
+            issue("missing-key", child, `entry of list '${child.name}' requires keys ${keyNames.join(" ")}`);
+          } else {
+            const signature = keyElements.map((key) => key.textContent ?? "").join("\0");
+            if (seenKeys.has(signature)) issue("duplicate-key", child, `duplicate key combination in list '${child.name}'`);
+            seenKeys.add(signature);
+          }
         }
       }
       checkUnique(child, entries);
@@ -6666,14 +6668,26 @@ var YangEngine = (() => {
       if (end < 0) return { ok: false, reason: "unbalanced brackets" };
       const predicate = parsePredicate(rest.slice(1, end));
       if (!predicate.ok) return predicate;
-      if (predicate.keyValue.key === ".") predicates.push({ key: ".", value: predicate.keyValue.value });
+      if (predicate.kind === "position") predicates.push(predicate);
+      else if (predicate.key === ".") predicates.push({ kind: "key", key: ".", value: predicate.value });
       else {
-        const key = resolveInstanceQName(predicate.keyValue.key, context);
-        if (!key) return { ok: false, reason: `invalid or unbound predicate name '${predicate.keyValue.key}'` };
-        predicates.push({ key, value: predicate.keyValue.value });
+        const key = resolveInstanceQName(predicate.key, context);
+        if (!key) return { ok: false, reason: `invalid or unbound predicate name '${predicate.key}'` };
+        predicates.push({ kind: "key", key, value: predicate.value });
       }
       rest = rest.slice(end + 1);
     }
+    const positions = predicates.filter((predicate) => predicate.kind === "position");
+    const leafListValues = predicates.filter((predicate) => predicate.kind === "key" && predicate.key === ".");
+    if (positions.length && predicates.length !== 1 || leafListValues.length && predicates.length !== 1) {
+      return { ok: false, reason: `incompatible predicates in '${segment}'` };
+    }
+    const keys = predicates.filter((predicate) => predicate.kind === "key" && predicate.key !== ".");
+    const keyNames = keys.map((predicate) => {
+      const key = predicate.key;
+      return `${key.namespace}\0${key.localName}`;
+    });
+    if (new Set(keyNames).size !== keyNames.length) return { ok: false, reason: `duplicate key predicate in '${segment}'` };
     return { ok: true, step: { name: qualifiedName, predicates } };
   }
   function resolveInstanceQName(value, context) {
@@ -6699,6 +6713,11 @@ var YangEngine = (() => {
     return -1;
   }
   function parsePredicate(text) {
+    const positional = text.match(/^\s*([1-9][0-9]*)\s*$/);
+    if (positional) {
+      const position = Number(positional[1]);
+      return Number.isSafeInteger(position) ? { ok: true, kind: "position", position } : { ok: false, reason: `positional predicate is outside the safe integer range '[${text}]'` };
+    }
     const match = text.match(
       /^\s*([A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*|\.)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^"'[\]/]*)\s*$/
     );
@@ -6706,28 +6725,28 @@ var YangEngine = (() => {
     const raw = match[2] ?? "";
     const quoted = raw.length > 1 && (raw.startsWith('"') && raw.endsWith('"') || raw.startsWith("'") && raw.endsWith("'"));
     const value = quoted ? raw.slice(1, -1).replace(/\\(.)/g, "$1") : raw.trim();
-    return { ok: true, keyValue: { key: match[1], value } };
+    return { ok: true, kind: "key", key: match[1], value };
   }
   function resolvesInstanceIdentifier(instance, steps) {
-    let current = instance.documentElement;
-    if (!current) return false;
-    const first = steps[0];
-    if (!matchesQualifiedName(current, first.name)) return false;
-    if (!matchPredicates(current, first.predicates)) return false;
-    for (const step of steps.slice(1)) {
-      const next = Array.from(current.childNodes).find((child) => child.nodeType === 1 && matchesQualifiedName(child, step.name));
-      if (!next) return false;
-      current = next;
+    let current;
+    let siblings = instance.documentElement ? [instance.documentElement] : [];
+    for (const step of steps) {
+      const matches = siblings.filter((element) => matchesQualifiedName(element, step.name));
+      const positional = step.predicates.find((predicate) => predicate.kind === "position");
+      const selected = positional ? step.predicates.length === 1 ? matches[positional.position - 1] : void 0 : matches.filter((element) => matchPredicates(element, step.predicates));
+      if (!selected || (Array.isArray(selected) ? selected.length !== 1 : false)) return false;
+      current = Array.isArray(selected) ? selected[0] : selected;
       if (!current) return false;
-      if (!matchPredicates(current, step.predicates)) return false;
+      siblings = Array.from(current.childNodes).filter((node) => node.nodeType === 1);
     }
-    return true;
+    return current !== void 0;
   }
   function matchesQualifiedName(element, name2) {
     return element.localName === name2.localName && (element.namespaceURI ?? "") === name2.namespace;
   }
   function matchPredicates(element, predicates) {
     for (const predicate of predicates) {
+      if (predicate.kind === "position") return false;
       if (predicate.key === ".") {
         if ((element.textContent ?? "") !== predicate.value) return false;
         continue;
