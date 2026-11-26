@@ -4229,6 +4229,10 @@ var YangEngine = (() => {
           return void 0;
         }
         trackSource(result);
+        if (budget.deadlineMs !== void 0 && !violationReported && Date.now() - startedAt >= budget.deadlineMs) {
+          reportBudget(`Resolution exceeded the ${budget.deadlineMs} ms deadline while loading module '${name2}'`, owner, statement);
+          return void 0;
+        }
         const selected = selectDocument(normalizedDocuments(result), name2, "module", pinned, owner, statement, diagnostics);
         if (!selected) {
           if (result === void 0 || normalizedDocuments(result).length === 0) report("missing-module", `Module '${name2}' was not found`, owner, statement);
@@ -4257,6 +4261,10 @@ var YangEngine = (() => {
           return void 0;
         }
         trackSource(result);
+        if (budget.deadlineMs !== void 0 && !violationReported && Date.now() - startedAt >= budget.deadlineMs) {
+          reportBudget(`Resolution exceeded the ${budget.deadlineMs} ms deadline while loading submodule '${name2}'`, owner, statement);
+          return void 0;
+        }
         const selected = selectDocument(normalizedDocuments(result), name2, "submodule", pinned, owner, statement, diagnostics);
         if (!selected && (result === void 0 || normalizedDocuments(result).length === 0)) report("missing-submodule", `Submodule '${name2}' was not found`, owner, statement);
         if (selected && childOf(selected, "belongs-to")?.argument !== owner.argument) {
@@ -6017,6 +6025,8 @@ var YangEngine = (() => {
     const includeState = options.includeState ?? true;
     const evaluator = createConstraintEvaluator(schema);
     const resolveLeafref = createLeafrefResolver(schema);
+    const deadline = (options.deadlineMs ?? void 0) === void 0 ? void 0 : { startedAt: Date.now(), limit: options.deadlineMs };
+    const cancelledNow = () => Boolean(options.signal?.aborted) || deadline !== void 0 && Date.now() - deadline.startedAt >= deadline.limit;
     const issues = [];
     let indeterminate = false;
     let cancelled = false;
@@ -6028,7 +6038,7 @@ var YangEngine = (() => {
     const choiceMemberElements = (element, member) => member.kind === "choice" ? choiceEntries(element, member) : elementsOf(element, member);
     const choiceEntries = (element, choice) => choice.children.flatMap((caseNode) => caseNode.kind === "case" ? caseNode.children : [caseNode]).filter((child) => child.kind !== "case").flatMap((child) => choiceMemberElements(element, child));
     function visitElement(element, schemaNode) {
-      if (options.signal?.aborted) {
+      if (cancelledNow()) {
         cancelled = true;
         return;
       }
@@ -6054,7 +6064,7 @@ var YangEngine = (() => {
       }
     }
     function visitChoiceNodes(element, choice, enforced) {
-      if (options.signal?.aborted) {
+      if (cancelledNow()) {
         cancelled = true;
         return;
       }
@@ -6236,7 +6246,7 @@ var YangEngine = (() => {
     }
     const rawTop = instance.documentElement;
     if (!rawTop) return { status: indeterminate ? "indeterminate" : "valid", issues };
-    if (options.signal?.aborted) cancelled = true;
+    if (cancelledNow()) cancelled = true;
     for (const root of schema.roots) {
       if (root.kind === "choice" || root.kind === "case") continue;
       if (!includeState && !root.config) continue;
@@ -6540,8 +6550,10 @@ var YangEngine = (() => {
       }
     }
     const bitsSelection = options.bitsSelection ?? [];
+    const deadline = options.deadlineMs === void 0 ? void 0 : { startedAt: Date.now(), limit: options.deadlineMs };
+    const spent = () => Boolean(options.signal?.aborted) || deadline !== void 0 && Date.now() - deadline.startedAt >= deadline.limit;
     const candidates = domain.values.map((value) => {
-      if (options.signal?.aborted) {
+      if (spent()) {
         return {
           value,
           status: "indeterminate",

@@ -39,6 +39,8 @@ export interface CandidateOptions {
    * evaluating constraints on a stopped consumer's behalf.
    */
   signal?: AbortSignal;
+  /** Wall-clock budget over the whole evaluation; exceeded, every remaining candidate turns indeterminate. */
+  deadlineMs?: number;
 }
 
 export interface FiniteDomain {
@@ -291,9 +293,17 @@ export function evaluateCandidates(
     }
   }
   const bitsSelection = options.bitsSelection ?? [];
+  // Evaluation boundary deadline (RFC 7950 §6.4.1): a single XPath cannot be
+  // interrupted mid-expression; the boundary check keeps total probing cheap.
+  const deadline = options.deadlineMs === undefined
+    ? undefined
+    : { startedAt: Date.now(), limit: options.deadlineMs };
+  const spent = (): boolean =>
+    Boolean(options.signal?.aborted)
+    || (deadline !== undefined && Date.now() - deadline.startedAt >= deadline.limit);
 
   const candidates = domain.values.map(value => {
-    if (options.signal?.aborted) {
+    if (spent()) {
       return {
         value,
         status: "indeterminate" as const,

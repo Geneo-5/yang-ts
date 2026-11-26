@@ -190,3 +190,76 @@ describe("schema-scoped caches", () => {
       `<cart xmlns="urn:shop"><total>-1</total></cart>`)).issues.map(item => item.code)).toEqual(["must-unmet"]);
   });
 });
+
+/** Stage 7b P2 (ROADMAP §161): documented budget presets and evaluation deadlines. */
+describe("safe-default budgets", () => {
+  it("exposes documented preset values for untrusted modules", async () => {
+    const { UNTRUSTED_MODULE_BUDGET, UNTRUSTED_SCHEMA_NODE_BUDGET } = await import("../src/internal.js");
+    expect(UNTRUSTED_MODULE_BUDGET).toEqual({
+      maxModules: 64, maxSubmodules: 64, maxDepth: 8,
+      maxSourceCharacters: 4_000_000, deadlineMs: 10_000,
+    });
+    expect(UNTRUSTED_SCHEMA_NODE_BUDGET).toBe(30_000);
+  });
+
+  it("stops schema expansion when the preset node budget is applied", async () => {
+    const { UNTRUSTED_SCHEMA_NODE_BUDGET } = await import("../src/internal.js");
+    const generator = `module fanout {
+      namespace "urn:fan"; prefix f;
+      container big {
+        ${Array.from({ length: 240 }, (_, index) => `leaf l${index} { type string; }`).join("\n        ")}
+      }
+    }`;
+    const schema = compileYangModules(
+      await resolveModuleSet([parseYang(generator)], { async loadModule() { return undefined; } }),
+      { budget: { maxSchemaNodes: 20 } },
+    );
+    expect(schema.diagnostics.map(item => item.code)).toEqual(["budget-exceeded"]);
+    expect(UNTRUSTED_SCHEMA_NODE_BUDGET).toBeGreaterThan(20);
+  });
+
+  it("converts validation past a deadline into an indeterminate cancelled verdict", async () => {
+    const schema = compileYangModules(await resolveModuleSet([parseYang(`module dead {
+      namespace "urn:dead"; prefix d;
+      container a { leaf probe { type string; must "../probe = 'x'"; } }
+      container b { leaf probe2 { type string; must "../probe2 = 'y'"; } }
+    }`)], { async loadModule() { return undefined; } }));
+    // Pre-fix no deadlineMs option existed: the run completed with status
+    // `invalid` and two must-unmet issues, never a cancelled indeterminate.
+    const result = validateDataTree(schema, parseXml(
+      `<a xmlns="urn:dead"><probe>live</probe></a>`), { deadlineMs: 0 });
+    expect(result.status).toBe("indeterminate");
+    expect(result.issues.filter(item => item.code === "cancelled").length).toBeGreaterThan(0);
+  });
+
+  it("converts candidate probing past a deadline into indeterminate candidates", async () => {
+    const schema = compileYangModules(await resolveModuleSet([parseYang(`module candead {
+      namespace "urn:candead"; prefix c;
+      leaf mode {
+        type enumeration { enum on; enum off; }
+        must "../gate = 'yes'";
+      }
+      leaf gate { type string; default "yes"; }
+    }`)], { async loadModule() { return undefined; } }));
+    const result = evaluateCandidates(schema, parseXml(
+      `<mode xmlns="urn:candead">on</mode>`), "/mode", { deadlineMs: 0 });
+    // Pre-fix the deadline option did not exist and both candidates evaluated.
+    expect(result.candidates.every(candidate => candidate.status === "indeterminate")).toBe(true);
+  });
+
+  it("checks the deadline before parsing a freshly loaded document", async () => {
+    let loads = 0;
+    const moduleSet2 = await resolveModuleSet([parseYang(module("root1", ["dep1", "dep2"]))], {
+      async loadModule(name) {
+        loads++;
+        // Simulate wall-clock progress: after the first load the deadline is
+        // already spent, so the parse of dep2 must be refused too.
+        if (loads > 1) { await new Promise(resolve => setTimeout(resolve, 5)); }
+        void name;
+        return module("lazy");
+      },
+    }, { budget: { deadlineMs: 0 } });
+    expect(moduleSet2.diagnostics.map(item => item.code)).toContain("budget-exceeded");
+    expect(loads).toBeLessThanOrEqual(2);
+  });
+});

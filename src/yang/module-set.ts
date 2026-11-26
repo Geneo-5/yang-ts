@@ -23,6 +23,25 @@ export interface ModuleSetDiagnostic {
  * once any limit is reached, further loads are refused and a single
  * `budget-exceeded`/`cancelled` diagnostic is recorded.
  */
+/**
+ * Documented safe-default budget for untrusted module sets: an application can
+ * pass it verbatim to `resolveModuleSet` (and pair it with
+ * `UNTRUSTED_SCHEMA_NODE_BUDGET` for `compileYangModules`) instead of inventing
+ * its own values. Sized for interactive browser use: at most 64 loaded
+ * modules/submodules, an import depth of 8, four million source characters and
+ * ten seconds of wall clock.
+ */
+export const UNTRUSTED_MODULE_BUDGET: {
+  maxModules: number; maxSubmodules: number; maxDepth: number;
+  maxSourceCharacters: number; deadlineMs: number;
+} = {
+  maxModules: 64, maxSubmodules: 64, maxDepth: 8,
+  maxSourceCharacters: 4_000_000, deadlineMs: 10_000,
+};
+
+/** Documented `compileYangModules` `budget.maxSchemaNodes` value for untrusted modules. */
+export const UNTRUSTED_SCHEMA_NODE_BUDGET = 30_000;
+
 export interface ModuleSetBudget {
   /**
    * Maximum number of modules fetched through the loader. Roots arrive
@@ -176,6 +195,12 @@ export async function resolveModuleSet(roots: readonly YangModule[], loader: Yan
       try { result = await loader.loadModule(name, pinned); }
       catch (error) { report("invalid-document", `Failed loading module '${name}': ${String(error)}`, owner, statement); return undefined; }
       trackSource(result);
+      // A load that overspends the wall-clock budget must not hand a large
+      // document to the (uninterruptible) parser: refuse before parsing.
+      if (budget.deadlineMs !== undefined && !violationReported && Date.now() - startedAt >= budget.deadlineMs) {
+        reportBudget(`Resolution exceeded the ${budget.deadlineMs} ms deadline while loading module '${name}'`, owner, statement);
+        return undefined;
+      }
       const selected = selectDocument(normalizedDocuments(result), name, "module", pinned, owner, statement, diagnostics);
       if (!selected) {
         if (result === undefined || normalizedDocuments(result).length === 0) report("missing-module", `Module '${name}' was not found`, owner, statement);
@@ -198,6 +223,10 @@ export async function resolveModuleSet(roots: readonly YangModule[], loader: Yan
       try { result = await loader.loadSubmodule(name, pinned); }
       catch (error) { report("invalid-document", `Failed loading submodule '${name}': ${String(error)}`, owner, statement); return undefined; }
       trackSource(result);
+      if (budget.deadlineMs !== undefined && !violationReported && Date.now() - startedAt >= budget.deadlineMs) {
+        reportBudget(`Resolution exceeded the ${budget.deadlineMs} ms deadline while loading submodule '${name}'`, owner, statement);
+        return undefined;
+      }
       const selected = selectDocument(normalizedDocuments(result), name, "submodule", pinned, owner, statement, diagnostics);
       if (!selected && (result === undefined || normalizedDocuments(result).length === 0)) report("missing-submodule", `Submodule '${name}' was not found`, owner, statement);
       if (selected && childOf(selected, "belongs-to")?.argument !== owner.argument) {

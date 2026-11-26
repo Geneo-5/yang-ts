@@ -41,6 +41,13 @@ export interface InstanceValidationOptions {
    * possible in the synchronous evaluator — combine with worker isolation.
    */
   signal?: AbortSignal;
+  /**
+   * Wall-clock budget in milliseconds over the whole validation (RFC 7950
+   * evaluation boundary, not mid-XPath — see `signal`). Exceeding it behaves
+   * exactly like an aborted signal: the run stops at the next element and the
+   * verdict becomes `indeterminate` with a `cancelled` issue.
+   */
+  deadlineMs?: number;
 }
 
 /**
@@ -59,6 +66,13 @@ export function validateDataTree(
   const includeState = options.includeState ?? true;
   const evaluator = createConstraintEvaluator(schema);
   const resolveLeafref = createLeafrefResolver(schema);
+  const deadline = (options.deadlineMs ?? undefined) === undefined
+    ? undefined
+    : { startedAt: Date.now(), limit: options.deadlineMs! };
+  /** A spent wall-clock budget behaves like an aborted signal at every check. */
+  const cancelledNow = (): boolean =>
+    Boolean(options.signal?.aborted)
+    || (deadline !== undefined && Date.now() - deadline.startedAt >= deadline.limit);
   const issues: ValidationIssue[] = [];
   let indeterminate = false;
   let cancelled = false;
@@ -81,7 +95,7 @@ export function validateDataTree(
       .flatMap(child => choiceMemberElements(element, child));
 
   function visitElement(element: Element, schemaNode: CompiledSchemaNode): void {
-    if (options.signal?.aborted) { cancelled = true; return; }
+    if (cancelledNow()) { cancelled = true; return; }
     for (const evaluation of evaluator.evaluateNode(element)) {
       if (evaluation.status === "indeterminate") { indeterminate = true; continue; }
       if (evaluation.kind === "must" && evaluation.status === "unmet") {
@@ -110,7 +124,7 @@ export function validateDataTree(
    * case is the active one.
    */
   function visitChoiceNodes(element: Element, choice: CompiledSchemaNode, enforced: boolean): void {
-    if (options.signal?.aborted) { cancelled = true; return; }
+    if (cancelledNow()) { cancelled = true; return; }
     for (const caseNode of choice.children) {
       const members = caseNode.kind === "case" ? caseNode.children : [caseNode];
       const active = members.some(member => choiceMemberElements(element, member).length > 0);
@@ -309,7 +323,7 @@ export function validateDataTree(
   // document, keeping absolute-path anchors at the data root.
   const rawTop = instance.documentElement;
   if (!rawTop) return { status: indeterminate ? "indeterminate" : "valid", issues };
-  if (options.signal?.aborted) cancelled = true;
+  if (cancelledNow()) cancelled = true;
   for (const root of schema.roots) {
     if (root.kind === "choice" || root.kind === "case") continue;
     if (!includeState && !root.config) continue;

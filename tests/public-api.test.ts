@@ -27,6 +27,7 @@ const INTERNAL_ONLY = [
   "flattenDataChildren", "findSchemaNodeByPath", "schemaNodeChainByPath",
   "childOf", "childrenOf", "moduleNamespacePrefixes", "documentNamespacePrefixes", "yangLibraryEntries", "yangLibraryInventory",
   "BUILTIN_TYPES", "RESTRICTION_BUILTINS", "compileXsdPattern", "finiteDomainOf",
+  "UNTRUSTED_MODULE_BUDGET", "UNTRUSTED_SCHEMA_NODE_BUDGET",
 ];
 
 describe("curated public API barrel", () => {
