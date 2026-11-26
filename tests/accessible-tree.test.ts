@@ -111,8 +111,46 @@ describe("RFC 7950 accessible tree construction", () => {
     // value leaf of the referenced node accompanies it through the relative step.
     expect(evaluate("string(deref(pool/chosen)) = 'n2'")).toBe(true);
     expect(evaluate("string(deref(pool/chosen)/../value) = 'b'")).toBe(true);
-    // Non-leafref arguments come back unchanged.
-    expect(evaluate("count(deref(pool/node)) = 2")).toBe(true);
+    // RFC 7950 §10.3.1: non-reference nodes produce an empty node-set.
+    expect(evaluate("count(deref(pool/node)) = 0")).toBe(true);
+  });
+
+  it("dereferences instance-identifiers using their in-scope XML prefixes", async () => {
+    const refsModule = parseYang(`module refs {
+        namespace "urn:refs"; prefix r;
+        import extra { prefix e; }
+        container pool {
+          leaf pointer { type instance-identifier; }
+          leaf unresolved { type instance-identifier; }
+          leaf ambiguous { type instance-identifier; }
+          leaf label { type string; }
+          list node { key name; leaf name { type string; } leaf value { type string; } }
+        }
+      }`);
+    const extraModule = parseYang(`module extra {
+      namespace "urn:extra"; prefix e;
+      import refs { prefix r; }
+      augment "/r:pool" { container foreign { leaf value { type string; } } }
+    }`);
+    const modules = new Map([["refs", refsModule], ["extra", extraModule]]);
+    const refs = compileYangModules(await resolveModuleSet([refsModule], { async loadModule(name) { return modules.get(name); } }));
+    const tree = buildAccessibleTree(refs, datatree(`<pool xmlns="urn:refs" xmlns:ref="urn:refs" xmlns:other="urn:extra">
+      <pointer>/ref:pool/other:foreign/other:value</pointer>
+      <unresolved>/missing:pool/other:foreign/other:value</unresolved>
+      <ambiguous>/ref:pool/ref:node/ref:value</ambiguous>
+      <label>ordinary</label>
+      <node><name>n1</name><value>a</value></node>
+      <node><name>n2</name><value>b</value></node>
+      <foreign xmlns="urn:extra"><value>cross-module</value></foreign>
+    </pool>`), { context: "datastore-state" });
+    const library = createYangFunctionLibrary({ schema: refs, module: "refs" });
+    const evaluate = (expression: string) => compileYangXPath(expression, "urn:refs").evaluateBoolean({ node: tree.contextNode, functions: library });
+
+    expect(evaluate("count(deref(pool/pointer)) = 1")).toBe(true);
+    expect(evaluate("string(deref(pool/pointer)) = 'cross-module'")).toBe(true);
+    expect(evaluate("count(deref(pool/unresolved)) = 0")).toBe(true);
+    expect(evaluate("count(deref(pool/ambiguous)) = 0")).toBe(true);
+    expect(evaluate("count(deref(pool/label)) = 0")).toBe(true);
   });
 });
 

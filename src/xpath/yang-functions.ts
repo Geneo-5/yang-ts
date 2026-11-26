@@ -149,6 +149,52 @@ export function xmlNamespaceForPrefix(node: Node, prefix: string): string | unde
   return undefined;
 }
 
+/** XML namespace bindings visible at an instance node, nearest declaration wins. */
+function xmlNamespaceBindings(node: Node): Record<string, string> {
+  const bindings: Record<string, string> = Object.create(null) as Record<string, string>;
+  let current: Node | null = node.nodeType === 1 ? node : node.parentNode;
+  while (current && current.nodeType === 1) {
+    const attributes = (current as Element).attributes;
+    for (let index = 0; attributes && index < attributes.length; index++) {
+      const attribute = attributes[index]!;
+      const prefix = attribute.name === "xmlns" ? "" : attribute.name.startsWith("xmlns:") ? attribute.name.slice(6) : undefined;
+      if (prefix !== undefined && !Object.hasOwn(bindings, prefix)) bindings[prefix] = attribute.value;
+    }
+    current = current.parentNode;
+  }
+  return bindings;
+}
+
+/** Follow an instance-identifier from the datastore document using its local XML prefix bindings. */
+function resolveInstanceIdentifier(element: Element, cache: Map<string, ReturnType<typeof compileYangXPath>>): Node[] {
+  const expression = element.textContent ?? "";
+  if (!expression.trim() || expression.length > 16_384) return [];
+  const namespaces = xmlNamespaceBindings(element);
+  const key = `${expression}\0${JSON.stringify(namespaces)}`;
+  let compiled = cache.get(key);
+  if (!compiled) {
+    try {
+      // Instance-identifier names must carry explicit prefixes. The empty
+      // default namespace keeps accidentally unprefixed node tests unmatched.
+      compiled = compileYangXPath(expression, "", namespaces);
+    } catch {
+      return [];
+    }
+    if (cache.size >= 512) cache.clear();
+    cache.set(key, compiled);
+  }
+  const document = element.ownerDocument;
+  if (!document) return [];
+  try {
+    const selected = compiled.select({ node: document }).filter(node => node.nodeType === 1);
+    // A valid instance-identifier denotes one instance node. Ambiguous or
+    // malformed values fail closed instead of choosing an arbitrary result.
+    return selected.length === 1 ? selected : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Build the RFC 7950 section 10 function library for evaluation against compiled schemas. */
 export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Record<string, XPathFunction> {
   const { schema, module } = options;
@@ -177,6 +223,7 @@ export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Re
   };
   const positions = collectOptionPositions(schema.modules);
   const resolveLeafref = createLeafrefResolver(schema);
+  const instanceIdentifierCache = new Map<string, ReturnType<typeof compileYangXPath>>();
   // Note: `current` cannot live here. RFC 7950 section 10.1 requires the
   // original context node even inside predicates, and the redoable evaluator
   // extends the context per step; the XPath adapter binds it per evaluation.
@@ -197,16 +244,16 @@ export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Re
         return Boolean(value && baseIds.some(base => isIdentityDerivedFrom(schema, value, base)));
       });
     },
-    // RFC 7950 section 10.5: follow leafref paths from built accessible trees.
+    // RFC 7950 §10.3.1: follow a leafref or instance-identifier reference.
     deref: (context, item) => {
       const nodes = nodeSetMembers(item);
-      if (!nodes.length) throw new Error("deref requires a non-empty node set");
       const target = nodes[0]!;
-      if (target.nodeType !== 1) return item;
+      if (!target || target.nodeType !== 1) return [];
       const schemaNode = schemaNodeForElement(schema, target as Element);
-      if (!schemaNode) return item;
-      const resolved = resolveLeafref(schemaNode, target as Element);
-      return resolved ?? item;
+      if (schemaNode?.resolvedType === "leafref") return resolveLeafref(schemaNode, target as Element) ?? [];
+      if (schemaNode?.resolvedType === "instance-identifier") return resolveInstanceIdentifier(target as Element, instanceIdentifierCache);
+      // RFC 7950 §10.3.1: non-reference nodes return an empty node-set.
+      return [];
     },
     "derived-from-or-self": (context, item, ...bases) => {
       const baseIds = bases

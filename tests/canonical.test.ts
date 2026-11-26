@@ -69,4 +69,15 @@ describe("canonical value representations", () => {
     expect(canonical(text, "/self", "/self")).toBeUndefined();
     expect(canonical(text, "/label", "ok")).toBe("ok");
   });
+
+  it("does not invent canonical forms for identityref or instance-identifier", () => {
+    const text = `module contextual {
+      namespace "urn:contextual"; prefix c;
+      identity root;
+      leaf identity { type identityref { base root; } }
+      leaf target { type instance-identifier; }
+    }`;
+    expect(canonical(text, "/identity", "c:root")).toBeUndefined();
+    expect(canonical(text, "/target", "/c:somewhere/c:node")).toBeUndefined();
+  });
 });

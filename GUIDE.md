@@ -797,8 +797,13 @@ de l'artefact.
 - XPath : moteur compatible XPath 1.0 sur l'arbre accessible — l'intersection
   exacte est listée dans [CONFORMANCE.md](CONFORMANCE.md), interruption
   synchrone impossible dans l'évaluateur tiers (limite documentée, Stage 7b P2) ;
-- `deref()`, metadata annotations (`md:annotation`) et formes canoniques
-  d'identités/iid ne sont pas implémentés ;
+- `deref()` suit les leafrefs et instance-identifiers sur l'arbre accessible ;
+  `validateDataTree` compare encore les noms locaux des étapes d'un
+  instance-identifier sans vérifier leur namespace (voir
+  [CONFORMANCE.md](CONFORMANCE.md)). Les annotations de métadonnées
+  (`md:annotation`) ne sont pas évaluées. `identityref` et
+  `instance-identifier` n'ont pas de forme canonique selon RFC 7950 §§9.10.4
+  et 9.13.3 ; `canonicalFormOf` renvoie `undefined` pour ces types ;
 - L'exclusivité `case` des `choice` et le développement `uses`/`augment`
   niveau option ne sont pas couverts dans le modèle de formulaire (§5).
 

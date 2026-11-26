@@ -6095,6 +6095,44 @@ var YangEngine = (() => {
     }
     return void 0;
   }
+  function xmlNamespaceBindings(node) {
+    const bindings = /* @__PURE__ */ Object.create(null);
+    let current = node.nodeType === 1 ? node : node.parentNode;
+    while (current && current.nodeType === 1) {
+      const attributes = current.attributes;
+      for (let index = 0; attributes && index < attributes.length; index++) {
+        const attribute = attributes[index];
+        const prefix = attribute.name === "xmlns" ? "" : attribute.name.startsWith("xmlns:") ? attribute.name.slice(6) : void 0;
+        if (prefix !== void 0 && !Object.hasOwn(bindings, prefix)) bindings[prefix] = attribute.value;
+      }
+      current = current.parentNode;
+    }
+    return bindings;
+  }
+  function resolveInstanceIdentifier(element, cache) {
+    const expression = element.textContent ?? "";
+    if (!expression.trim() || expression.length > 16384) return [];
+    const namespaces = xmlNamespaceBindings(element);
+    const key = `${expression}\0${JSON.stringify(namespaces)}`;
+    let compiled = cache.get(key);
+    if (!compiled) {
+      try {
+        compiled = compileYangXPath(expression, "", namespaces);
+      } catch {
+        return [];
+      }
+      if (cache.size >= 512) cache.clear();
+      cache.set(key, compiled);
+    }
+    const document2 = element.ownerDocument;
+    if (!document2) return [];
+    try {
+      const selected = compiled.select({ node: document2 }).filter((node) => node.nodeType === 1);
+      return selected.length === 1 ? selected : [];
+    } catch {
+      return [];
+    }
+  }
   function createYangFunctionLibrary(options) {
     const { schema, module } = options;
     const nativeModule = (name2) => schema.modules.find((candidate) => candidate.argument === name2);
@@ -6119,6 +6157,7 @@ var YangEngine = (() => {
     };
     const positions = collectOptionPositions(schema.modules);
     const resolveLeafref = createLeafrefResolver(schema);
+    const instanceIdentifierCache = /* @__PURE__ */ new Map();
     const library = {
       // RFC 7950 section 10.4: every identityref node of the set participates;
       // XML-prefixed values (§9.10.4) qualify through the node's own bindings.
@@ -6134,16 +6173,15 @@ var YangEngine = (() => {
           return Boolean(value && baseIds.some((base) => isIdentityDerivedFrom(schema, value, base)));
         });
       },
-      // RFC 7950 section 10.5: follow leafref paths from built accessible trees.
+      // RFC 7950 §10.3.1: follow a leafref or instance-identifier reference.
       deref: (context, item) => {
         const nodes = nodeSetMembers(item);
-        if (!nodes.length) throw new Error("deref requires a non-empty node set");
         const target = nodes[0];
-        if (target.nodeType !== 1) return item;
+        if (!target || target.nodeType !== 1) return [];
         const schemaNode = schemaNodeForElement(schema, target);
-        if (!schemaNode) return item;
-        const resolved = resolveLeafref(schemaNode, target);
-        return resolved ?? item;
+        if (schemaNode?.resolvedType === "leafref") return resolveLeafref(schemaNode, target) ?? [];
+        if (schemaNode?.resolvedType === "instance-identifier") return resolveInstanceIdentifier(target, instanceIdentifierCache);
+        return [];
       },
       "derived-from-or-self": (context, item, ...bases) => {
         const baseIds = bases.map((base) => qualifiedBase(requireString(base, "derived-from-or-self"))).filter((base) => Boolean(base));

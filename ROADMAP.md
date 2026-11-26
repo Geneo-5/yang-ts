@@ -12,11 +12,10 @@ A stage returns to **done** only when every defect listed under it is closed by 
 
 **Re-review after the fixes (2026-11-26).** The Stage 7 P0/P1 fixes were re-read in full. Method: every file of `src/` was read; a copy of `src/` was type-checked with `tsc --strict` (clean) and exercised with throw-away Vitest probes; the project's own suite and fixture corpus were not run in that environment, so the closures below are taken from the tests' content, not from a green run. The re-review confirmed most closures, qualified a few overstated ones and found new defects, one of them a regression introduced by the scoping fix (typedefs and groupings declared inside data nodes are no longer found). They are collected in **Stage 7b**; the `[x]` lines they qualify carry a pointer to it. A stage that has a Stage 7b item cannot return to **done**.
 
-**Docs pass (2026-11-26, latest revision).** Every `.md` was swept against the code and suite; the optimistic-edit, Next.js configuration helper and static-export application milestones are closed. Stages 0–7b and 8.1–8.6 have regression coverage, including a built static Next.js site and Chromium E2E in the default and `/yang-console` base-path configurations. The remaining work, in one place:
+**Docs pass (2026-11-26, latest revision).** Every `.md` was swept against the code and suite; the optimistic-edit, Next.js static-export, and instance-identifier `deref()` milestones are covered. Identityref and instance-identifier canonicalization was corrected to match RFC 7950, which defines no canonical form for either type. Stages 0–7b and 8.1–8.6 have regression coverage, including Chromium E2E at the site root and under `/yang-console`. The remaining work, in one place:
 
 - **Stage 1** — a load cannot be interrupted during its synchronous parse (budget/deadline are checked between loads); worker isolation stays the host's responsibility.
-- **Stage 3** — canonical forms for identityref and instance-identifier are not represented.
-- **Stage 4 / 7b P1** — `instance-identifier` `deref` and metadata annotations unsupported; instance-identifier steps and predicates match by local name only.
+- **Stage 4 / 7b P1** — metadata annotations unsupported; instance-identifier validation still matches step and predicate names by local name only. `deref()` support for leafrefs and instance-identifiers is closed.
 - **Stage 7b P2** — the conservative pattern subset keeps `\d \w \s \p{…}`-patterned leaves `indeterminate` (a real XSD→JS translator is needed); an independent libyang/yanglint oracle remains absent (development-only).
 
 ## Stage 0 — Parser foundation (done)
@@ -63,11 +62,11 @@ Open defects:
 - [x] Patterns outside the proven-safe XSD/JS subset stay `pending` (fixed 2026-11-26): divergent escapes (`\d \D \w \W \s \S \p \P \i \c`), backreferences, `(?` groups, class subtraction, `[]` forms and out-of-class `^`/`$` never compile; shared logic lives in `src/types/xsd-pattern.ts` (test: `tests/stage7-p0.test.ts`).
 - [x] Unparsable `range`/`length` endpoints: RFC 7950 §9.2.4/§9.4.4 — the compiler now reports every interval endpoint that is not a lexical bound of the restricted built-in (integers, fixed-point decimals for `decimal64`, non-negative integers for `length`, `min`/`max`) as `invalid-type-restriction`; at value level `inIntervals` fails closed (an unusable endpoint matches nothing) and `inheritedIntervals` never lets garbage widen the inherited bounds for derived restrictions (fixed 2026-11-26, `tests/boundaries.test.ts`, five tests red first: `5000` validated against `range "1..100 | FOX"`, and the compile-time check emitted no diagnostic).
 - [x] Type and builtin-name logic is single-sourced: `src/types/builtins.ts` owns `BUILTIN_TYPES` and `RESTRICTION_BUILTINS` (RFC 7950 §9/§9.2.1), locked by `tests/types-builtins.test.ts` (2026-11-26); the pattern compiler remains shared in `src/types/xsd-pattern.ts`.
-- [ ] Canonical forms for identityref and instance-identifier are not represented.
+- [x] Identityref and instance-identifier have no canonical form by RFC 7950 §§9.10.4/9.13.3 because their lexical forms depend on XML namespace bindings; `canonicalFormOf` returns `undefined` and does not synthesize a module-prefix spelling (`tests/canonical.test.ts`, verified 2026-11-26).
 
 ## Stage 4 — XPath 1.0 and YANG evaluation context (partial)
 
-Delivered: `xpath@0.0.36` adapter with unprefixed-name qualification, `current()`, the RFC 7950 function library, accessible trees (§6.4.1) and `must`/`when` evaluation.
+Delivered: `xpath@0.0.36` adapter with unprefixed-name qualification, `current()`, the RFC 7950 function library (including `deref()` for leafrefs and instance-identifiers), accessible trees (§6.4.1) and `must`/`when` evaluation.
 
 Open defects:
 - [x] The module's own `prefix` is in the prefix→namespace maps of must/when compilation, the leafref resolver and the identity library (`moduleNamespacePrefixes`, fixed 2026-11-26, `tests/stage7-p0.test.ts`). Qualification: typedef-declared leafref paths still use the *using* module's maps (Stage 7b P0).
@@ -76,7 +75,8 @@ Open defects:
 - [x] `buildAccessibleTree` (defaults of absent non-presence containers are still missing — Stage 7b P0): the datastore context node is now the datastore document with the data root as document element (RFC 6.4.1, fixed 2026-11-26), so absolute YANG paths resolve. Wrapper documents and inactive-case defaults closed 2026-11-26, `tests/stage7-p1.test.ts`: a wrapper document element (e.g. NETCONF `<data>`) is accepted and one accessible root per matching child — including each entry of a top-level list — is copied under a synthetic datastore element standing in for the §6.4.1 virtual root, so relative paths span all roots and cross-root references reach sibling roots (absolute paths still anchor at the document node, i.e. above the wrapper); case defaults follow RFC 7950 §7.9.3 — a case's defaults apply when the case itself is present or it is the choice's `default` case with nothing else present, so inactive cases never inject.
 - [x] Compiled-expression caches are schema-scoped (`WeakMap<CompiledYangSchema, …>`) and the pattern text cache is bounded (cleared past 2048 entries), regression-tested by the cross-schema collision case in `tests/module-budgets.test.ts` (2026-11-26).
 - [x] `qualifyYangXPathNodeTests` has a seeded differential/fuzz corpus (`tests/differential.test.ts`, 2026-11-26): pure-prefix-insertion invariant, bare-vs-prefixed spelling agreement over 300 generated expressions, curated tricky tokens, mutation-tested; see the Stage 7 P2 item.
-- [ ] `instance-identifier` `deref` and metadata annotations remain unsupported (see `CONFORMANCE.md`).
+- [x] `deref()` follows instance-identifier values using the prefixes in scope on the referencing element; invalid, unresolved or ambiguous paths and non-reference arguments return an empty node-set per RFC 7950 §10.3.1 (2026-11-26, `tests/accessible-tree.test.ts`, red first).
+- [ ] Metadata annotations remain unsupported (see `CONFORMANCE.md`).
 
 ## Stage 5 — Validation and conditional UI introspection (partial)
 

@@ -848,7 +848,8 @@ function xmlQualifiedIdentity(schema: CompiledYangSchema, value: string, anchor?
  * bits re-join the selection ordered by bit position, and binary strips
  * insignificant base64 whitespace. Returns `undefined` when the value is not
  * a valid lexical form for the type or the type has no canonical check here
- * (leafref/identityref/instance-identifier need cross-reference context).
+ * (leafref needs its target context; identityref and instance-identifier
+ * intentionally have no canonical form under RFC 7950 §§9.10.4/9.13.3).
  */
 export function canonicalFormOf(field: FormField, value: unknown): string | undefined {
   if (field.unresolvedType || value === undefined || value === null) return undefined;
@@ -885,7 +886,9 @@ export function canonicalFormOf(field: FormField, value: unknown): string | unde
       return `${negative ? "-" : ""}${whole}.${fraction}`;
     }
     default: {
-      // Cross-reference types need instance/schema context to judge a value.
+      // RFC 7950 gives identityref and instance-identifier no canonical form.
+      // A leafref's form is its target leaf's canonical form, which requires
+      // instance-tree context this field-only helper does not carry.
       if (["leafref", "identityref", "instance-identifier"].includes(field.yangType)) return undefined;
       const bounds = intBounds(field.yangType);
       if (!bounds) return typeof value === "string" || typeof value === "number" ? String(value) : undefined;
