@@ -18,10 +18,18 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
  */
 
 let chromiumAvailable = false;
+/**
+ * Playwright's `executablePath()` reports a registry path even when the
+ * browser was never downloaded, so availability requires the file to exist.
+ */
+export const chromiumIsInstalled = (executablePath: string | undefined, exists: (path: string) => boolean): boolean =>
+  Boolean(executablePath) && exists(executablePath!);
 const chromiumExecutableStatus = async (): Promise<{ available: boolean; reason: string }> => {
   try {
     const { chromium } = await import("playwright");
-    return { available: Boolean(chromium.executablePath()), reason: "playwright chromium executable missing (npx playwright install chromium)" };
+    const executable = chromium.executablePath();
+    if (chromiumIsInstalled(executable, existsSync)) return { available: true, reason: "" };
+    return { available: false, reason: `playwright chromium executable missing at ${executable ?? "?"} (npx playwright install chromium)` };
   } catch {
     return { available: false, reason: "playwright not installed (npm install --save-dev playwright && npx playwright install chromium)" };
   }
@@ -124,5 +132,13 @@ describe("real-browser run of the standalone example (Playwright headless Chromi
     expect(outcome.issues).toEqual(["missing-mandatory"]);
     expect(outcome.acceptedStatus).toBe("valid");
     await page.close();
+  });
+});
+
+describe("chromium availability detection", () => {
+  it("treats a missing executable file as not installed even when a path is registered", () => {
+    expect(chromiumIsInstalled(undefined, () => true)).toBe(false);
+    expect(chromiumIsInstalled("/browser/registry/chromium", () => false)).toBe(false);
+    expect(chromiumIsInstalled("/browser/registry/chromium", () => true)).toBe(true);
   });
 });
