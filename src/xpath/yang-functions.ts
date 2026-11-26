@@ -20,41 +20,66 @@ export type LeafrefResolver = (schemaNode: CompiledSchemaNode, element: Element)
  * inside the typedef chain (e.g. ietf-interfaces' if:interface-ref). Shared by
  * the resolver and form-level cross-reference checks.
  */
-export function leafrefPathStatementOf(schemaNode: CompiledSchemaNode): YangStatement | undefined {
+/**
+ * The `type` layer carrying the leafref `path` and the module that declared it:
+ * the node's own type first, then each typedef of the chain, whose path lives
+ * in the typedef's declaring module (RFC 7950 section 9.9.2) — not in the
+ * module of the node that happens to use the typedef.
+ */
+export function leafrefPathLayerOf(schemaNode: CompiledSchemaNode): { layer: YangStatement; module: string } | undefined {
   if (schemaNode.resolvedType !== "leafref") return undefined;
-  const layers = [schemaNode.type, ...schemaNode.typedefChain.map(typedef => childOf(typedef, "type"))]
-    .filter((layer): layer is YangStatement => Boolean(layer));
-  for (const layer of layers) {
-    if (layer.argument !== "leafref") continue;
-    const path = childOf(layer, "path");
-    if (path?.argument) return path;
-  }
-  return undefined;
+  const layers = [
+    ...(schemaNode.type ? [{ layer: schemaNode.type, module: schemaNode.module }] : []),
+    ...schemaNode.typedefChain.flatMap((typedef, index) => {
+      const layer = childOf(typedef, "type");
+      if (!layer) return [];
+      return [{ layer, module: schemaNode.typedefChainModules[index] ?? schemaNode.module }];
+    }),
+  ];
+  return layers.find(layer => layer.layer.argument === "leafref" && childOf(layer.layer, "path")?.argument);
+}
+
+export function leafrefPathStatementOf(schemaNode: CompiledSchemaNode): YangStatement | undefined {
+  const layer = leafrefPathLayerOf(schemaNode)?.layer;
+  return layer ? childOf(layer, "path") : undefined;
 }
 
 /** Build a leafref resolver sharing one compiled-path cache across deref and validation. */
 export function createLeafrefResolver(schema: CompiledYangSchema): LeafrefResolver {
   const compiledCache = new Map<string, ReturnType<typeof compileYangXPath>>();
   return (schemaNode, element) => {
-    const pathStatement = leafrefPathStatementOf(schemaNode);
-    if (!pathStatement?.argument) return undefined;
-    const owner = schema.modules.find(module => module.argument === schemaNode.module);
+    const chosen = leafrefPathLayerOf(schemaNode);
+    const pathStatement = chosen ? childOf(chosen.layer, "path") : undefined;
+    if (!chosen || !pathStatement?.argument) return undefined;
+    // Leafref paths use the declaring module's namespace for unprefixed steps
+    // and its prefix bindings for prefixed ones (RFC 7950 §6.4.1); without it
+    // `ov:clock/ov:time` cannot resolve and `l:` paths from typedefs break.
+    const owner = schema.modules.find(module => module.argument === chosen.module)
+      ?? schema.modules.find(module => module.argument === schemaNode.module);
     if (!owner) return undefined;
-    const key = schemaNode.module + ":" + pathStatement.argument;
+    const key = chosen.module + ":" + pathStatement.argument;
     let compiled = compiledCache.get(key);
     if (compiled === undefined) {
-      // Leafref paths use the declaring module's prefixes, including its own
-      // (RFC 7950 §6.4.1); without it `ov:clock/ov:time` cannot resolve.
-      compiled = compileYangXPath(
-        pathStatement.argument,
-        childOf(owner, "namespace")?.argument ?? "",
-        moduleNamespacePrefixes(schema, schemaNode.module),
-      );
+      try {
+        compiled = compileYangXPath(
+          pathStatement.argument,
+          childOf(owner, "namespace")?.argument ?? "",
+          moduleNamespacePrefixes(schema, chosen.module),
+        );
+      } catch {
+        // An uncompilable path (unresolvable prefix, wrong syntax) means the
+        // constraint cannot be decided, never a dangling leafref.
+        return undefined;
+      }
       compiledCache.set(key, compiled);
     }
     const value = element.textContent ?? "";
-    return compiled.select({ node: element })
-      .filter((child): child is Element => child.nodeType === 1 && (child as unknown as Element).textContent === value);
+    try {
+      return compiled.select({ node: element })
+        .filter((child): child is Element => child.nodeType === 1 && (child as unknown as Element).textContent === value);
+    } catch {
+      return undefined;
+    }
   };
 }
 

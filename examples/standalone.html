@@ -4615,21 +4615,25 @@ var YangEngine = (() => {
     const featureRequirementsEnabled = (requirements) => requirements.every((requirement) => evaluateFeature(requirement.module, requirement.expression, requirement.source));
     const resolveType2 = (owner, type, stack = [], scope = []) => {
       const typeName = type.argument ?? "";
-      if (builtinTypes.has(typeName)) return { name: typeName, chain: [] };
+      if (builtinTypes.has(typeName)) return { name: typeName, chain: [], chainModules: [] };
       const entry = typeName.includes(":") ? (() => {
         const resolved = resolveQName(owner, typeName, modules, moduleSet.submodules);
         return resolved ? familyIndexOf(resolved.module).typedefs.get(resolved.name) : void 0;
       })() : findSymbol("typedef", scope, owner, typeName);
-      if (!entry) return { chain: [] };
+      if (!entry) return { chain: [], chainModules: [] };
       const key = `${moduleId(entry.document)}:${entry.statement.argument ?? ""}`;
       if (stack.includes(key)) {
         report("typedef-cycle", `Typedef cycle: ${[...stack, key].join(" -> ")}`, owner, type);
-        return { chain: [] };
+        return { chain: [], chainModules: [] };
       }
       const baseType = childOf(entry.statement, "type");
-      if (!baseType) return { chain: [] };
+      if (!baseType) return { chain: [], chainModules: [] };
       const base = resolveType2(entry.document, baseType, [...stack, key], entry.scope);
-      return { ...base.name ? { name: base.name } : {}, chain: [entry.statement, ...base.chain] };
+      return {
+        ...base.name ? { name: base.name } : {},
+        chain: [entry.statement, ...base.chain],
+        chainModules: [entry.document.argument ?? "", ...base.chainModules]
+      };
     };
     for (const module of modules) for (const source of [module, ...submodulesFor(module)]) validateCardinality(source);
     const makeNode = (statement, owner, parentPath, inheritedConfig, groupingStack = [], inheritedWhen = [], inheritedFeatures = [], instantiatingModule = owner, sourceModule = owner) => {
@@ -4763,6 +4767,7 @@ var YangEngine = (() => {
         ...typeStatement ? { type: typeStatement } : {},
         ...resolvedType?.name ? { resolvedType: resolvedType.name } : {},
         typedefChain: resolvedType?.chain ?? [],
+        typedefChainModules: resolvedType?.chainModules ?? [],
         must: childrenOf(statement, "must"),
         whenConstraints: nodeWhen,
         ifFeatures: nodeFeatures,
@@ -4818,6 +4823,7 @@ var YangEngine = (() => {
           config: child.config,
           keys: [],
           typedefChain: [],
+          typedefChainModules: [],
           must: [],
           whenConstraints: [],
           ifFeatures: [],
@@ -5016,6 +5022,7 @@ var YangEngine = (() => {
         else {
           node.resolvedType = resolved.name;
           node.typedefChain = resolved.chain;
+          node.typedefChainModules = resolved.chainModules;
         }
       }
     }
@@ -5547,35 +5554,50 @@ var YangEngine = (() => {
   }
 
   // src/xpath/yang-functions.ts
-  function leafrefPathStatementOf(schemaNode) {
+  function leafrefPathLayerOf(schemaNode) {
     if (schemaNode.resolvedType !== "leafref") return void 0;
-    const layers = [schemaNode.type, ...schemaNode.typedefChain.map((typedef) => childOf(typedef, "type"))].filter((layer) => Boolean(layer));
-    for (const layer of layers) {
-      if (layer.argument !== "leafref") continue;
-      const path = childOf(layer, "path");
-      if (path?.argument) return path;
-    }
-    return void 0;
+    const layers = [
+      ...schemaNode.type ? [{ layer: schemaNode.type, module: schemaNode.module }] : [],
+      ...schemaNode.typedefChain.flatMap((typedef, index) => {
+        const layer = childOf(typedef, "type");
+        if (!layer) return [];
+        return [{ layer, module: schemaNode.typedefChainModules[index] ?? schemaNode.module }];
+      })
+    ];
+    return layers.find((layer) => layer.layer.argument === "leafref" && childOf(layer.layer, "path")?.argument);
+  }
+  function leafrefPathStatementOf(schemaNode) {
+    const layer = leafrefPathLayerOf(schemaNode)?.layer;
+    return layer ? childOf(layer, "path") : void 0;
   }
   function createLeafrefResolver(schema) {
     const compiledCache = /* @__PURE__ */ new Map();
     return (schemaNode, element) => {
-      const pathStatement = leafrefPathStatementOf(schemaNode);
-      if (!pathStatement?.argument) return void 0;
-      const owner = schema.modules.find((module) => module.argument === schemaNode.module);
+      const chosen = leafrefPathLayerOf(schemaNode);
+      const pathStatement = chosen ? childOf(chosen.layer, "path") : void 0;
+      if (!chosen || !pathStatement?.argument) return void 0;
+      const owner = schema.modules.find((module) => module.argument === chosen.module) ?? schema.modules.find((module) => module.argument === schemaNode.module);
       if (!owner) return void 0;
-      const key = schemaNode.module + ":" + pathStatement.argument;
+      const key = chosen.module + ":" + pathStatement.argument;
       let compiled = compiledCache.get(key);
       if (compiled === void 0) {
-        compiled = compileYangXPath(
-          pathStatement.argument,
-          childOf(owner, "namespace")?.argument ?? "",
-          moduleNamespacePrefixes(schema, schemaNode.module)
-        );
+        try {
+          compiled = compileYangXPath(
+            pathStatement.argument,
+            childOf(owner, "namespace")?.argument ?? "",
+            moduleNamespacePrefixes(schema, chosen.module)
+          );
+        } catch {
+          return void 0;
+        }
         compiledCache.set(key, compiled);
       }
       const value = element.textContent ?? "";
-      return compiled.select({ node: element }).filter((child) => child.nodeType === 1 && child.textContent === value);
+      try {
+        return compiled.select({ node: element }).filter((child) => child.nodeType === 1 && child.textContent === value);
+      } catch {
+        return void 0;
+      }
     };
   }
   var requireString = (value, name2) => {
@@ -5979,8 +6001,13 @@ var YangEngine = (() => {
     }
     const requireInstanceDisabled = (node) => (node.type ? childOf(node.type, "require-instance")?.argument : void 0) === "false" || node.properties["require-instance"]?.[0]?.argument === "false";
     function checkLeafrefs(element, schemaNode) {
-      if (schemaNode.resolvedType === "leafref" && !requireInstanceDisabled(schemaNode) && resolveLeafref(schemaNode, element)?.length === 0) {
-        issue("leafref-dangling", schemaNode, `leafref '${schemaNode.path}' does not resolve in the instance`);
+      if (schemaNode.resolvedType === "leafref" && !requireInstanceDisabled(schemaNode)) {
+        const targets = resolveLeafref(schemaNode, element);
+        if (targets === void 0) {
+          if (leafrefPathStatementOf(schemaNode)) indeterminate = true;
+        } else if (targets.length === 0) {
+          issue("leafref-dangling", schemaNode, `leafref '${schemaNode.path}' does not resolve in the instance`);
+        }
       }
       for (const child of schemaNode.children) {
         if (child.kind === "choice" || child.kind === "case") {

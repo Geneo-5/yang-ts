@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { compileYangModules, parseYang, resolveModuleSet } from "../src/index.js";
+import { compileYangModules, parseYang, resolveModuleSet, validateDataTree } from "../src/index.js";
+import { parseXml } from "./dom.js";
 
 const compile = async (text: string) => compileYangModules(await resolveModuleSet([parseYang(text)], { async loadModule() { return undefined; } }));
 
@@ -89,5 +90,55 @@ describe("typedef/grouping scopes declared inside data nodes and operations", ()
       uses hidden;
     }`);
     expect(schema.diagnostics.map(item => item.code)).toContain("unresolved-grouping");
+  });
+});
+
+/** Stage 7b P0 (ROADMAP §142): leafref paths of typedefs compile in the typedef's declaring module. */
+describe("leafref declared through a typedef across modules", () => {
+  const schemaWith = async (typedefBody: string) => {
+    const schema = compileYangModules(await resolveModuleSet([
+      parseYang(`module lib {
+        namespace "urn:lib"; prefix l;
+        container items {
+          list item { key name; leaf name { type string; } leaf value { type string; } }
+        }
+        typedef item-ref { ${typedefBody} }
+      }`),
+      parseYang(`module user {
+        namespace "urn:user"; prefix u;
+        import lib { prefix o; }
+        augment "/o:items" { leaf watch { type o:item-ref; } }
+      }`),
+    ], { async loadModule() { return undefined; } }));
+    expect(schema.diagnostics.map(item => item.code)).toEqual([]);
+    return schema;
+  };
+  // RFC 7950 section 7.17: an augmented node carries the augmenting module's
+  // namespace, so <watch> is qualified with urn:user while living in <items>.
+  const instance = `<items xmlns="urn:lib">
+    <item><name>n1</name><value>a</value></item>
+    <item><name>n2</name><value>b</value></item>
+    <watch xmlns="urn:user">n2</watch>
+  </items>`;
+
+  it("keeps prefixed typedef paths valid when the using module renames the prefix", async () => {
+    const schema = await schemaWith(`type leafref { path "/l:items/l:item/l:name"; }`);
+    // Pre-fix: the path compiles in the *using* module, where no `l` prefix
+    // exists, and validateDataTree throws "Cannot resolve QName l".
+    expect(validateDataTree(schema, parseXml(instance))).toMatchObject({ status: "valid", issues: [] });
+  });
+
+  it("qualifies unprefixed typedef paths with the declaring module's namespace", async () => {
+    const schema = await schemaWith(`type leafref { path "/items/item/name"; }`);
+    // Pre-fix: unprefixed steps take the using module's namespace so the path
+    // matches nothing and valid data reports a false leafref-dangling.
+    expect(validateDataTree(schema, parseXml(instance))).toMatchObject({ status: "valid", issues: [] });
+  });
+
+  it("reports indeterminate instead of throwing when the path cannot compile", async () => {
+    const schema = await schemaWith(`type leafref { path "/ghost:missing/leaf"; }`);
+    const result = validateDataTree(schema, parseXml(instance));
+    expect(result.status).toBe("indeterminate");
+    expect(result.issues.map(item => item.code)).not.toContain("leafref-dangling");
   });
 });

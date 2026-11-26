@@ -42,6 +42,8 @@ export interface CompiledSchemaNode {
   type?: YangStatement;
   resolvedType?: string;
   typedefChain: readonly YangStatement[];
+  /** Module declaring each typedef of typedefChain, in the same order. */
+  typedefChainModules: readonly string[];
   must: readonly YangStatement[];
   whenConstraints: readonly YangStatement[];
   ifFeatures: readonly string[];
@@ -332,25 +334,32 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   };
   const featureRequirementsEnabled = (requirements: readonly { module: string; expression: string; source: YangStatement }[]) =>
     requirements.every(requirement => evaluateFeature(requirement.module, requirement.expression, requirement.source));
-  const resolveType = (owner: YangModule, type: YangStatement, stack: readonly string[] = [], scope: readonly ScopeLevel[] = []): { name?: string; chain: YangStatement[] } => {
+  const resolveType = (owner: YangModule, type: YangStatement, stack: readonly string[] = [], scope: readonly ScopeLevel[] = []): { name?: string; chain: YangStatement[]; chainModules: string[] } => {
     const typeName = type.argument ?? "";
-    if (builtinTypes.has(typeName)) return { name: typeName, chain: [] };
+    if (builtinTypes.has(typeName)) return { name: typeName, chain: [], chainModules: [] };
     const entry = typeName.includes(":")
       ? (() => {
         const resolved = resolveQName(owner, typeName, modules, moduleSet.submodules);
         return resolved ? familyIndexOf(resolved.module).typedefs.get(resolved.name) : undefined;
       })()
       : findSymbol("typedef", scope, owner, typeName);
-    if (!entry) return { chain: [] };
+    if (!entry) return { chain: [], chainModules: [] };
     const key = `${moduleId(entry.document)}:${entry.statement.argument ?? ""}`;
     if (stack.includes(key)) {
       report("typedef-cycle", `Typedef cycle: ${[...stack, key].join(" -> ")}`, owner, type);
-      return { chain: [] };
+      return { chain: [], chainModules: [] };
     }
     const baseType = childOf(entry.statement, "type");
-    if (!baseType) return { chain: [] };
+    if (!baseType) return { chain: [], chainModules: [] };
     const base = resolveType(entry.document, baseType, [...stack, key], entry.scope);
-    return { ...(base.name ? { name: base.name } : {}), chain: [entry.statement, ...base.chain] };
+    // chainModules[i] names the module that declared chain[i] so callers can
+    // compile statements nested in each typedef (e.g. leafref paths) in the
+    // typedef's own prefix context, whatever module ends up using the type.
+    return {
+      ...(base.name ? { name: base.name } : {}),
+      chain: [entry.statement, ...base.chain],
+      chainModules: [entry.document.argument ?? "", ...base.chainModules],
+    };
   };
   for (const module of modules) for (const source of [module, ...submodulesFor(module)]) validateCardinality(source);
 
@@ -488,6 +497,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       ...(typeStatement ? { type: typeStatement } : {}),
       ...(resolvedType?.name ? { resolvedType: resolvedType.name } : {}),
       typedefChain: resolvedType?.chain ?? [],
+      typedefChainModules: resolvedType?.chainModules ?? [],
       must: childrenOf(statement, "must"),
       whenConstraints: nodeWhen,
       ifFeatures: nodeFeatures,
@@ -546,7 +556,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       rebase(child, child.path, `${path}/${child.name}`);
       return {
         kind: "case", name: child.name, module: child.module, namespace: child.namespace,
-        path, config: child.config, keys: [], typedefChain: [], must: [], whenConstraints: [],
+        path, config: child.config, keys: [], typedefChain: [], typedefChainModules: [], must: [], whenConstraints: [],
         ifFeatures: [], featureRequirements: [], properties: {}, deviations: [], source: child.source,
         children: [child],
       };
@@ -721,6 +731,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       else {
         node.resolvedType = resolved.name;
         node.typedefChain = resolved.chain;
+        node.typedefChainModules = resolved.chainModules;
       }
     }
   }

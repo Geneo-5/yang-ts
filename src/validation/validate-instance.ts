@@ -1,7 +1,7 @@
 import { CompiledSchemaNode, CompiledYangSchema, moduleNamespacePrefixes } from "../yang/compiler.js";
 import { childOf } from "../yang/parser.js";
 import { createConstraintEvaluator } from "../xpath/evaluate-constraints.js";
-import { createLeafrefResolver } from "../xpath/yang-functions.js";
+import { createLeafrefResolver, leafrefPathStatementOf } from "../xpath/yang-functions.js";
 import { buildAccessibleTree } from "../xpath/accessible-tree.js";
 
 export type ValidationIssueCode =
@@ -228,9 +228,16 @@ export function validateDataTree(
     || node.properties["require-instance"]?.[0]?.argument === "false";
 
   function checkLeafrefs(element: Element, schemaNode: CompiledSchemaNode): void {
-    if (schemaNode.resolvedType === "leafref" && !requireInstanceDisabled(schemaNode)
-      && resolveLeafref(schemaNode, element)?.length === 0) {
-      issue("leafref-dangling", schemaNode, `leafref '${schemaNode.path}' does not resolve in the instance`);
+    if (schemaNode.resolvedType === "leafref" && !requireInstanceDisabled(schemaNode)) {
+      const targets = resolveLeafref(schemaNode, element);
+      if (targets === undefined) {
+        // A path that cannot even be compiled (constraint referencing an
+        // unresolvable QName of its declaring module) leaves the constraint
+        // undecidable: indeterminate, not dangling.
+        if (leafrefPathStatementOf(schemaNode)) indeterminate = true;
+      } else if (targets.length === 0) {
+        issue("leafref-dangling", schemaNode, `leafref '${schemaNode.path}' does not resolve in the instance`);
+      }
     }
     for (const child of schemaNode.children) {
       if (child.kind === "choice" || child.kind === "case") { checkLeafrefs(element, child); continue; }
