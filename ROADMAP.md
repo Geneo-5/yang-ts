@@ -39,8 +39,8 @@ Delivered: source-linked schema IR, grouping expansion with `refine`, choices/ca
 Open defects:
 - [x] Nested nodes of a grouping defined in another module now inherit the instantiating module/namespace (`instantiatingModule` and inherited `when`/`if-feature` are forwarded to every expansion level), regression-tested in `tests/stage7-p0.test.ts` (2026-11-26).
 - [x] Submodule context: data nodes, operations, augment and deviation statements of a submodule now resolve their `type`, `uses` and augment paths in the submodule's own document (its imports and its `belongs-to` prefix), keeping the parent module's namespace for schema identity; XPath prefix maps (`moduleNamespacePrefixes`) include the included submodules' imports and `belongs-to` prefixes (2026-11-26, `tests/stage7-p1.test.ts`).
-- [ ] `refine` of a `leaf` rejects `mandatory` (allowed by RFC 7950 §7.13.2); `augment` inside `uses` is ignored.
-- [ ] Typedef and grouping lookup ignores scoping rules (§6.2.1) and walks the whole module per reference (O(N²)); needs a per-module index.
+- [x] `refine` of a `leaf` accepts `mandatory` (RFC 7950 §7.13.2) — the refined statement lands in the compiled node's properties, so `validateDataTree` reports `missing-mandatory` for the refined site only; `augment` inside `uses` expands into its (relative) target inside the grouping with the uses' `when`/`if-feature` inherited, additions in the instantiating module's namespace and duplicates reported (fixed 2026-11-26, `tests/stage7-p1.test.ts`).
+- [x] Typedef and grouping lookup follows §6.2.1 scoping over a per-module-family index (O(1) top-level lookup): declarations nested in an enclosing grouping are visible only within it and shadow outer/top-level ones; a grouping's internals resolve prefixes in their declaring document (module or submodule) (fixed 2026-11-26, `tests/stage7-p1.test.ts`).
 - [ ] `when` inherited through several levels is always evaluated at the immediate parent element.
 - [ ] Not handled: `if-feature` on `enum`/`bit`, feature-to-feature dependencies, deviations targeting RPC/action/notification nodes, name uniqueness across choice cases.
 
@@ -115,7 +115,7 @@ New stage collecting the review findings by priority. Each item is closed by a f
 - [x] Validate on the accessible tree (defaults, config/state) (Stage 5) — closed 2026-11-26, see Stage 5.
 - [x] `FormField` restriction descriptor; `[*]` path mismatch; leaf-list cross-references (Stage 5) — closed 2026-11-26 by regressions in `tests/stage7-p1.test.ts` against RFC 7950 §6.2.1/§9.9/§9.10: fields carry a serializable `restrictions` descriptor so copies and proxies keep range/length/pattern/fraction-digits (a `WeakMap` lost them); `findSchemaNodeByPath` strips `[*]` per segment; leaf-lists of leafref/identityref validate entry by entry with `(entry N)` errors and union leaf-lists pick up member restrictions.
 - [x] `evaluateCandidates` location, entry targeting and non-mutation (Stage 5) — closed 2026-11-26, see Stage 5.
-- [ ] `refine` `mandatory`; `augment` under `uses`; typedef/grouping scoping and index (Stage 2).
+- [x] `refine` `mandatory`; `augment` under `uses`; typedef/grouping scoping and index (Stage 2) — closed 2026-11-26, see Stage 2.
 - [ ] RESTCONF loader paths and submodule lists (Stage 6).
 - [ ] Namespace-aware identityref resolution for XML; `enum-value` by node type (Stage 4).
 - [ ] Accessible tree: wrapper documents, inactive-case defaults (Stage 4).
