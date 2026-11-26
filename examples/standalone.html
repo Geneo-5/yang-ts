@@ -3894,6 +3894,7 @@ var YangEngine = (() => {
   var index_exports = {};
   __export(index_exports, {
     CompiledSchemaFormatError: () => CompiledSchemaFormatError,
+    YangJsonError: () => YangJsonError,
     YangSyntaxError: () => YangSyntaxError,
     buildAccessibleTree: () => buildAccessibleTree,
     canonicalFormOf: () => canonicalFormOf,
@@ -3911,6 +3912,7 @@ var YangEngine = (() => {
     createRestconfSetRequest: () => createRestconfSetRequest,
     createRestconfUpdateRequest: () => createRestconfUpdateRequest,
     deserializeCompiledSchema: () => deserializeCompiledSchema,
+    documentToYangJson: () => documentToYangJson,
     evaluateCandidates: () => evaluateCandidates,
     findSchemaLibraryMismatches: () => findSchemaLibraryMismatches,
     nodeToRestconfDataPath: () => nodeToRestconfDataPath,
@@ -3923,7 +3925,8 @@ var YangEngine = (() => {
     restconfRpcPath: () => restconfRpcPath,
     serializeCompiledSchema: () => serializeCompiledSchema,
     validateDataTree: () => validateDataTree,
-    validateFormValue: () => validateFormValue
+    validateFormValue: () => validateFormValue,
+    yangJsonToDocument: () => yangJsonToDocument
   });
 
   // src/yang/ast.ts
@@ -4932,10 +4935,10 @@ var YangEngine = (() => {
         const memberSeen = /* @__PURE__ */ new Map();
         for (const caseNode of node.children) {
           for (const member of caseNode.kind === "case" ? caseNode.children : [caseNode]) {
-            const memberKey = `${member.module}:${member.name}`;
-            if (memberSeen.has(memberKey)) {
+            const memberKey2 = `${member.module}:${member.name}`;
+            if (memberSeen.has(memberKey2)) {
               report("duplicate-node", `Node '${member.name}' is declared in more than one case of choice '${node.name}'`, owner, member.source);
-            } else memberSeen.set(memberKey, member.source);
+            } else memberSeen.set(memberKey2, member.source);
           }
         }
       }
@@ -7678,6 +7681,304 @@ var YangEngine = (() => {
       mismatches.push({ name: entry.name, kind: "only-in-library", libraryRevision: entry.revision });
     }
     return mismatches.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  // src/restconf/yang-json.ts
+  var YangJsonError = class extends Error {
+    constructor(message, path) {
+      super(path ? `${message} (at ${path})` : message);
+      __publicField(this, "path", path);
+      this.name = "YangJsonError";
+    }
+  };
+  function moduleInfos(schema) {
+    const byName = /* @__PURE__ */ new Map();
+    const byNamespace = /* @__PURE__ */ new Map();
+    for (const module of schema.modules) {
+      const namespace = childOf(module, "namespace")?.argument ?? "";
+      const prefix = childOf(module, "prefix")?.argument ?? "";
+      const info = { name: module.argument, namespace, prefix };
+      byName.set(module.argument, info);
+      if (namespace) byNamespace.set(namespace, info);
+    }
+    for (const submodule of schema.submodules) {
+      void submodule;
+    }
+    return { byName, byNamespace };
+  }
+  var isPlainObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
+  var NUMBER_TYPES = /* @__PURE__ */ new Set(["int8", "int16", "int32", "uint8", "uint16", "uint32"]);
+  var splitMemberKey = (key) => {
+    const colon = key.indexOf(":");
+    if (colon <= 0 || colon === key.length - 1) return { module: void 0, localName: key };
+    return { module: key.slice(0, colon), localName: key.slice(colon + 1) };
+  };
+  function fail2(message, path) {
+    throw new YangJsonError(message, path);
+  }
+  function yangJsonToDocument(schema, json, options) {
+    const modules = moduleInfos(schema);
+    const target = options.document;
+    if (!isPlainObject(json)) fail2("expected an RFC 7951 JSON object of data resource members", "");
+    const members = Object.keys(json);
+    if (members.length !== 1) {
+      fail2(`expected exactly one top-level data node, got ${members.length}`, members.join(", "));
+    }
+    const key = members[0];
+    const { module, localName } = splitMemberKey(key);
+    const roots = schema.roots.filter((node) => node.name === localName && (module === void 0 ? true : modules.byName.get(module)?.namespace === node.namespace));
+    if (roots.length === 0) fail2(`unknown top-level data node '${key}'`, key);
+    if (roots.length > 1) fail2(`ambiguous top-level data node '${key}' \u2014 qualify it with the module name`, key);
+    const schemaNode = roots[0];
+    const element = target.createElementNS(schemaNode.namespace, localName);
+    if (target.documentElement) target.replaceChild(element, target.documentElement);
+    else target.appendChild(element);
+    buildValue(schema, schemaNode, json[key], element, false, modules, `/${localName}`);
+    return target;
+  }
+  function dataChildrenOf(node) {
+    return node.children.flatMap((child) => child.kind === "choice" || child.kind === "case" ? dataChildrenOf(child) : [child]);
+  }
+  function resolveMember(parent, key, modules, path) {
+    const { module, localName } = splitMemberKey(key);
+    const candidates = dataChildrenOf(parent).filter((node) => node.name === localName && (module === void 0 ? node.namespace === parent.namespace : node.namespace === modules.byName.get(module)?.namespace));
+    if (candidates.length === 1) return candidates[0];
+    if (candidates.length === 0) fail2(`unknown data node '${key}' under '${parent.name}'`, path);
+    fail2(`ambiguous member '${key}' under '${parent.name}'`, path);
+  }
+  function buildValue(schema, schemaNode, value, parent, attach, modules, path) {
+    const doc = parent.ownerDocument;
+    if (schemaNode.kind === "list") {
+      if (!Array.isArray(value)) fail2(`expected an array of list entries for '${schemaNode.name}'`, path);
+      for (const [index, entry] of value.entries()) {
+        const entryPath = `${path}[${index}]`;
+        if (!isPlainObject(entry)) fail2(`expected an object for a list entry of '${schemaNode.name}'`, entryPath);
+        const item = attach ? doc.createElementNS(schemaNode.namespace, schemaNode.name) : index === 0 ? parent : fail2(`a document root list entry carries exactly one entry`, path);
+        if (attach) parent.appendChild(item);
+        for (const key of Object.keys(entry)) {
+          const child = resolveMember(schemaNode, key, modules, `${entryPath}/${key}`);
+          buildValue(schema, child, entry[key], item, true, modules, `${entryPath}/${key}`);
+        }
+      }
+      return;
+    }
+    if (schemaNode.kind === "leaf-list") {
+      if (!Array.isArray(value)) fail2(`expected an array for leaf-list '${schemaNode.name}'`, path);
+      for (const item of value) {
+        const itemElement = doc.createElementNS(schemaNode.namespace, schemaNode.name);
+        parent.appendChild(itemElement);
+        itemElement.textContent = scalarText(schemaNode, item, path);
+      }
+      return;
+    }
+    const own = attach ? doc.createElementNS(schemaNode.namespace, schemaNode.name) : parent;
+    if (attach) parent.appendChild(own);
+    switch (schemaNode.kind) {
+      case "container": {
+        if (!isPlainObject(value)) fail2(`expected an object for container '${schemaNode.name}'`, path);
+        for (const key of Object.keys(value)) {
+          const child = resolveMember(schemaNode, key, modules, `${path}/${key}`);
+          buildValue(schema, child, value[key], own, true, modules, `${path}/${key}`);
+        }
+        return;
+      }
+      case "leaf": {
+        if (schemaNode.resolvedType === "empty") {
+          if (!Array.isArray(value) || value.length !== 1 || value[0] !== null) {
+            fail2(`expected [null] for empty leaf '${schemaNode.name}'`, path);
+          }
+          return;
+        }
+        own.textContent = identityrefText(schemaNode, value, modules, own, path);
+        return;
+      }
+      case "anydata":
+      case "anyxml": {
+        for (const node of anyValueToNodes(value, schemaNode.namespace, schemaNode.name, doc, path)) {
+          own.appendChild(node);
+        }
+        return;
+      }
+      default:
+        fail2(`schema node kind '${schemaNode.kind}' carries no JSON value`, path);
+    }
+  }
+  function identityrefText(schemaNode, value, modules, element, path) {
+    if (schemaNode.resolvedType !== "identityref" || typeof value !== "string") {
+      return scalarText(schemaNode, value, path);
+    }
+    const { module, localName } = splitMemberKey(value);
+    const info = module ? modules.byName.get(module) : void 0;
+    if (info?.prefix) {
+      element.setAttribute(`xmlns:${info.prefix}`, info.namespace);
+      return `${info.prefix}:${localName}`;
+    }
+    return value;
+  }
+  function scalarText(schemaNode, value, path) {
+    if (typeof value === "boolean") return value ? "true" : "false";
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) fail2(`non-finite number for '${schemaNode.name}'`, path);
+      return String(value);
+    }
+    if (typeof value === "string") return value;
+    fail2(`unexpected ${typeof value} value for leaf '${schemaNode.name}'`, path);
+  }
+  function anyValueToNodes(value, namespace, name2, doc, path) {
+    if (Array.isArray(value)) {
+      return value.flatMap((item) => anyValueToNodes(item, namespace, name2, doc, path));
+    }
+    const element = doc.createElementNS(namespace, name2);
+    if (isPlainObject(value)) {
+      for (const key of Object.keys(value)) {
+        const { localName } = splitMemberKey(key);
+        for (const node of anyValueToNodes(value[key], namespace, localName, doc, `${path}/${key}`)) {
+          element.appendChild(node);
+        }
+      }
+      return [element];
+    }
+    element.textContent = scalarText(
+      { kind: "leaf", name: name2 },
+      value,
+      path
+    );
+    return [element];
+  }
+  function childElements(element) {
+    const out = [];
+    for (let index = 0; index < element.childNodes.length; index += 1) {
+      const node = element.childNodes[index];
+      if (node.nodeType === 1) out.push(node);
+    }
+    return out;
+  }
+  function inScopeNamespaces(element) {
+    const prefixes = /* @__PURE__ */ new Map();
+    for (let node = element; node && node.nodeType === 1; node = node.parentNode) {
+      const holder = node;
+      const attributes = holder.attributes;
+      for (let index = 0; index < attributes.length; index += 1) {
+        const attribute = attributes.item(index);
+        if (attribute.name === "xmlns") prefixes.set("", attribute.value);
+        else if (attribute.name.startsWith("xmlns:")) {
+          prefixes.set(attribute.name.slice("xmlns:".length), attribute.value);
+        }
+      }
+    }
+    return prefixes;
+  }
+  function rewriteInstanceIdentifier(text, namespaces, modules) {
+    return text.split("/").map((segment) => {
+      const predicate = /^\[.*\]$/.exec(segment);
+      const bare = predicate ? segment.slice(1, -1) : segment;
+      const colon = bare.indexOf(":");
+      if (colon <= 0) return segment;
+      const namespace = namespaces.get(bare.slice(0, colon));
+      if (!namespace) return segment;
+      const moduleName = modules.byNamespace.get(namespace)?.name ?? bare.slice(0, colon);
+      const rewritten = `${moduleName}:${bare.slice(colon + 1)}`;
+      return predicate ? `[${rewritten}]` : rewritten;
+    }).join("/");
+  }
+  function encodeScalar(schema, schemaNode, element, modules) {
+    const text = element.textContent ?? "";
+    if (NUMBER_TYPES.has(schemaNode.resolvedType ?? "")) {
+      const value = Number(text);
+      return Number.isNaN(value) ? text : value;
+    }
+    switch (schemaNode.resolvedType) {
+      case "boolean":
+        if (text === "true" || text === "false") return text === "true";
+        return text;
+      case "empty":
+        return [null];
+      case "identityref": {
+        const colon = text.indexOf(":");
+        const namespaces = inScopeNamespaces(element);
+        if (colon <= 0) {
+          const identity = schema.identities.find((candidate) => candidate.name === text && candidate.namespace === schemaNode.namespace);
+          return identity ? `${identity.module}:${text}` : text;
+        }
+        const namespace = namespaces.get(text.slice(0, colon));
+        if (namespace) {
+          const identity = schema.identities.find((candidate) => candidate.name === text.slice(colon + 1) && candidate.namespace === namespace);
+          if (identity) return `${identity.module}:${text.slice(colon + 1)}`;
+        }
+        return text;
+      }
+      case "instance-identifier":
+        return rewriteInstanceIdentifier(text, inScopeNamespaces(element), modules);
+      default:
+        return text;
+    }
+  }
+  function memberKey(schemaNode, containingNamespace, modules, alwaysQualified) {
+    if (alwaysQualified || schemaNode.namespace !== containingNamespace) {
+      const moduleName = modules.byNamespace.get(schemaNode.namespace)?.name;
+      return moduleName ? `${moduleName}:${schemaNode.name}` : schemaNode.name;
+    }
+    return schemaNode.name;
+  }
+  function documentToYangJson(schema, doc) {
+    const modules = moduleInfos(schema);
+    const root = doc.documentElement;
+    if (!root) fail2("the document has no root element", "");
+    const rootNode = matchSchemaChild(schema.roots, root);
+    if (!rootNode) fail2(`unknown top-level data node '${root.nodeName}'`, `/${root.localName ?? root.nodeName}`);
+    return {
+      [memberKey(rootNode, rootNode.namespace, modules, true)]: encodeNode(schema, root, rootNode, modules, `/${rootNode.name}`)
+    };
+  }
+  function encodeNode(schema, element, schemaNode, modules, path) {
+    switch (schemaNode.kind) {
+      case "container":
+        return encodeMembers(schema, element, schemaNode, modules, path);
+      case "leaf":
+        return encodeScalar(schema, schemaNode, element, modules);
+      case "anydata":
+      case "anyxml":
+        return anyElementToValue(element, element.namespaceURI ?? "");
+      default:
+        fail2(`schema node kind '${schemaNode.kind}' carries no XML value`, path);
+    }
+  }
+  function encodeMembers(schema, element, schemaNode, modules, path) {
+    const members = {};
+    for (const child of childElements(element)) {
+      const node = matchSchemaChild(schemaNode.children, child);
+      if (!node) fail2(`unknown data node '${child.nodeName}' under '${schemaNode.name}'`, `${path}/${child.localName ?? child.nodeName}`);
+      const key = memberKey(node, schemaNode.namespace, modules, false);
+      const childPath = `${path}/${node.name}`;
+      if (node.kind === "list") {
+        const list = members[key] ?? [];
+        list.push(encodeMembers(schema, child, node, modules, childPath));
+        members[key] = list;
+      } else if (node.kind === "leaf-list") {
+        const list = members[key] ?? [];
+        list.push(encodeScalar(schema, node, child, modules));
+        members[key] = list;
+      } else {
+        members[key] = encodeNode(schema, child, node, modules, childPath);
+      }
+    }
+    return members;
+  }
+  function anyElementToValue(element, containingNamespace) {
+    const children = childElements(element);
+    if (children.length === 0) return element.textContent ?? "";
+    const result = {};
+    for (const child of children) {
+      const key = child.localName ?? child.nodeName;
+      const value = anyElementToValue(child, child.namespaceURI ?? containingNamespace);
+      if (key in result) {
+        const existing = result[key];
+        result[key] = Array.isArray(existing) ? [...existing, value] : [existing, value];
+      } else {
+        result[key] = value;
+      }
+    }
+    return result;
   }
 
   // src/restconf/paths.ts

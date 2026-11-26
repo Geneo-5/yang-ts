@@ -129,6 +129,20 @@ const schema = deserializeCompiledSchema(payload); // → CompiledYangSchema
 
 For devices whose models are not known at build time, `createRestconfModuleLoader` fetches the device's YANG Library and compiles in the browser. Check a precompiled bundle against the device before using it: `findSchemaLibraryMismatches(schema, yangLibraryInventory(payload))` returns the actionable differences (revision drift, modules the device dropped, `implement` modules the bundle lacks). The page chooses precompiled or discovered explicitly — a non-empty mismatch list is a decision, not an error the engine makes for you.
 
+## RESTCONF JSON ↔ instance trees
+
+RESTCONF bodies are RFC 7951 JSON; the engine validates XML documents. The adapter bridges both ways:
+
+```ts
+import { yangJsonToDocument, documentToYangJson } from "yang-browser-engine";
+
+const doc = yangJsonToDocument(schema, body, { document: new DOMParser().parseFromString("<x/>", "application/xml") });
+const verdict = validateDataTree(schema, doc);          // validate the RESTCONF response
+const edited = documentToYangJson(schema, doc);         // send it back as a PUT body
+```
+
+Module-qualified member names appear only at namespace changes; int64/uint64/decimal64 stay strings; `empty` is `[null]`; `bits` are space-separated strings; unknown or ambiguous members raise `YangJsonError` naming the JSON path.
+
 ## Browser example
 
 After building, serve the repository root over HTTP and open [`examples/browser-usage.html`](./examples/browser-usage.html). It parses the Sysrepo oven model in the browser, populates the `insert-food` timing enum, validates the selected value, and previews the corresponding RESTCONF RPC request. The example does not send the request, resolve typedefs, apply augments, or evaluate `must`/`when` constraints.

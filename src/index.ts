@@ -42,6 +42,11 @@ export {
   findSchemaLibraryMismatches,
 } from "./restconf/schema-mismatch.js";
 export {
+  yangJsonToDocument,
+  documentToYangJson,
+  YangJsonError,
+} from "./restconf/yang-json.js";
+export {
   nodeToRestconfDataPath,
   nodeToRestconfDatastorePath,
   nodeToXPath,
@@ -69,6 +74,7 @@ export type { ConstraintEvaluation, ConstraintEvaluator } from "./xpath/evaluate
 export type { RestconfDataRequest, RestconfRpcRequest, RestconfQueryParameters, RestconfDatastore, YangPathSegment, YangPathKey, RestconfScalar } from "./restconf/paths.js";
 export type { RestconfLoaderOptions, YangLibraryInventory, YangLibraryModuleEntry } from "./restconf/library-loader.js";
 export type { SchemaRevisionMismatch } from "./restconf/schema-mismatch.js";
+export type { YangJsonToDocumentOptions } from "./restconf/yang-json.js";
 export type { CompiledYangXPath } from "./xpath/xpath.js";
 
 /** Feature-gated behavior of the shipped engine, kept honest with the docs. */

@@ -19,5 +19,6 @@ export * from "./forms/form-model.js";
 export * from "./restconf/paths.js";
 export * from "./restconf/library-loader.js";
 export * from "./restconf/schema-mismatch.js";
+export * from "./restconf/yang-json.js";
 export * from "./types/builtins.js";
 export * from "./types/xsd-pattern.js";
