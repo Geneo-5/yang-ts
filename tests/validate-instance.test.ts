@@ -75,18 +75,28 @@ describe("data-tree structural validation", () => {
       }
     }`);
     const doc = (target: string, free: string) => instance(
-      `<refs xmlns="urn:refs"><item><name>a</name><target>${target}</target><free>${free}</free></item></refs>`);
+      `<refs xmlns="urn:refs" xmlns:r="urn:refs" xmlns:o="urn:other"><item><name>a</name><target>${target}</target><free>${free}</free></item></refs>`);
 
-    const valid = validateDataTree(schema, doc("/refs/item[name='a']", "count(/refs/item)"));
+    const valid = validateDataTree(schema, doc("/r:refs/r:item[r:name='a']", "/o:missing/o:target"));
     expect(valid.issues).toEqual([]);
 
-    const dangling = validateDataTree(schema, doc("/refs/item[name='missing']", "count(/refs/item)"));
+    const dangling = validateDataTree(schema, doc("/r:refs/r:item[r:name='missing']", "/o:missing/o:target"));
     expect(dangling.issues.map(item => item.code)).toEqual(["instance-identifier-dangling"]);
 
     const invalid = validateDataTree(schema, doc("refs/item", "count(/refs/item)"));
-    expect(invalid.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
+    expect(invalid.issues.map(item => item.code)).toEqual(["instance-identifier-invalid", "instance-identifier-invalid"]);
 
-    const emptyFreeForm = validateDataTree(schema, doc("/refs/item[name='a']", " "));
+    const wrongNamespace = validateDataTree(schema, doc("/o:refs/o:item[o:name='a']", "/o:missing/o:target"));
+    expect(wrongNamespace.issues.map(item => item.code)).toEqual(["instance-identifier-dangling"]);
+
+    const wrongPredicateNamespace = validateDataTree(schema, doc("/r:refs/r:item[o:name='a']", "/o:missing/o:target"));
+    expect(wrongPredicateNamespace.issues.map(item => item.code)).toEqual(["instance-identifier-dangling"]);
+
+    const unboundPrefix = validateDataTree(schema, instance(
+      `<refs xmlns="urn:refs"><item><name>a</name><target>/x:refs/x:item</target><free>/x:missing</free></item></refs>`));
+    expect(unboundPrefix.issues.map(item => item.code)).toEqual(["instance-identifier-invalid", "instance-identifier-invalid"]);
+
+    const emptyFreeForm = validateDataTree(schema, doc("/r:refs/r:item[r:name='a']", " "));
     expect(emptyFreeForm.issues.map(item => item.code)).toEqual(["instance-identifier-invalid"]);
   });
 

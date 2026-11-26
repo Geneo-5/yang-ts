@@ -77,6 +77,9 @@ describe("RFC 7951 JSON adapter", () => {
     // empty stays an empty element.
     const emp = doc.getElementsByTagNameNS("urn:probe", "emp")[0]!;
     expect(emp.childNodes.length).toBe(0);
+    const iid = doc.getElementsByTagNameNS("urn:probe", "iid")[0]!;
+    expect(iid.textContent).toBe("/p:top/p:i8");
+    expect(iid.lookupNamespaceURI("p")).toBe("urn:probe");
     // list entries become sibling elements; leaf-lists repeat.
     expect(doc.getElementsByTagNameNS("urn:probe", "items").length).toBe(2);
     expect(doc.getElementsByTagNameNS("urn:probe", "tags").length).toBe(2);

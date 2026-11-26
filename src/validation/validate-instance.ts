@@ -303,7 +303,7 @@ export function validateDataTree(
     if (schemaNode.resolvedType === "instance-identifier" && schemaNode.kind === "leaf") {
       const value = element.textContent ?? "";
       const requireInstance = !requireInstanceDisabled(schemaNode);
-      const parsed = parseInstanceIdentifier(value, requireInstance);
+      const parsed = parseInstanceIdentifier(value, element);
       if (!parsed.ok) {
         issue("instance-identifier-invalid", schemaNode, `instance-identifier '${schemaNode.path}' is not a valid instance-identifier: ${parsed.reason}`);
       } else if (requireInstance && !resolvesInstanceIdentifier(store, parsed.steps)) {
@@ -348,9 +348,10 @@ export function validateDataTree(
 
 /** One node step of an RFC 7950 instance-identifier (section 9.13): a node
  *  name plus key/value predicates; a `.` predicate key addresses leaf-lists. */
+interface QualifiedInstanceName { localName: string; namespace: string }
 interface IdentifierStep {
-  name: string;
-  predicates: { key: string; value: string }[];
+  name: QualifiedInstanceName;
+  predicates: { key: QualifiedInstanceName | "."; value: string }[];
 }
 
 type ParsedIdentifier =
@@ -363,21 +364,17 @@ type ParsedStep =
 
 /**
  * Parse the instance-identifier lexical form: a root-anchored path of node
- * names with `[key = value]` or `[. = value]` predicates. Namespace prefixes
- * are optional and match instance elements by local name. Values may be
- * quoted; unquoted values stop at path/predicate delimiters. With
- * `require-instance false` any non-empty XPath expression is accepted.
+ * names with `[key = value]` or `[. = value]` predicates. Every QName must
+ * have a prefix declared on the instance-identifier element (RFC 7950 §9.13.2).
+ * Values may be quoted; unquoted values stop at path/predicate delimiters.
  */
-function parseInstanceIdentifier(value: string, requireInstance: boolean): ParsedIdentifier {
-  if (!requireInstance) {
-    return value.trim().length > 0 ? { ok: true, steps: [] } : { ok: false, reason: "empty expression" };
-  }
+function parseInstanceIdentifier(value: string, context: Element): ParsedIdentifier {
   if (!value.startsWith("/")) return { ok: false, reason: "must start with '/'" };
   const segments = splitTopLevel(value);
   if (!segments) return { ok: false, reason: "unbalanced brackets or quotes" };
   const steps: IdentifierStep[] = [];
   for (const segment of segments.slice(1)) {
-    const parsed = parseStep(segment);
+    const parsed = parseStep(segment, context);
     if (!parsed.ok) return parsed;
     steps.push(parsed.step);
   }
@@ -408,23 +405,35 @@ function splitTopLevel(value: string): string[] | undefined {
   return parts;
 }
 
-function parseStep(segment: string): ParsedStep {
+function parseStep(segment: string, context: Element): ParsedStep {
   const bracketStart = segment.indexOf("[");
   const name = bracketStart >= 0 ? segment.slice(0, bracketStart) : segment;
-  const localName = name.includes(":") ? name.slice(name.indexOf(":") + 1) : name;
-  if (!/^[\w.-]+$/.test(localName)) return { ok: false, reason: `invalid node name '${name}'` };
-  const predicates: { key: string; value: string }[] = [];
-  let rest = segment.slice(localName.length).replace(/^[^[]*/, "");
+  const qualifiedName = resolveInstanceQName(name, context);
+  if (!qualifiedName) return { ok: false, reason: `invalid or unbound qualified node name '${name}'` };
+  const predicates: { key: QualifiedInstanceName | "."; value: string }[] = [];
+  let rest = segment.slice(name.length);
   while (rest.length) {
     if (!rest.startsWith("[")) return { ok: false, reason: `malformed predicate in '${segment}'` };
     const end = closingBracket(rest);
     if (end < 0) return { ok: false, reason: "unbalanced brackets" };
     const predicate = parsePredicate(rest.slice(1, end));
     if (!predicate.ok) return predicate;
-    predicates.push(predicate.keyValue);
+    if (predicate.keyValue.key === ".") predicates.push({ key: ".", value: predicate.keyValue.value });
+    else {
+      const key = resolveInstanceQName(predicate.keyValue.key, context);
+      if (!key) return { ok: false, reason: `invalid or unbound predicate name '${predicate.keyValue.key}'` };
+      predicates.push({ key, value: predicate.keyValue.value });
+    }
     rest = rest.slice(end + 1);
   }
-  return { ok: true, step: { name: localName, predicates } };
+  return { ok: true, step: { name: qualifiedName, predicates } };
+}
+
+function resolveInstanceQName(value: string, context: Element): QualifiedInstanceName | undefined {
+  const match = value.match(/^([A-Za-z_][\w.-]*):([A-Za-z_][\w.-]*)$/);
+  if (!match) return undefined;
+  const namespace = context.lookupNamespaceURI(match[1]!);
+  return namespace ? { localName: match[2]!, namespace } : undefined;
 }
 
 /** Index (within a string starting at `[`) of the matching `]`, honoring quotes. */
@@ -443,12 +452,12 @@ function closingBracket(text: string): number {
 }
 
 type ParsedPredicate =
-  | { ok: true; keyValue: { key: string; value: string } }
+  | { ok: true; keyValue: { key: string | "."; value: string } }
   | { ok: false; reason: string };
 
 function parsePredicate(text: string): ParsedPredicate {
   const match = text.match(
-    /^\s*(?:[\w.-]+:)?([\w.-]+|\.)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^"'[\]/]*)\s*$/,
+    /^\s*([A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*|\.)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^"'[\]/]*)\s*$/,
   );
   if (!match) return { ok: false, reason: `malformed predicate '[${text}]'` };
   const raw = match[2] ?? "";
@@ -457,16 +466,16 @@ function parsePredicate(text: string): ParsedPredicate {
   return { ok: true, keyValue: { key: match[1]!, value } };
 }
 
-/** Resolve parsed steps against the instance document, local names only. */
+/** Resolve parsed steps against the instance document by expanded QName. */
 function resolvesInstanceIdentifier(instance: Document, steps: IdentifierStep[]): boolean {
   let current: Element | undefined = instance.documentElement;
   if (!current) return false;
   const first = steps[0]!;
-  if (current.localName !== first.name) return false;
+  if (!matchesQualifiedName(current, first.name)) return false;
   if (!matchPredicates(current, first.predicates)) return false;
   for (const step of steps.slice(1)) {
     const next = Array.from(current.childNodes).find(child => child.nodeType === 1 &&
-      (child as Element).localName === step.name) as Element | undefined;
+      matchesQualifiedName(child as Element, step.name)) as Element | undefined;
     if (!next) return false;
     current = next;
     if (!current) return false;
@@ -475,7 +484,11 @@ function resolvesInstanceIdentifier(instance: Document, steps: IdentifierStep[])
   return true;
 }
 
-function matchPredicates(element: Element, predicates: { key: string; value: string }[]): boolean {
+function matchesQualifiedName(element: Element, name: QualifiedInstanceName): boolean {
+  return element.localName === name.localName && (element.namespaceURI ?? "") === name.namespace;
+}
+
+function matchPredicates(element: Element, predicates: { key: QualifiedInstanceName | "."; value: string }[]): boolean {
   // A list entry identifier must carry all of the entry's keys; a bare node
   // without predicates matches any entry.
   for (const predicate of predicates) {
@@ -483,8 +496,9 @@ function matchPredicates(element: Element, predicates: { key: string; value: str
       if ((element.textContent ?? "") !== predicate.value) return false;
       continue;
     }
+    const predicateKey = predicate.key as QualifiedInstanceName;
     const key = Array.from(element.childNodes).find(child => child.nodeType === 1 &&
-      (child as Element).localName === predicate.key) as Element | undefined;
+      matchesQualifiedName(child as Element, predicateKey)) as Element | undefined;
     if (!key || (key.textContent ?? "") !== predicate.value) return false;
   }
   return true;

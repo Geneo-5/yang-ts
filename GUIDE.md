@@ -798,10 +798,13 @@ de l'artefact.
   exacte est listée dans [CONFORMANCE.md](CONFORMANCE.md), interruption
   synchrone impossible dans l'évaluateur tiers (limite documentée, Stage 7b P2) ;
 - `deref()` suit les leafrefs et instance-identifiers sur l'arbre accessible ;
-  `validateDataTree` compare encore les noms locaux des étapes d'un
-  instance-identifier sans vérifier leur namespace (voir
-  [CONFORMANCE.md](CONFORMANCE.md)). Les annotations de métadonnées
-  (`md:annotation`) ne sont pas évaluées. `identityref` et
+  `validateDataTree` vérifie les préfixes XML en portée et compare les noms
+  d'étape et de prédicat par namespace et nom local. `require-instance false`
+  garde ces contrôles lexicaux tout en ignorant l'existence de la cible.
+  Les prédicats positionnels de liste et l'obligation de fournir toutes les
+  clés restent incomplets (voir [CONFORMANCE.md](CONFORMANCE.md)).
+  Les annotations de métadonnées (`md:annotation`) ne sont pas évaluées.
+  `identityref` et
   `instance-identifier` n'ont pas de forme canonique selon RFC 7950 §§9.10.4
   et 9.13.3 ; `canonicalFormOf` renvoie `undefined` pour ces types ;
 - L'exclusivité `case` des `choice` et le développement `uses`/`augment`

@@ -6567,7 +6567,7 @@ var YangEngine = (() => {
       if (schemaNode.resolvedType === "instance-identifier" && schemaNode.kind === "leaf") {
         const value = element.textContent ?? "";
         const requireInstance = !requireInstanceDisabled(schemaNode);
-        const parsed = parseInstanceIdentifier(value, requireInstance);
+        const parsed = parseInstanceIdentifier(value, element);
         if (!parsed.ok) {
           issue("instance-identifier-invalid", schemaNode, `instance-identifier '${schemaNode.path}' is not a valid instance-identifier: ${parsed.reason}`);
         } else if (requireInstance && !resolvesInstanceIdentifier(store, parsed.steps)) {
@@ -6602,16 +6602,13 @@ var YangEngine = (() => {
     }
     return cancelled ? { status: "indeterminate", issues: [...issues, { code: "cancelled", path: "/", message: "Validation was cancelled before completion." }] } : { status: issues.length ? "invalid" : indeterminate ? "indeterminate" : "valid", issues };
   }
-  function parseInstanceIdentifier(value, requireInstance) {
-    if (!requireInstance) {
-      return value.trim().length > 0 ? { ok: true, steps: [] } : { ok: false, reason: "empty expression" };
-    }
+  function parseInstanceIdentifier(value, context) {
     if (!value.startsWith("/")) return { ok: false, reason: "must start with '/'" };
     const segments = splitTopLevel(value);
     if (!segments) return { ok: false, reason: "unbalanced brackets or quotes" };
     const steps = [];
     for (const segment of segments.slice(1)) {
-      const parsed = parseStep(segment);
+      const parsed = parseStep(segment, context);
       if (!parsed.ok) return parsed;
       steps.push(parsed.step);
     }
@@ -6656,23 +6653,34 @@ var YangEngine = (() => {
     parts.push(current);
     return parts;
   }
-  function parseStep(segment) {
+  function parseStep(segment, context) {
     const bracketStart = segment.indexOf("[");
     const name2 = bracketStart >= 0 ? segment.slice(0, bracketStart) : segment;
-    const localName = name2.includes(":") ? name2.slice(name2.indexOf(":") + 1) : name2;
-    if (!/^[\w.-]+$/.test(localName)) return { ok: false, reason: `invalid node name '${name2}'` };
+    const qualifiedName = resolveInstanceQName(name2, context);
+    if (!qualifiedName) return { ok: false, reason: `invalid or unbound qualified node name '${name2}'` };
     const predicates = [];
-    let rest = segment.slice(localName.length).replace(/^[^[]*/, "");
+    let rest = segment.slice(name2.length);
     while (rest.length) {
       if (!rest.startsWith("[")) return { ok: false, reason: `malformed predicate in '${segment}'` };
       const end = closingBracket(rest);
       if (end < 0) return { ok: false, reason: "unbalanced brackets" };
       const predicate = parsePredicate(rest.slice(1, end));
       if (!predicate.ok) return predicate;
-      predicates.push(predicate.keyValue);
+      if (predicate.keyValue.key === ".") predicates.push({ key: ".", value: predicate.keyValue.value });
+      else {
+        const key = resolveInstanceQName(predicate.keyValue.key, context);
+        if (!key) return { ok: false, reason: `invalid or unbound predicate name '${predicate.keyValue.key}'` };
+        predicates.push({ key, value: predicate.keyValue.value });
+      }
       rest = rest.slice(end + 1);
     }
-    return { ok: true, step: { name: localName, predicates } };
+    return { ok: true, step: { name: qualifiedName, predicates } };
+  }
+  function resolveInstanceQName(value, context) {
+    const match = value.match(/^([A-Za-z_][\w.-]*):([A-Za-z_][\w.-]*)$/);
+    if (!match) return void 0;
+    const namespace = context.lookupNamespaceURI(match[1]);
+    return namespace ? { localName: match[2], namespace } : void 0;
   }
   function closingBracket(text) {
     let quote = null;
@@ -6692,7 +6700,7 @@ var YangEngine = (() => {
   }
   function parsePredicate(text) {
     const match = text.match(
-      /^\s*(?:[\w.-]+:)?([\w.-]+|\.)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^"'[\]/]*)\s*$/
+      /^\s*([A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*|\.)\s*=\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^"'[\]/]*)\s*$/
     );
     if (!match) return { ok: false, reason: `malformed predicate '[${text}]'` };
     const raw = match[2] ?? "";
@@ -6704,10 +6712,10 @@ var YangEngine = (() => {
     let current = instance.documentElement;
     if (!current) return false;
     const first = steps[0];
-    if (current.localName !== first.name) return false;
+    if (!matchesQualifiedName(current, first.name)) return false;
     if (!matchPredicates(current, first.predicates)) return false;
     for (const step of steps.slice(1)) {
-      const next = Array.from(current.childNodes).find((child) => child.nodeType === 1 && child.localName === step.name);
+      const next = Array.from(current.childNodes).find((child) => child.nodeType === 1 && matchesQualifiedName(child, step.name));
       if (!next) return false;
       current = next;
       if (!current) return false;
@@ -6715,13 +6723,17 @@ var YangEngine = (() => {
     }
     return true;
   }
+  function matchesQualifiedName(element, name2) {
+    return element.localName === name2.localName && (element.namespaceURI ?? "") === name2.namespace;
+  }
   function matchPredicates(element, predicates) {
     for (const predicate of predicates) {
       if (predicate.key === ".") {
         if ((element.textContent ?? "") !== predicate.value) return false;
         continue;
       }
-      const key = Array.from(element.childNodes).find((child) => child.nodeType === 1 && child.localName === predicate.key);
+      const predicateKey = predicate.key;
+      const key = Array.from(element.childNodes).find((child) => child.nodeType === 1 && matchesQualifiedName(child, predicateKey));
       if (!key || (key.textContent ?? "") !== predicate.value) return false;
     }
     return true;
@@ -8346,7 +8358,7 @@ var YangEngine = (() => {
           }
           return;
         }
-        own.textContent = identityrefText(schemaNode, value, modules, own, path);
+        own.textContent = schemaNode.resolvedType === "instance-identifier" ? instanceIdentifierText(value, modules, own, path) : identityrefText(schemaNode, value, modules, own, path);
         return;
       }
       case "anydata":
@@ -8367,10 +8379,23 @@ var YangEngine = (() => {
     const { module, localName } = splitMemberKey(value);
     const info = module ? modules.byName.get(module) : void 0;
     if (info?.prefix) {
-      element.setAttribute(`xmlns:${info.prefix}`, info.namespace);
+      element.setAttributeNS("http://www.w3.org/2000/xmlns/", `xmlns:${info.prefix}`, info.namespace);
       return `${info.prefix}:${localName}`;
     }
     return value;
+  }
+  function instanceIdentifierText(value, modules, element, path) {
+    if (typeof value !== "string") fail2("expected a string for instance-identifier", path);
+    const text = value;
+    return text.replace(
+      /(^|\/|\[|\s)([A-Za-z_][\w.-]*):([A-Za-z_][\w.-]*)(?=\s*(?:\[|=|\/|$))/g,
+      (token, boundary, moduleName, localName) => {
+        const info = modules.byName.get(moduleName);
+        if (!info?.prefix) return token;
+        element.setAttributeNS("http://www.w3.org/2000/xmlns/", `xmlns:${info.prefix}`, info.namespace);
+        return `${boundary}${info.prefix}:${localName}`;
+      }
+    );
   }
   function scalarText(schemaNode, value, path) {
     if (typeof value === "boolean") return value ? "true" : "false";

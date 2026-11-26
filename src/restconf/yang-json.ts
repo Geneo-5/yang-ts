@@ -16,8 +16,8 @@ import { matchSchemaChild } from "../xpath/accessible-tree.js";
  * qualified), int64/uint64/decimal64 stay strings, `empty` is `[null]`,
  * `bits` are space-separated strings, identityref values are qualified with
  * the module that defines the identity, and instance-identifier strings are
- * kept verbatim (best-effort prefix rewriting only — matching stays the
- * documented local-name limitation). `anydata`/`anyxml` content converts
+ * encoded with namespace declarations derived from RFC 7951 module-name
+ * prefixes; `anydata`/`anyxml` content converts
  * structurally, without schema knowledge (best effort).
  */
 
@@ -194,7 +194,9 @@ function buildValue(
         }
         return;
       }
-      own.textContent = identityrefText(schemaNode, value, modules, own, path);
+      own.textContent = schemaNode.resolvedType === "instance-identifier"
+        ? instanceIdentifierText(value, modules, own, path)
+        : identityrefText(schemaNode, value, modules, own, path);
       return;
     }
     case "anydata":
@@ -227,10 +229,28 @@ function identityrefText(
   const { module, localName } = splitMemberKey(value);
   const info = module ? modules.byName.get(module) : undefined;
   if (info?.prefix) {
-    element.setAttribute(`xmlns:${info.prefix}`, info.namespace);
+    element.setAttributeNS("http://www.w3.org/2000/xmlns/", `xmlns:${info.prefix}`, info.namespace);
     return `${info.prefix}:${localName}`;
   }
   return value;
+}
+
+/** Translate RFC 7951 module-name prefixes into in-scope XML namespace prefixes. */
+function instanceIdentifierText(
+  value: unknown,
+  modules: ReturnType<typeof moduleInfos>,
+  element: Element,
+  path: string,
+): string {
+  if (typeof value !== "string") fail("expected a string for instance-identifier", path);
+  const text = value;
+  return text.replace(/(^|\/|\[|\s)([A-Za-z_][\w.-]*):([A-Za-z_][\w.-]*)(?=\s*(?:\[|=|\/|$))/g,
+    (token, boundary: string, moduleName: string, localName: string) => {
+      const info = modules.byName.get(moduleName);
+      if (!info?.prefix) return token;
+      element.setAttributeNS("http://www.w3.org/2000/xmlns/", `xmlns:${info.prefix}`, info.namespace);
+      return `${boundary}${info.prefix}:${localName}`;
+    });
 }
 
 function scalarText(schemaNode: CompiledSchemaNode, value: unknown, path: string): string {
