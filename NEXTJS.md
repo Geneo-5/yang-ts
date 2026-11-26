@@ -4,10 +4,30 @@ How to deploy the engine in a Next.js site built with `output: 'export'` —
 prerendered static files, no server runtime, the whole application running in
 the browser against a RESTCONF API (RFC 8040, optionally RFC 8527 NMDA).
 The engine stays framework-neutral; this recipe is about the build and
-deployment constraints around it. A runnable reference app is planned as
-`examples/next-static/` (see `ROADMAP.md`, Stage 8.6). Verify specifics
-against the Next.js documentation of the version you build with — this file
-records the constraints that shape the engine, not a pinned Next.js tutorial.
+deployment constraints around it. A runnable App Router example is in
+`examples/next-static/` (ROADMAP Stage 8.6, Next.js 16.4.6). Its E2E checks
+build and serve the exported files, discover the oven module through the mock
+YANG Library, validate and PATCH configuration, and invoke an RPC in Chromium.
+The separate `next-static:e2e:basepath` run repeats that path under
+`/yang-console`.
+
+From the repository root, start the mock in one terminal and build the site:
+
+```sh
+npm run next-static:serve
+npm run next-static:build
+```
+
+The export is written to `examples/next-static/out/`. The browser defaults to
+`http://127.0.0.1:8081/restconf`; set `NEXT_PUBLIC_RESTCONF_URL` at build time
+to point at another RESTCONF API. To build under a URL prefix, set
+`NEXT_PUBLIC_BASE_PATH` (for example `/yang-console`). The integration gates
+are `npm run next-static:e2e` and `npm run next-static:e2e:basepath`; both need
+the Playwright Chromium browser installed. `npm run next-static:check` checks
+the server-free export and the dynamic engine chunk's 256 KiB raw-size budget.
+
+Verify Next.js-specific behavior against the official documentation of the
+version in use; the example pins Next.js as a development dependency.
 
 ## 1. Configuration: `withYangEngine`
 

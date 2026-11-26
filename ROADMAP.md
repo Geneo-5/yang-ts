@@ -12,13 +12,12 @@ A stage returns to **done** only when every defect listed under it is closed by 
 
 **Re-review after the fixes (2026-11-26).** The Stage 7 P0/P1 fixes were re-read in full. Method: every file of `src/` was read; a copy of `src/` was type-checked with `tsc --strict` (clean) and exercised with throw-away Vitest probes; the project's own suite and fixture corpus were not run in that environment, so the closures below are taken from the tests' content, not from a green run. The re-review confirmed most closures, qualified a few overstated ones and found new defects, one of them a regression introduced by the scoping fix (typedefs and groupings declared inside data nodes are no longer found). They are collected in **Stage 7b**; the `[x]` lines they qualify carry a pointer to it. A stage that has a Stage 7b item cannot return to **done**.
 
-**Docs pass (2026-11-26, latest revision).** Every `.md` was swept against the code and the suite; the optimistic-edit red-first suite left by the previous pass was then closed (implementation + the two bridge gaps it exposed), and the Stage 8.5 helper and recipe followed, so the full suite is green. Stages 0–7b and 8.1–8.5 are closed. The remaining work, in one place:
+**Docs pass (2026-11-26, latest revision).** Every `.md` was swept against the code and suite; the optimistic-edit, Next.js configuration helper and static-export application milestones are closed. Stages 0–7b and 8.1–8.6 have regression coverage, including a built static Next.js site and Chromium E2E in the default and `/yang-console` base-path configurations. The remaining work, in one place:
 
 - **Stage 1** — a load cannot be interrupted during its synchronous parse (budget/deadline are checked between loads); worker isolation stays the host's responsibility.
 - **Stage 3** — canonical forms for identityref and instance-identifier are not represented.
 - **Stage 4 / 7b P1** — `instance-identifier` `deref` and metadata annotations unsupported; instance-identifier steps and predicates match by local name only.
 - **Stage 7b P2** — the conservative pattern subset keeps `\d \w \s \p{…}`-patterned leaves `indeterminate` (a real XSD→JS translator is needed); an independent libyang/yanglint oracle remains absent (development-only).
-- **Stage 8.6** — `examples/next-static/`, a mock RESTCONF server, Playwright e2e on the exported site, bundle-size budget, prerender purity check.
 
 ## Stage 0 — Parser foundation (done)
 
@@ -171,11 +170,11 @@ Evidence: *(probed)* = reproduced by running the sources (type-checked copy of `
 - [ ] An independent oracle (libyang/yanglint) as a development-only differential check is still absent.
 - [x] Parser leniency (RFC 7950 §6.1.3): the block loop compared token *values*, so a quoted string `"}"` in statement-start position stopped the child loop and was accepted as the block close with no kind check — the quoted statement silently vanished and the parse succeeded (probed). The loop now stops only on a `}` *symbol* and the close token itself is kind- and value-checked, so the quoted statement is diagnosed (`Expected statement keyword`) instead of dropped; quoted arguments containing `;`/`{`/`}` keep parsing (fixed 2026-11-26, `tests/stage7-p1.test.ts`, red first: the parse silently succeeded).
 
-## Stage 8 — Next.js static-export integration (planned)
+## Stage 8 — Next.js static-export integration (delivered)
 
 Goal: use the engine in a Next.js site built with `output: 'export'`, served as static files, where the whole application runs in the browser and talks to a RESTCONF API (RFC 8040, optionally RFC 8527 NMDA). The core stays framework-neutral; Next.js and React support live in optional entry points and an example app.
 
-Static-export constraints that shape the design (verify against the current Next.js documentation when starting):
+Static-export constraints that shape the design (verified against the Next.js 16.4.6 build and official static-export documentation):
 - No server runtime: no API routes or middleware, no `rewrites`/`redirects`/`headers`, no ISR, no default image optimizer (`images.unoptimized`). Anything data-dependent must run on the client.
 - Pages are prerendered at build time, where there is no DOM, no `DOMParser` and no RESTCONF server. The engine must be import-safe in that environment and initialized only on the client.
 - Dynamic routes need `generateStaticParams`; routes that depend on runtime data (a data-node path, a list key) must use search parameters or the hash, not path segments.
@@ -225,16 +224,17 @@ Static-export constraints that shape the design (verify against the current Next
 - [x] Guidance for both App Router and Pages Router (closed 2026-11-26, NEXTJS.md §4): no Server Component touches the engine's browser entries — engine-consuming components are client-only (`"use client"`, or `ssr: false`) and `YangProvider` shows its `loading` state on the prerendered render so hydration cannot mismatch (`tests/react-hooks.test.ts`); `createYangRunner`/`spawnYangWorker` offload compile/validate to a module worker with `task.cancel()` as the interruption escape hatch.
 - [x] Content-Security-Policy notes (closed 2026-11-26, NEXTJS.md §5): the engine uses no `eval`/`new Function` — the pattern subset that would need dynamic compilation stays `pending` — so a CSP without `unsafe-eval` is supportable; `connect-src` covers the RESTCONF origin (and `EventSource` streams) plus the origin serving the precompiled `yang-schema.json`; `worker-src 'self'` for the module worker; no inline scripts, no wasm escape hatches.
 
-**8.6 Example app and verification.**
-- [ ] `examples/next-static/`: a Next.js app with `output: 'export'` that loads a YANG Library from a RESTCONF API, renders forms for configuration and RPCs, validates, and edits data. Build output (`out/`) must contain no server runtime.
-- [ ] Mock RESTCONF server for development and CI (in-memory, supports `GET`/`POST`/`PUT`/`PATCH`/`DELETE`, errors, `ETag`, CORS toggle).
-- [ ] Real-browser end-to-end tests (Playwright) against the exported site and the mock server. This also closes the Stage 6 gap of having no real-browser suite.
-- [ ] Bundle-size budget for the engine chunk, checked in CI; the engine is loaded with dynamic `import()` so pages that do not use it do not pay for it.
-- [ ] Test that `next build` prerenders every page without touching `window`, `document`, `DOMParser` or `fetch`.
+**8.6 Example app and verification (closed 2026-11-26).**
+- [x] `examples/next-static/` uses `output: 'export'`, discovers the YANG module from RESTCONF YANG Library, renders configuration fields and RPCs, validates local type restrictions and edits configuration with PATCH/ETag. `npm run next-static:build` creates `out/`; `scripts/check-next-static.mjs` rejects server artifacts.
+- [x] Mock RESTCONF server for development and CI (`examples/next-static/mock-restconf.mjs`, `tests/mock-restconf-server.test.ts`): in-memory CRUD, YANG source and YANG Library endpoints, RPC responses, typed errors, `ETag`/`If-Match` and configurable CORS.
+- [x] Playwright E2E (`npm run next-static:e2e`) runs the exported site and mock server in Chromium: schema discovery, invalid range rejection, valid PATCH persistence and RPC invocation. `npm run next-static:e2e:basepath` repeats the route and all asset/API calls under `/yang-console`.
+- [x] Dynamic engine chunk budget: source-split chunk stays below 256 KiB raw; `npm run next-static:check` verifies the chunk and confirms engine code is absent from prerendered HTML. Latest verified engine chunk: 182.3 KiB.
+- [x] Prerender purity: both E2E commands build before starting the mock server, so `next build` must prerender without contacting RESTCONF; the browser-only engine loads only after the user presses Connect. The static-output check also rejects Node server runtime artifacts.
+- [x] GitHub Actions runs typecheck, the full suite, both static-export E2E configurations and the dependency audit (`.github/workflows/ci.yml`).
 
-Exit: the example app builds with `next build` into a static `out/`, runs from a static host (including under a `basePath`), discovers or loads a schema, validates and edits data against a RESTCONF API, and passes the Playwright suite; every blocker listed above is closed; `CONFORMANCE.md` has rows for the JSON bridge and the client with their covering tests.
+Exit: met. `next build` produces a server-free static `out/`, the app works under the root and `/yang-console`, and the Chromium E2E verifies discovery, validation, edit and RPC. Stage 8 has no remaining checklist items.
 
-## Stage 8b — Usage documentation (planned)
+## Stage 8b — Usage documentation (delivered)
 
 - [x] A user guide (`GUIDE.md`) that explains how to USE the project end to end with runnable snippets: install and imports, parse → resolve → compile, reading compiled schemas and diagnostics, instance validation (`valid`/`invalid`/`indeterminate`), candidate evaluation, the form helper, the RFC 7951 JSON adapter, RESTCONF request builders, precompilation and browser loading with the revision audit, untrusted-source safety, and honest pointers to `examples/` and `CONFORMANCE.md` for the limits. A regression test keeps the guide honest (`tests/documentation.test.ts` verifies every engine API the guide calls exists in the public barrel).
   CLOSED: `GUIDE.md` (11 sections, FR) documents install/imports, parse → resolve → compile → validate, all 13 validation issue codes, candidates, the form helper with its known limits, the RFC 7951 adapter, RESTCONF module loading/revision audit/requests/RPC/NMDA, untrusted-source budgets, precompile CLI and serialized-schema loading — every snippet verified against the real signatures. Guarded by `tests/documentation.test.ts` (4 tests). RED pre-fix: "GUIDE.md is the usage guide — expected undefined to be defined" (4/4 failing) plus "it is linked from the README" failing. `yangLibraryInventory`, previously internal-only, was promoted to the public barrel because `findSchemaLibraryMismatches` needs it end to end (`tests/public-api.test.ts` curation updated).

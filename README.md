@@ -157,6 +157,10 @@ See [GUIDE.md](./GUIDE.md) for end-to-end usage of each.
 
 After building, serve the repository root over HTTP and open [`examples/browser-usage.html`](./examples/browser-usage.html). It parses the Sysrepo oven model in the browser, populates the `insert-food` timing enum, validates the selected value, and previews the corresponding RESTCONF RPC request. The example does not send the request, resolve typedefs, apply augments, or evaluate `must`/`when` constraints.
 
+## Next.js static-export example
+
+[`examples/next-static/`](./examples/next-static/) is a runnable App Router console. It discovers the `oven` module from a RESTCONF YANG Library, builds configuration and RPC forms in the browser, validates type restrictions, and sends a PATCH or RPC request. Start its in-memory API with `npm run next-static:serve`, then follow [NEXTJS.md](./NEXTJS.md) to build and serve the export. The E2E commands build the site and run Chromium checks at the root and under `/yang-console`.
+
 ## Status
 
 This is a pre-1.0 engine, not a conformance-tested YANG implementation. Where an area is only partly implemented, the engine reports `indeterminate`/`pending` instead of a pass; the correctness review of 2026-11-26 closed the review findings (leafrefs through typedefs, `choice`/`case` validation, `unique` semantics, identityref XML prefixes, partial-pattern handling — see `CONFORMANCE.md`).
@@ -165,7 +169,7 @@ This is a pre-1.0 engine, not a conformance-tested YANG implementation. Where an
 - [GUIDE.md](./GUIDE.md) is the end-to-end usage guide (pipeline, validation, forms, RFC 7951 JSON, RESTCONF, precompilation, untrusted-source safety).
 - [ROADMAP.md](./ROADMAP.md) lists the open defects by stage and the priority order for fixing them.
 - `capabilities` in the bundle reports possession of a feature layer, not conformance; `validation` is `partial` (see `CONFORMANCE.md` for the exact rows).
-- The optional YANG Library loader (`createRestconfModuleLoader`) reads RFC 7895/8525 payloads — including RFC 8525 nested `submodule` lists and `import-only-module` entries — and forwards `AbortSignal`s; its request shapes are tested against a simulated fetch, not yet against a real server.
+- The optional YANG Library loader (`createRestconfModuleLoader`) reads RFC 7895/8525 payloads — including RFC 8525 nested `submodule` lists and `import-only-module` entries — and forwards `AbortSignal`s; its request shapes are covered by simulated fetches and the in-memory HTTP mock used by the Next.js E2E example.
 - Resource budgets cover module loading (counts, source characters, deadline, `maxDepth`), grouping/`uses` fan-out (`maxSchemaNodes`) and validation/candidate evaluation (`deadlineMs`, `AbortSignal`); pattern compilation is guarded against oversized and ReDoS-shaped regexes. A single XPath expression still cannot be interrupted mid-evaluation — long-running stores need the host's worker isolation (see `createYangRunner`).
 
 ## Development

@@ -10,12 +10,14 @@ The goal is to prove behavior by layer and to prevent partial support from looki
 npm install
 npm run build
 npm test
-npm audit --omit=dev
+npm audit
+npm run next-static:e2e
+npm run next-static:e2e:basepath
 ```
 
 Running `npm test` works on a clean checkout: a `pretest` hook builds `dist/` first. `tests/real-browser.test.ts` additionally needs `npx playwright install chromium` (dev-time only) and announces its own skip when it is absent.
 
-Coverage as of 2026-11-26: parser, module resolver, compiler, serialization + precompile CLI, type boundaries/canonical forms, XPath adapter and function library, accessible trees, constraints, data-tree validation, candidates, cross-references, the RESTCONF loader/client/JSON adapter, the React hooks and worker, and the browser-readiness source audit all have test files. The 2026-11-26 review's regressions landed in `tests/stage7-p0.test.ts`, `tests/stage7-p1.test.ts`, `tests/stage7b-p0.test.ts`, `tests/stage7b-p1.test.ts`, `tests/module-budgets.test.ts` and `tests/differential.test.ts`, and the suite is green (311 tests over 40 files; the optimistic-edit file that was written red first for Stage 8.4 now passes with its implementation). Statement-legality breadth and real-server URL shapes remain uncovered.
+Coverage as of 2026-11-26: parser, module resolver, compiler, serialization + precompile CLI, type boundaries/canonical forms, XPath adapter and function library, accessible trees, constraints, data-tree validation, candidates, cross-references, the RESTCONF loader/client/JSON adapter, React hooks and worker, browser-readiness audit, and a real HTTP mock RESTCONF server all have test files. The mock server is exercised over ephemeral localhost ports in `tests/mock-restconf-server.test.ts` for CRUD, YANG Library and YANG source discovery, ETags, typed errors and CORS. The Next.js 16.4.6 static export is built and audited by `scripts/check-next-static.mjs`; `scripts/next-static-e2e.mjs` drives schema discovery, invalid-value rejection, PATCH persistence and RPC invocation in Chromium at the root and under `/yang-console`. `.github/workflows/ci.yml` runs both configurations. Statement-legality breadth and real-server URL shapes remain uncovered.
 
 ## Review regressions: landed
 
@@ -31,6 +33,7 @@ The Stage 7/7b backlog (P0→P2) landed on 2026-11-26: every item was written fi
 6. **Constraints and validation** — `must`, `when`, leafref, instance-identifier, mandatory, choices, keys, unique and cardinality. Test valid/invalid/indeterminate separately and test dependency ordering/cycle reporting for `when`. Include nodes under choices, nested `when` inheritance and absent non-presence containers.
 7. **UI-facing API** — candidate enum filtering with complete data context, dynamic re-evaluation when siblings change, unresolved context handling, explanatory reasons; form validation on copied/proxied fields and on fields under lists. Include examples that prevent unsafe static filtering.
 8. **Browser integration** — smoke-test ESM exports in a real browser, assert no Node globals or native/WASM/Python requirements, check cancellation and limits, and verify no cross-origin assumptions in the core. Status: in place since 2026-11-26 as `tests/real-browser.test.ts` (Playwright headless Chromium over `examples/standalone.html`), alongside the Node-side source audit and the Node import of `dist`. The suite skip-announces itself when Chromium is not installed on the machine.
+   **Static-site integration** — build the Next.js App Router example with the mock server stopped, audit the `out/` tree for server artifacts and the dynamic engine-chunk budget, then serve it in Chromium and verify YANG Library discovery, form validation, PATCH persistence and RPC execution. Repeat under a non-root `basePath`. Gates: `npm run next-static:e2e` and `npm run next-static:e2e:basepath`.
 9. **Differential/interoperability** — compare supported compiler and validation cases with libyang in development CI where available. Differences must be triaged against RFC semantics, not blindly copied from the oracle. In-repo part in place since 2026-11-26: the XPath-rewrite fuzz corpus of `tests/differential.test.ts` differentiates `qualifyYangXPathNodeTests` between unprefixed and explicitly prefixed spellings (seeded grammar corpus, pure-prefix-insertion invariant, curated tricky tokens, mutation-tested). libyang itself remains unavailable to the development environment (native C toolchain, no `yanglint`/`pyang` on PATH); if a CI provides it later, wire it in as a dev-only oracle without runtime impact.
 
 ## Fixture corpus policy
@@ -56,10 +59,11 @@ Maintain a matrix with four states: **implemented**, **partial**, **unsupported*
 Every release follows the same gates, in order; a release with any red gate does not ship.
 
 1. `npm run build` — `tsc` must be clean; `dist/index.js` and `dist/index.d.ts` are the only shipped artifacts (the build also regenerates `examples/standalone.html`).
-2. `npm test` — the full suite: parser, module-set with budgets/cancellation, compiler, serialization + revision audit + precompile CLI, boundary and canonical corpora, XPath/constraints + differential fuzz, validation, candidates, cross-references, the RFC 7951 adapter and the form-RESTCONF bridge, RESTCONF loader/client/events, public API, documentation, React hooks, worker and optimistic edit, the Next.js config helper, browser-readiness audit, real browser, bundle smoke. The pretest build keeps those suites against the freshly built `dist`.
-3. `npm audit --omit=dev` — zero known vulnerabilities in runtime dependencies.
-4. Update `CONFORMANCE.md` rows for anything the release changes (a row without its covering test regresses to `untested`; a row with an open defect stays `partial`), and `ROADMAP.md` for stage status.
-5. Visual check: serve the repo root over localhost (e.g. `python3 -m http.server`) and open `examples/browser-usage.html` in a current browser; the oven RPC preview must render and validate through `dist/index.js`. This complements the Playwright leg (`tests/real-browser.test.ts`).
-6. `npm pack --dry-run` and check the archive: only `dist`, `examples`, docs; no sources, fixtures or tests leak into the tarball. The `prepack` hook builds `dist/` automatically before publishing.
+2. `npm test` — the full suite: parser, module-set with budgets/cancellation, compiler, serialization + revision audit + precompile CLI, boundary and canonical corpora, XPath/constraints + differential fuzz, validation, candidates, cross-references, the RFC 7951 adapter and the form-RESTCONF bridge, RESTCONF loader/client/events, public API, documentation, React hooks, worker and optimistic edit, mock RESTCONF server, the Next.js config helper, browser-readiness audit, real browser, bundle smoke. The pretest build keeps those suites against the freshly built `dist`.
+3. `npm run next-static:e2e` and `npm run next-static:e2e:basepath` — build the Next.js static export, enforce the server-free output and 256 KiB dynamic engine-chunk budget, then exercise schema discovery, validation, PATCH and RPC in Chromium at `/` and `/yang-console`. The build runs before the mock starts, covering the no-fetch prerender constraint.
+4. `npm audit` — zero known vulnerabilities across runtime and development dependencies.
+5. Update `CONFORMANCE.md` rows for anything the release changes (a row without its covering test regresses to `untested`; a row with an open defect stays `partial`), and `ROADMAP.md` for stage status.
+6. Visual check: serve the repo root over localhost (e.g. `python3 -m http.server`) and open `examples/browser-usage.html` in a current browser; the oven RPC preview must render and validate through `dist/index.js`. This complements the Playwright legs.
+7. `npm pack --dry-run` and check the archive: only `dist`, `examples`, docs; no sources, fixtures or tests leak into the tarball. The `prepack` hook builds `dist/` automatically before publishing.
 
 Versioning and diagnostics policy for releases is documented in `CONFORMANCE.md`.

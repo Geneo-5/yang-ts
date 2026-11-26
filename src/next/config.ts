@@ -33,7 +33,7 @@ export interface WithYangEngineOptions {
 }
 
 export function withYangEngine(
-  nextConfig: YangNextConfig | undefined,
+  nextConfig: YangNextConfig | undefined = undefined,
   options: WithYangEngineOptions = {},
 ): YangNextConfig {
   const config: YangNextConfig = { ...nextConfig };
