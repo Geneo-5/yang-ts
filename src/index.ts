@@ -49,6 +49,10 @@ export {
   RestconfNetworkError,
 } from "./restconf/client.js";
 export {
+  createRestconfNotificationStream,
+} from "./restconf/notifications.js";
+export type { RestconfStreamState } from "./restconf/notifications.js";
+export {
   findSchemaLibraryMismatches,
 } from "./restconf/schema-mismatch.js";
 export {

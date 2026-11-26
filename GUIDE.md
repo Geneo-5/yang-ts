@@ -565,7 +565,34 @@ une `RestconfNetworkError` : le message porte la liste de contrôle CORS
 (`Access-Control-Allow-Origin`, méthodes/en-têtes autorisés, réponse à
 `OPTIONS`, URL/réseau) et l'erreur d'origine reste dans `cause`.
 
-Reste ouvert (roadmap §204) : les flux de notification via `EventSource`.
+### 8.6 Flux de notification (`EventSource`, RFC 8040 §6)
+
+`createRestconfNotificationStream` découvre l'URL du flux dans
+`ietf-restconf-monitoring` (préfixe de module optionnel), s'abonne via l'
+`EventSource` que l'hôte fournit (ou le global navigateur), livre chaque
+message SSE brut à `onNotification` et gère les états `connecting → open`,
+`reconnecting` (attente exponentielle plafonnée) et `closed`. `close()` — ou
+l'annulation — ferme la source, supprime la reprise en attente et ignore les
+messages tardifs ; le décodage du contenu de la notification reste dans
+l'application (les payloads comme le XML de notification s'analysent avec le
+`DOMParser` de l'hôte).
+
+```ts
+import { createRestconfNotificationStream } from "yang-browser-engine";
+
+const stream = createRestconfNotificationStream({
+  baseUrl: window.location.origin,
+  encoding: "json",
+  onNotification: ({ data }) => console.info("notification", data),
+  onStateChange: (state) => void state,
+  signal: controller.signal,
+  reconnect: { delayMs: 500, maxDelayMs: 30_000 },
+});
+
+await stream.ready;        // inscrit ; l'échec de découverte rejette
+stream.streamUrl;          // l'URL découverte
+stream.close();            // libère l'EventSource ; idempotent
+```
 
 ## 9. Sécurité des sources non fiables
 

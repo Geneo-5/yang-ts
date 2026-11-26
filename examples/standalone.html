@@ -3911,6 +3911,7 @@ var YangEngine = (() => {
     createRestconfGetRequest: () => createRestconfGetRequest,
     createRestconfModuleLoader: () => createRestconfModuleLoader,
     createRestconfNmdaProbeRequest: () => createRestconfNmdaProbeRequest,
+    createRestconfNotificationStream: () => createRestconfNotificationStream,
     createRestconfRpcRequest: () => createRestconfRpcRequest,
     createRestconfSetRequest: () => createRestconfSetRequest,
     createRestconfUpdateRequest: () => createRestconfUpdateRequest,
@@ -7905,6 +7906,126 @@ var YangEngine = (() => {
           }
         }
       }
+    };
+  }
+
+  // src/restconf/notifications.ts
+  function findStreamLocation(payload, streamName, encoding) {
+    if (!payload || typeof payload !== "object") return void 0;
+    const wrapper = payload;
+    const state = wrapper["ietf-restconf-monitoring:restconf-state"] ?? wrapper["restconf-state"] ?? wrapper;
+    const streams = state?.["streams"];
+    const list = streams?.["stream"];
+    const rows = Array.isArray(list) ? list : list !== void 0 ? [list] : [];
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const record = row;
+      if (record["name"] !== streamName) continue;
+      const access = record["access"];
+      const entries = Array.isArray(access) ? access : access !== void 0 ? [access] : [];
+      for (const entry of entries) {
+        if (entry?.encoding === encoding && typeof entry.location === "string") return entry.location;
+      }
+    }
+    return void 0;
+  }
+  var joinUrl2 = (base, path) => `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+  function createRestconfNotificationStream(options) {
+    const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
+    const reconnectDelay = options.reconnect?.delayMs ?? 500;
+    const maxDelay = options.reconnect?.maxDelayMs ?? 3e4;
+    const signal = options.signal;
+    let streamState = "connecting";
+    let closed = false;
+    let attempts = 0;
+    let current;
+    let timer;
+    let abortListener;
+    let resolvedUrl;
+    const emit = (state) => {
+      streamState = state;
+      options.onStateChange?.(state);
+    };
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      if (timer !== void 0) clearTimeout(timer);
+      if (abortListener && signal) signal.removeEventListener("abort", abortListener);
+      try {
+        current?.close();
+      } catch {
+      }
+      current = void 0;
+      emit("closed");
+    };
+    const openForever = (makeSource, url) => {
+      const open = () => {
+        if (closed) return;
+        current = makeSource(url);
+        current.onopen = () => {
+          attempts = 0;
+          emit("open");
+        };
+        current.onerror = () => {
+          if (closed) return;
+          if (current) {
+            try {
+              current.close();
+            } catch {
+            }
+          }
+          emit("reconnecting");
+          timer = setTimeout(open, Math.min(maxDelay, reconnectDelay * 2 ** attempts));
+          attempts++;
+        };
+        current.onmessage = (event) => {
+          if (!closed) options.onNotification?.({ data: String(event.data) });
+        };
+      };
+      open();
+    };
+    const ready = (async () => {
+      if (!fetchImpl) throw new Error("No fetch implementation available: pass fetchImpl in RestconfNotificationStreamOptions");
+      if (signal?.aborted) throw signal.reason ?? new DOMException("Notification stream closed before opening", "AbortError");
+      if (abortListener === void 0 && signal) {
+        abortListener = () => close();
+        signal.addEventListener("abort", abortListener, { once: true });
+      }
+      const streamName = options.stream ?? "NETCONF";
+      const encoding = options.encoding ?? "json";
+      const discoveryUrl = joinUrl2(
+        options.baseUrl,
+        `/restconf/data/ietf-restconf-monitoring:restconf-state/streams/stream=${encodeURIComponent(streamName)}`
+      );
+      const response = await fetchImpl(discoveryUrl, {
+        headers: { Accept: "application/yang-data+json" },
+        ...signal ? { signal } : {}
+      });
+      if (!response.ok) {
+        throw new Error(`Notification stream discovery failed: ${response.status} for ${discoveryUrl}`);
+      }
+      const location = findStreamLocation(await response.json(), streamName, encoding);
+      if (!location) {
+        throw new Error(`The server announces no '${streamName}' stream access with ${encoding} encoding`);
+      }
+      resolvedUrl = /^[\w+.-]+:\/\//.test(location) ? location : joinUrl2(options.baseUrl, location);
+      const makeSource = options.createEventSource ?? ((candidate) => {
+        if (typeof globalThis.EventSource !== "function") {
+          throw new Error("No EventSource implementation available: pass createEventSource or run in a browser");
+        }
+        return new globalThis.EventSource(candidate);
+      });
+      emit("connecting");
+      openForever(makeSource, resolvedUrl);
+    })();
+    return {
+      get ready() {
+        return ready;
+      },
+      get streamUrl() {
+        return resolvedUrl;
+      },
+      close
     };
   }
 
