@@ -237,3 +237,55 @@ describe("choice nested in a case", () => {
     expect(result).toMatchObject({ status: "valid", issues: [] });
   });
 });
+
+/** Stage 7b P0 (ROADMAP §145): non-presence containers (RFC 7950 §7.6.1/§7.6.5). */
+describe("non-presence containers", () => {
+  it("enforces mandatory descendants of an absent non-presence container", async () => {
+    const schema = await compile(`module nopresence {
+      namespace "urn:np"; prefix n;
+      container settings {
+        container advanced {
+          leaf level { type string; mandatory true; }
+        }
+      }
+    }`);
+    // RFC 7950 §7.6.5: without a presence statement the container is
+    // conceptually always present, so its mandatory descendants apply even
+    // when the container element itself is absent. Pre-fix: valid.
+    const result = validateDataTree(schema, parseXml(`<settings xmlns="urn:np"/>`));
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "missing-mandatory", path: "/settings/advanced/level",
+    }));
+  });
+
+  it("injects defaults of absent non-presence containers into the accessible tree", async () => {
+    const schema = await compile(`module np-defaults {
+      namespace "urn:npd"; prefix n;
+      container settings {
+        container advanced {
+          leaf level { type string; default "fast"; }
+        }
+        leaf reporter { type string; must "../advanced/level = 'fast'"; }
+      }
+    }`);
+    // RFC 7950 §7.6.1: the leaf's default value stays in effect inside an
+    // absent non-presence container, so the must reading it is met.
+    // Pre-fix the default is invisible and the must is falsely unmet.
+    const result = validateDataTree(schema, parseXml(`<settings xmlns="urn:npd"><reporter>x</reporter></settings>`));
+    expect(result).toMatchObject({ status: "valid", issues: [] });
+  });
+
+  it("still does not enforce descendants of an absent presence container", async () => {
+    const schema = await compile(`module np-guard {
+      namespace "urn:npg"; prefix n;
+      container settings {
+        container protected {
+          presence "enabled";
+          leaf level { type string; mandatory true; }
+        }
+      }
+    }`);
+    const result = validateDataTree(schema, parseXml(`<settings xmlns="urn:npg"/>`));
+    expect(result).toMatchObject({ status: "valid", issues: [] });
+  });
+});

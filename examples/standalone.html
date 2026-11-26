@@ -5267,6 +5267,12 @@ var YangEngine = (() => {
         target.appendChild(copy);
       }
       if (scope.defaults) applyDefaults(node, present.length, target, document2);
+      const absenceIsReal = node.kind === "container" && node.properties.presence === void 0 && node.whenConstraints.length === 0;
+      if (!present.length && absenceIsReal && scope.defaults) {
+        const placeholder = document2.createElementNS(node.namespace, node.name);
+        copyScope(node.children, placeholder, placeholder, scope, document2);
+        if (placeholder.childNodes.length > 0) target.appendChild(placeholder);
+      }
     }
   }
   function copyChoiceScope(choice, source, target, scope, document2) {
@@ -5969,6 +5975,20 @@ var YangEngine = (() => {
       const mandatory = child.properties.mandatory?.[0]?.argument;
       if (mandatory === "true" && child.kind !== "list" && child.kind !== "leaf-list") {
         issue("missing-mandatory", child, `mandatory node '${child.path}' is absent`);
+      }
+      if (child.kind === "container" && child.properties.presence === void 0 && !child.whenConstraints.length) {
+        for (const descendant of child.children) {
+          if (!includeState && !descendant.config) continue;
+          if (descendant.kind === "choice") {
+            if (descendant.properties.mandatory?.[0]?.argument === "true") {
+              if (descendant.whenConstraints.length) indeterminate = true;
+              else issue("missing-choice", descendant, `choice '${descendant.name}' requires one case`);
+            }
+            continue;
+          }
+          if (descendant.kind === "case") continue;
+          checkAbsentRequirements(descendant);
+        }
       }
     }
     function checkList(child, entries) {

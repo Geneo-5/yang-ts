@@ -170,6 +170,21 @@ function copyScope(nodes: readonly CompiledSchemaNode[], source: Element, target
       target.appendChild(copy);
     }
     if (scope.defaults) applyDefaults(node, present.length, target, document);
+    // RFC 7950 section 7.6.1: defaults of a leaf inside an absent non-presence
+    // container stay in effect, so the subtree is materialized for the
+    // accessible tree (and section 7.6.5 mandatory descendants are visited). A
+    // when-gated container can be legitimately absent: skip it and leave the
+    // verdict to the when probe. Empty materialization (no defaults inside)
+    // keeps the instance shape unchanged.
+    const absenceIsReal = node.kind === "container"
+      && node.properties.presence === undefined
+      && node.whenConstraints.length === 0;
+    if (!present.length && absenceIsReal && scope.defaults) {
+      const placeholder = document.createElementNS(node.namespace, node.name);
+      // The empty placeholder copies nothing: only defaults are injected.
+      copyScope(node.children, placeholder, placeholder, scope, document);
+      if (placeholder.childNodes.length > 0) target.appendChild(placeholder);
+    }
   }
 }
 

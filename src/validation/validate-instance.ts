@@ -171,6 +171,27 @@ export function validateDataTree(
     if (mandatory === "true" && child.kind !== "list" && child.kind !== "leaf-list") {
       issue("missing-mandatory", child, `mandatory node '${child.path}' is absent`);
     }
+    // RFC 7950 section 7.6.5: a container without `presence` is conceptually
+    // always present, so its absence does not lift its descendants' mandatory
+    // requirements. A when-gated node may be legitimately absent: leave the
+    // verdict to the when probe. A choice reports missing-choice; its case
+    // members' own requirements stay dormant while no case is selected.
+    if (child.kind === "container" && child.properties.presence === undefined && !child.whenConstraints.length) {
+      for (const descendant of child.children) {
+        // State nodes are not part of the config datastore's accessible tree:
+        // their requirements are unenforceable there.
+        if (!includeState && !descendant.config) continue;
+        if (descendant.kind === "choice") {
+          if (descendant.properties.mandatory?.[0]?.argument === "true") {
+            if (descendant.whenConstraints.length) indeterminate = true;
+            else issue("missing-choice", descendant, `choice '${descendant.name}' requires one case`);
+          }
+          continue;
+        }
+        if (descendant.kind === "case") continue;
+        checkAbsentRequirements(descendant);
+      }
+    }
   }
 
   function checkList(child: CompiledSchemaNode, entries: Element[]): void {
