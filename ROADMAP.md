@@ -92,7 +92,7 @@ Open defects:
 - [ ] Tests run under Node with `@xmldom/xmldom`; there is no real-browser run (Vitest browser mode or Playwright). The "browser smoke suite" is only a Node import of `dist`.
 - [ ] `npm test` fails on a clean checkout (bundle-smoke requires `dist/`), while README and `TESTING.md` order `npm test` before `npm run build`.
 - [ ] Tests are not type-checked (`tsconfig` includes only `src`).
-- [ ] RESTCONF loader: the default library URL omits `/data/` (RFC 8040); submodules are looked up as top-level module rows instead of the nested `submodule` lists of RFC 7895/8525; RFC 7895 `schema` is ignored (only `location`); no `AbortSignal` option.
+- [x] RESTCONF loader requests the library under the RFC 8040 `/data/` subtree by default (absolute URLs and pre-qualified `data/`/`operations/` resources pass through), reads the RFC 8525 nested `submodule` lists (with a fallback to flat rows for RFC 7895 payloads), accepts the RFC 7895 `schema` leaf as a source URL before the `yang?module=` probe, and forwards an `AbortSignal` to every request (`yangLibraryInventory`, fixed 2026-11-26, `tests/restconf-loader.test.ts`).
 - [ ] Public surface: `export *` makes every helper semver-locked; `capabilities` still reports `xpath: "planned"` and `moduleResolution: "planned"`.
 - [ ] Documentation drift: README ("parser foundation stage"), `ARCHITECTURE.md` ("zero dependencies", planned `types/`, `features/`, `ui/` layout that does not exist) and `CONFORMANCE.md` (e.g. resource budgets "implemented" while `maxDepth` is unenforced) disagree with the code and with each other.
 
@@ -116,7 +116,7 @@ New stage collecting the review findings by priority. Each item is closed by a f
 - [x] `FormField` restriction descriptor; `[*]` path mismatch; leaf-list cross-references (Stage 5) — closed 2026-11-26 by regressions in `tests/stage7-p1.test.ts` against RFC 7950 §6.2.1/§9.9/§9.10: fields carry a serializable `restrictions` descriptor so copies and proxies keep range/length/pattern/fraction-digits (a `WeakMap` lost them); `findSchemaNodeByPath` strips `[*]` per segment; leaf-lists of leafref/identityref validate entry by entry with `(entry N)` errors and union leaf-lists pick up member restrictions.
 - [x] `evaluateCandidates` location, entry targeting and non-mutation (Stage 5) — closed 2026-11-26, see Stage 5.
 - [x] `refine` `mandatory`; `augment` under `uses`; typedef/grouping scoping and index (Stage 2) — closed 2026-11-26, see Stage 2.
-- [ ] RESTCONF loader paths and submodule lists (Stage 6).
+- [x] RESTCONF loader paths and submodule lists (Stage 6) — closed 2026-11-26, see Stage 6.
 - [ ] Namespace-aware identityref resolution for XML; `enum-value` by node type (Stage 4).
 - [ ] Accessible tree: wrapper documents, inactive-case defaults (Stage 4).
 
@@ -147,7 +147,7 @@ Static-export constraints that shape the design (verify against the current Next
 - [x] Serializable `FormField` restriction descriptor (P1) — closed 2026-11-26, see Stage 5.
 - [x] Validation and candidate evaluation on the accessible tree without mutating the caller's document (P0/P1) — both closed 2026-11-26, see Stage 5.
 - [x] Leafref via typedef, validation under `choice`/`case`, `unique`, own-prefix XPath, cross-module groupings (P0) — all closed 2026-11-26, see the per-stage items.
-- [ ] RESTCONF loader fixes: `/data/` URL shape, nested submodule lists, RFC 7895 `schema`, `AbortSignal` (P1).
+- [x] RESTCONF loader fixes: `/data/` URL shape, nested submodule lists, RFC 7895 `schema`, `AbortSignal` (P1) — closed 2026-11-26, see Stage 6.
 - [ ] Curated named exports and `sideEffects`-safe entry points (P3), so the Next.js bundle only contains what the page imports.
 - [ ] Budgets and worker-based cancellation for untrusted modules from a device (P2).
 
