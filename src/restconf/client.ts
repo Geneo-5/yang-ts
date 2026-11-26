@@ -39,6 +39,20 @@ export interface RestconfClientOptions {
   credentials?: RequestCredentials;
   /** Base cancellation signal for every request of this client. */
   signal?: AbortSignal;
+  /**
+   * §203: retry policy. `attempts` is the total number of tries (1 = off,
+   * the default) and applies to idempotent methods only (GET/HEAD), on
+   * transport failures, per-call timeouts and 5xx responses; cancellation
+   * and 4xx never retry. `backoffMs` doubles after each failed try.
+   */
+  retry?: RestconfRetryOptions;
+}
+
+export interface RestconfRetryOptions {
+  /** Total tries; default 1 (no retry). */
+  attempts?: number;
+  /** Base wait between tries, doubling each time; default 0. */
+  backoffMs?: number;
 }
 
 /** Minimal header lookup the caller uses for `Location`/`ETag`/`Last-Modified`. */
@@ -49,15 +63,36 @@ export interface RestconfClientResponse {
   json(): Promise<unknown>;
 }
 
-/** Per-call sending overrides: conditional headers (`If-Match`, …) and a signal replacing the base one. */
+/** Per-call sending overrides: conditional headers (`If-Match`, …), a signal replacing the base one, and a timeout (§203). */
 export interface RestconfSendOptions {
   headers?: Readonly<Record<string, string>>;
   signal?: AbortSignal;
+  /** Per-call request timeout in milliseconds; exceeding it rejects with a `TimeoutError` (and retries idempotent requests while attempts remain). */
+  timeoutMs?: number;
 }
 
 export interface RestconfClient {
   /** Execute one builder-produced request through the injected fetch. */
   send(request: RestconfExecutableRequest, extras?: RestconfSendOptions): Promise<RestconfClientResponse>;
+}
+
+/**
+ * §205: a request that never got an HTTP response (browser `TypeError` —
+ * CORS, DNS, offline). Because browsers hide the status and headers of
+ * blocked responses, the message carries the checklist hint instead of the
+ * generic "Failed to fetch"; the original error stays reachable as `cause`.
+ */
+export class RestconfNetworkError extends Error {
+  constructor(cause: unknown) {
+    super(
+      "RESTCONF request failed without an HTTP response — the browser hides the real status. " +
+      "Check CORS: the server must send Access-Control-Allow-Origin for this origin, list the " +
+      "method and the Accept/Content-Type headers in Access-Control-Allow-Methods/-Headers, and " +
+      "answer any OPTIONS preflight; also verify the URL and the network.",
+    );
+    this.name = "RestconfNetworkError";
+    this.cause = cause;
+  }
 }
 
 /**
@@ -141,34 +176,89 @@ export function createRestconfClient(options: RestconfClientOptions): RestconfCl
   const base = options.baseUrl.replace(/\/+$/, "");
   const closure = options.signal;
   const headerSource = options.headers;
+  const retryAttempts = Math.max(1, options.retry?.attempts ?? 1);
+  const retryBackoff = Math.max(0, options.retry?.backoffMs ?? 0);
+  const wait = (ms: number): Promise<void> => new Promise(resolve => { setTimeout(resolve, ms); });
 
   return {
     async send(request: RestconfExecutableRequest, extras: RestconfSendOptions = {}): Promise<RestconfClientResponse> {
+      const idempotent = request.method === "GET" || request.method === "HEAD";
+      const maxAttempts = idempotent ? retryAttempts : 1;
+      const finishSignal = extras.signal ?? closure;
       const extra = typeof headerSource === "function"
         ? await headerSource({ method: request.method, path: request.path })
         : headerSource;
       const headers = { ...request.headers, ...(extra ?? {}), ...extras.headers };
-      const signal = extras.signal ?? closure;
-      const response = await fetchImpl(`${base}${request.path}`, {
-        method: request.method,
-        headers,
-        ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
-        ...(options.credentials ? { credentials: options.credentials } : {}),
-        ...(signal ? { signal } : {}),
-      });
-      if (response.status === 204) {
-        return { status: 204, headers: response.headers, json: async () => undefined };
+      const url = `${base}${request.path}`;
+
+      let attempt = 1;
+      for (;;) {
+        let timedOut = false;
+        let timeoutController: AbortController | undefined;
+        let forwardCallerAbort: (() => void) | undefined;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          let signal = finishSignal;
+          if (extras.timeoutMs !== undefined) {
+            timeoutController = new AbortController();
+            if (finishSignal) {
+              forwardCallerAbort = () => timeoutController!.abort(finishSignal.reason);
+              finishSignal.addEventListener("abort", forwardCallerAbort, { once: true });
+            }
+            signal = timeoutController.signal;
+            timer = setTimeout(() => {
+              timedOut = true;
+              timeoutController!.abort(new DOMException("The RESTCONF request timed out.", "TimeoutError"));
+            }, extras.timeoutMs);
+          }
+          const response = await fetchImpl(url, {
+            method: request.method,
+            headers,
+            ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
+            ...(options.credentials ? { credentials: options.credentials } : {}),
+            ...(signal ? { signal } : {}),
+          });
+          // §203: idempotent 5xx calls retry while attempts remain.
+          if (idempotent && response.status >= 500 && attempt < maxAttempts) {
+            await wait(retryBackoff * 2 ** (attempt - 1));
+            attempt++;
+            continue;
+          }
+          if (response.status === 204) {
+            return { status: 204, headers: response.headers, json: async () => undefined };
+          }
+          if (response.ok) {
+            return { status: response.status, headers: response.headers, json: () => response.json() };
+          }
+          let body: unknown;
+          try {
+            body = await response.json();
+          } catch {
+            body = undefined;
+          }
+          throw await typedError(response, body);
+        } catch (error) {
+          if (error instanceof RestconfRequestError) throw error; // final: a server answer, never retried
+          // Cancellation wins over every other classification, including CORS.
+          if (finishSignal?.aborted) throw finishSignal.reason ?? error;
+          if (timedOut || error instanceof TypeError) {
+            // Transport-class failure (timeout or no HTTP response): a timed-out
+            // or idempotent request may retry while attempts remain; a POST/PUT
+            // never does. Attempts spent, TypeError turns into the §205 hint.
+            if (idempotent && attempt < maxAttempts) {
+              await wait(retryBackoff * 2 ** (attempt - 1));
+              attempt++;
+              continue;
+            }
+            if (error instanceof TypeError) throw new RestconfNetworkError(error);
+            throw error;
+          }
+          throw error;
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+          if (forwardCallerAbort && finishSignal) finishSignal.removeEventListener("abort", forwardCallerAbort);
+        }
       }
-      if (response.ok) {
-        return { status: response.status, headers: response.headers, json: () => response.json() };
-      }
-      let body: unknown;
-      try {
-        body = await response.json();
-      } catch {
-        body = undefined;
-      }
-      throw await typedError(response, body);
     },
   };
 }

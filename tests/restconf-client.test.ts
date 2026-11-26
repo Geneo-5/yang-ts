@@ -208,6 +208,92 @@ describe("createRestconfClient (§199)", () => {
     expect(calls[3]!.init.method).toBe("HEAD");
   });
 
+  it("retries idempotent methods on transport failure and 5xx (§203)", async () => {
+    let calls = 0;
+    const flaky = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      calls++;
+      if (calls === 1) throw new TypeError("network hiccup");
+      if (calls === 2) return { ok: false, status: 503, statusText: "unavailable", headers: { get: () => null }, json: async () => undefined } as unknown as Response;
+      return { ok: true, status: 200, statusText: "ok", headers: { get: () => null }, json: async () => ({ up: true }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const client = createRestconfClient({ baseUrl: "https://host", fetchImpl: flaky, retry: { attempts: 3, backoffMs: 1 } });
+    const response = await client.send(createRestconfGetRequest(PATH));
+    expect(calls).toBe(3);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ up: true });
+  });
+
+  it("never retries non-idempotent methods (§203)", async () => {
+    let calls = 0;
+    const failing = (async (): Promise<Response> => { calls++; throw new TypeError("nope"); }) as unknown as typeof fetch;
+    const client = createRestconfClient({ baseUrl: "https://host", fetchImpl: failing, retry: { attempts: 3, backoffMs: 1 } });
+    // POST is never retried, but its CORS-style transport failure still gets the diagnostic hint (§205).
+    const failure = await client.send(createRestconfAddRequest(
+      [{ name: "top", module: "probe" }],
+      { module: "probe", name: "items", data: { k: "n" } },
+    )).then(() => undefined, (cause: unknown) => cause as Error);
+    expect(failure!.name).toBe("RestconfNetworkError");
+    expect(calls).toBe(1);
+  });
+
+  it("stops retrying when the attempts are spent and surfaces the typed error (§203)", async () => {
+    let calls = 0;
+    const failing = (async (): Promise<Response> => {
+      calls++;
+      return { ok: false, status: 503, statusText: "unavailable", headers: { get: () => null }, json: async () => ({ "ietf-restconf:errors": { error: [{ "error-tag": "operation-failed" }] } }) } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const client = createRestconfClient({ baseUrl: "https://host", fetchImpl: failing, retry: { attempts: 2, backoffMs: 1 } });
+    const error = await client.send(createRestconfGetRequest(PATH)).then(() => undefined, (failure: unknown) => failure as RestconfRequestError);
+    expect(calls).toBe(2);
+    expect((error as Error).name).toBe("RestconfRequestError");
+    expect(error!.errorTag).toBe("operation-failed");
+  });
+
+  it("does not retry 4xx responses (§203)", async () => {
+    let calls = 0;
+    const failing = (async (): Promise<Response> => {
+      calls++;
+      return { ok: false, status: 404, statusText: "missing", headers: { get: () => null }, json: async () => undefined } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const client = createRestconfClient({ baseUrl: "https://host", fetchImpl: failing, retry: { attempts: 3, backoffMs: 1 } });
+    await expect(client.send(createRestconfGetRequest(PATH))).rejects.toMatchObject({ name: "RestconfRequestError" });
+    expect(calls).toBe(1);
+  });
+
+  it("applies the per-call timeout and rejects with the timeout reason (§203)", async () => {
+    const never = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal!.reason));
+      })) as unknown as typeof fetch;
+    const client = createRestconfClient({ baseUrl: "https://host", fetchImpl: never, retry: { attempts: 2, backoffMs: 1 } });
+    const failure = await client.send(createRestconfGetRequest(PATH), { timeoutMs: 20 }).then(
+      () => undefined,
+      (cause: unknown) => cause,
+    );
+    expect((failure as Error).name).toBe("TimeoutError");
+  });
+
+  it("does not retry when the caller cancels (§203)", async () => {
+    let calls = 0;
+    const hangThenFail = (async (): Promise<Response> => { calls++; throw new TypeError("network down"); }) as unknown as typeof fetch;
+    const controller = new AbortController();
+    const client = createRestconfClient({ baseUrl: "https://host", fetchImpl: hangThenFail, retry: { attempts: 4, backoffMs: 5_000 } });
+    const pending = client.send(createRestconfGetRequest(PATH), { signal: controller.signal });
+    controller.abort();
+    const failure = await pending.then(() => undefined, (cause: unknown) => cause);
+    expect((failure as Error).name).toBe("AbortError");
+    expect(calls).toBe(1); // pas de tentative supplémentaire après une annulation
+  });
+
+  it("wraps CORS-style transport failures with a diagnostic hint (§205)", async () => {
+    const cors = (async (): Promise<Response> => { throw new TypeError("Failed to fetch"); }) as unknown as typeof fetch;
+    const client = createRestconfClient({ baseUrl: "https://host", fetchImpl: cors });
+    const failure = await client.send(createRestconfGetRequest(PATH)).then(() => undefined, (cause: unknown) => cause);
+    expect((failure as Error).name).toBe("RestconfNetworkError");
+    expect(String((failure as Error).message)).toMatch(/Access-Control-Allow-Origin/i);
+    expect(String((failure as Error).message)).toMatch(/OPTIONS/);
+  });
+
   it("refuses to build without a fetch implementation (no global access at import time)", () => {
     const holder = globalThis as { fetch?: typeof fetch | undefined };
     const globalFetch = holder.fetch;

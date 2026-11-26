@@ -3894,6 +3894,7 @@ var YangEngine = (() => {
   var index_exports = {};
   __export(index_exports, {
     CompiledSchemaFormatError: () => CompiledSchemaFormatError,
+    RestconfNetworkError: () => RestconfNetworkError,
     RestconfRequestError: () => RestconfRequestError,
     YangJsonError: () => YangJsonError,
     YangSyntaxError: () => YangSyntaxError,
@@ -7771,6 +7772,15 @@ var YangEngine = (() => {
   }
 
   // src/restconf/client.ts
+  var RestconfNetworkError = class extends Error {
+    constructor(cause) {
+      super(
+        "RESTCONF request failed without an HTTP response \u2014 the browser hides the real status. Check CORS: the server must send Access-Control-Allow-Origin for this origin, list the method and the Accept/Content-Type headers in Access-Control-Allow-Methods/-Headers, and answer any OPTIONS preflight; also verify the URL and the network."
+      );
+      this.name = "RestconfNetworkError";
+      this.cause = cause;
+    }
+  };
   var RestconfRequestError = class extends Error {
     constructor(status, message, details = {}) {
       super(message);
@@ -7818,31 +7828,82 @@ var YangEngine = (() => {
     const base = options.baseUrl.replace(/\/+$/, "");
     const closure = options.signal;
     const headerSource = options.headers;
+    const retryAttempts = Math.max(1, options.retry?.attempts ?? 1);
+    const retryBackoff = Math.max(0, options.retry?.backoffMs ?? 0);
+    const wait = (ms) => new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
     return {
       async send(request, extras = {}) {
+        const idempotent = request.method === "GET" || request.method === "HEAD";
+        const maxAttempts = idempotent ? retryAttempts : 1;
+        const finishSignal = extras.signal ?? closure;
         const extra = typeof headerSource === "function" ? await headerSource({ method: request.method, path: request.path }) : headerSource;
         const headers = { ...request.headers, ...extra ?? {}, ...extras.headers };
-        const signal = extras.signal ?? closure;
-        const response = await fetchImpl(`${base}${request.path}`, {
-          method: request.method,
-          headers,
-          ...request.body === void 0 ? {} : { body: JSON.stringify(request.body) },
-          ...options.credentials ? { credentials: options.credentials } : {},
-          ...signal ? { signal } : {}
-        });
-        if (response.status === 204) {
-          return { status: 204, headers: response.headers, json: async () => void 0 };
+        const url = `${base}${request.path}`;
+        let attempt = 1;
+        for (; ; ) {
+          let timedOut = false;
+          let timeoutController;
+          let forwardCallerAbort;
+          let timer;
+          try {
+            let signal = finishSignal;
+            if (extras.timeoutMs !== void 0) {
+              timeoutController = new AbortController();
+              if (finishSignal) {
+                forwardCallerAbort = () => timeoutController.abort(finishSignal.reason);
+                finishSignal.addEventListener("abort", forwardCallerAbort, { once: true });
+              }
+              signal = timeoutController.signal;
+              timer = setTimeout(() => {
+                timedOut = true;
+                timeoutController.abort(new DOMException("The RESTCONF request timed out.", "TimeoutError"));
+              }, extras.timeoutMs);
+            }
+            const response = await fetchImpl(url, {
+              method: request.method,
+              headers,
+              ...request.body === void 0 ? {} : { body: JSON.stringify(request.body) },
+              ...options.credentials ? { credentials: options.credentials } : {},
+              ...signal ? { signal } : {}
+            });
+            if (idempotent && response.status >= 500 && attempt < maxAttempts) {
+              await wait(retryBackoff * 2 ** (attempt - 1));
+              attempt++;
+              continue;
+            }
+            if (response.status === 204) {
+              return { status: 204, headers: response.headers, json: async () => void 0 };
+            }
+            if (response.ok) {
+              return { status: response.status, headers: response.headers, json: () => response.json() };
+            }
+            let body;
+            try {
+              body = await response.json();
+            } catch {
+              body = void 0;
+            }
+            throw await typedError(response, body);
+          } catch (error) {
+            if (error instanceof RestconfRequestError) throw error;
+            if (finishSignal?.aborted) throw finishSignal.reason ?? error;
+            if (timedOut || error instanceof TypeError) {
+              if (idempotent && attempt < maxAttempts) {
+                await wait(retryBackoff * 2 ** (attempt - 1));
+                attempt++;
+                continue;
+              }
+              if (error instanceof TypeError) throw new RestconfNetworkError(error);
+              throw error;
+            }
+            throw error;
+          } finally {
+            if (timer !== void 0) clearTimeout(timer);
+            if (forwardCallerAbort && finishSignal) finishSignal.removeEventListener("abort", forwardCallerAbort);
+          }
         }
-        if (response.ok) {
-          return { status: response.status, headers: response.headers, json: () => response.json() };
-        }
-        let body;
-        try {
-          body = await response.json();
-        } catch {
-          body = void 0;
-        }
-        throw await typedError(response, body);
       }
     };
   }

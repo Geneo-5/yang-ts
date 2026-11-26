@@ -553,8 +553,19 @@ try {
 
 La navigation paginée (parcourir une grande liste via `depth`), la sonde NMDA
 (`createRestconfNmdaProbeRequest`) et les tests correspondants vivent dans
-`tests/restconf-client.test.ts`. La politique de reprise (retry) et les flux
-de notification (`EventSource`) restent ouverts dans la roadmap.
+`tests/restconf-client.test.ts`.
+
+Deux filets de sécurité completes : `send(request, { timeoutMs })` coupe la
+requête au délai (rejet `TimeoutError`, nouvelles tentatives idempotentes si
+`retry` est activé) et `retry: { attempts, backoffMs }` (création du client)
+rejoue GET/HEAD uniquement — sur erreur transport, délai dépassé ou 5xx, avec
+attente exponentielle — jamais une annulation ni un 4xx, jamais POST/PUT/
+PATCH/DELETE. Un `TypeError` navigateur (échec CORS/preflight opaque) devient
+une `RestconfNetworkError` : le message porte la liste de contrôle CORS
+(`Access-Control-Allow-Origin`, méthodes/en-têtes autorisés, réponse à
+`OPTIONS`, URL/réseau) et l'erreur d'origine reste dans `cause`.
+
+Reste ouvert (roadmap §204) : les flux de notification via `EventSource`.
 
 ## 9. Sécurité des sources non fiables
 

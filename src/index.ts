@@ -46,6 +46,7 @@ export {
 } from "./restconf/library-loader.js";export {
   createRestconfClient,
   RestconfRequestError,
+  RestconfNetworkError,
 } from "./restconf/client.js";
 export {
   findSchemaLibraryMismatches,
