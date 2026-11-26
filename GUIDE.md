@@ -48,7 +48,7 @@ propres diagnostics et refuse d'inventer des données pour continuer.
 | Compilation | `compileYangModules` | module set | `CompiledYangSchema` |
 | Validation d'instance | `validateDataTree` | schéma + document XML | statut + problèmes |
 | Candidats de saisie | `evaluateCandidates` | schéma + document + chemin | évaluations |
-| Aides de formulaire | `createFormModel` | `YangModule` | champs typés |
+| Aides de formulaire | `createFormModel` | schéma compilé (ou `YangModule`) | champs typés, choices, opérations |
 
 ```ts
 import { parseYang } from "yang-browser-engine";
@@ -249,16 +249,20 @@ candidat `indeterminate` (jamais « valide » par silence).
 
 ## 5. Aides de formulaire (`createFormModel`)
 
-`createFormModel` transforme un module **parsé** en métadonnées de
-formulaire : champs (`FormField`), types d'origine YANG, contraintes à
-évaluer, opérations RPC. C'est un modèle neutre, sans aucun DOM : la
-couche UI (React, Lit, …) reste yours.
+`createFormModel` construit les métadonnées de formulaire depuis un **schéma
+compilé** (`CompiledYangSchema`) : champs (`FormField`), types d'origine YANG,
+contraintes à évaluer, opérations `rpc` **et** `action`, structure
+`choice`/`case`. Les `uses`, `augment` et `deviation` sont déjà appliqués par
+le compilateur — le formulaire décrit le schéma développé complet. C'est un
+modèle neutre, sans aucun DOM : la couche UI (React, Lit, …) reste yours.
 
 ```ts
-import { canonicalFormOf, createFormModel, validateFormValue } from "yang-browser-engine";
+import { canonicalFormOf, compileYangModules, createFormModel, parseYang, resolveModuleSet, validateFormValue } from "yang-browser-engine";
 
-const model = createFormModel(root, { modules: [otherParsedModule] });
-const field = model.fields.find((candidate) => candidate.path === "/acme-router:interfaces/acme-router:interface/acme-router:speed")!;
+const moduleSet = await resolveModuleSet([parseYang(source)], { loadModule });
+const schema = compileYangModules(moduleSet, { enabledFeatures: new Set(["acme-router:turbo"]) });
+const model = createFormModel(schema, { module: "acme-router" });
+const field = model.fields.find((candidate) => candidate.path === "/interfaces/interface/speed")!;
 
 const verdict = validateFormValue(field, "9000");
 if (verdict.status !== "valid") {
@@ -268,17 +272,38 @@ if (verdict.status !== "valid") {
 const normalized = canonicalFormOf(field, "9000");
 ```
 
+La compilation sans `enabledFeatures` considère chaque `feature` déclarée
+comme disponible ; avec un ensemble explicite, les nœuds et les valeurs
+`enum`/`bit` dont les `if-feature` ne sont pas satisfaits disparaissent du
+formulaire (options filtrées, nœuds omis). `createFormModel(YangModule)`
+reste accepté : le module est alors compilé à la volée avec les `options.modules`
+fournis (fermeture d'imports complète attendue).
+
+La structure **choix/cas** (RFC 7950 §7.9) est exposée dans `model.choices` :
+au plus un `case` par `choice` est actif, donc une feuille `mandatory` d'un
+case n'est exigée que lorsque son case est actif — ses champs portent
+`casePath`/`caseName` (leur `required` reste `false`), et chaque `case`
+recense ses feuilles obligatoires dans `requiredFieldPaths` pour l'UI ou le
+validateur haut niveau. Les champs hors `choice` gardent leur `required`
+habituel.
+
+Enfin, `model.topModules` associe à chaque nœud racine son module de
+déclaration : `formValuesToRestconfBody` qualifie chaque ressource top-level
+avec le module approprié (multi-modules), et `model.operations` porte les
+actions (`kind: "action"`, champs préfixés du chemin d'ancrage) autant que
+les rpcs.
+
 `validateFormValue` retourne aussi `pending` : la liste des contraintes
 (`must`, `when`, `if-feature`) que le moteur ne peut pas évaluer à ce niveau —
 l'UI doit les considérer comme **peut-être invalides**, pas valides. Enfin,
 `canonicalFormOf(field, value)` normalise une saisie (booléen, décimal, bits…)
 avant envoi.
 
-**Limite connue (honnêteté, voir §87 de la roadmap)** : le modèle de
-formulaire est construit sur l'AST source et **ignore `uses`/`augment`
-(slots réutilisables), les `if-feature` au niveau option et l'exclusivité des
-`case` d'un `choice`** — le champ du schéma développé complet est couvert par
-la roadmap ouverte.
+**Limites connues (honnêteté)** : les notifications ne sont pas modélisées
+(leur payload arrive par flux, pas par formulaire) ; l'exclusion mutuelle des
+cases actifs s'évalue côté UI/validateur via `model.choices` ; les champs sous
+`case` restent `pending` sur leurs vérifications croisées `leafref` s'ils sont
+trouvés par chemin nu.
 
 ## 6. Arbre accessible et contraintes XPath
 

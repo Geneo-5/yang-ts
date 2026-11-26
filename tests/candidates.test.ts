@@ -201,7 +201,7 @@ describe("feature-gated enum and bit values", () => {
   }`;
 
   it("drops enum values whose if-feature is disabled", async () => {
-    const schema = await compileWith(schemaModule);
+    const schema = await compileWith(schemaModule, []);
     expect(schema.diagnostics).toEqual([]);
     const leaf = schema.roots.find(node => node.name === "rack")!.children.find(node => node.name === "mode")!;
     // Pre-fix the gated `legacy` value stayed a candidate although `exotic`
@@ -216,7 +216,7 @@ describe("feature-gated enum and bit values", () => {
   });
 
   it("drops bit values whose if-feature is disabled and keeps positions", async () => {
-    const schema = await compileWith(schemaModule);
+    const schema = await compileWith(schemaModule, []);
     const leaf = schema.roots.find(node => node.name === "rack")!.children.find(node => node.name === "mask")!;
     const domain = finiteDomainOf(leaf);
     // Pre-fix the gated `fancy` bit stayed in the domain.

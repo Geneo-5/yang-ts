@@ -140,7 +140,10 @@ export function formValuesToRestconfBody(model: FormModel, values: FormValues): 
   }
   const body: Record<string, unknown> = {};
   for (const [name, fields] of topLevel) {
-    body[`${model.module}:${name}`] = buildBody(fields, values, `/${name}/`);
+    // §87: with a compiled multi-module schema the model carries `topModules`
+    // (top-node → module); a single-module model qualifies with its own name.
+    const qualifier = model.topModules?.[name] ?? model.module;
+    body[`${qualifier}:${name}`] = buildBody(fields, values, `/${name}/`);
   }
   return body;
 }

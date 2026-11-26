@@ -4672,7 +4672,7 @@ var YangEngine = (() => {
           report("unresolved-feature", `Feature '${token}' could not be resolved`, context, source);
           return false;
         }
-        if (!options.enabledFeatures?.has(`${canonicalModule(resolved.module).argument}:${resolved.name}`)) return false;
+        if (options.enabledFeatures && !options.enabledFeatures.has(`${canonicalModule(resolved.module).argument}:${resolved.name}`)) return false;
         const requirements = childrenOf(feature, "if-feature").map((item) => ({ module: resolved.module.argument, expression: item.argument ?? "", source: item }));
         if (!requirements.length) return true;
         const stackKey = `${resolved.module.argument}:${resolved.name}`;
@@ -6939,37 +6939,6 @@ var YangEngine = (() => {
     };
     return visit(module);
   }
-  function typedefHelp(owner, typeStatement, allModules, visited = /* @__PURE__ */ new Set()) {
-    const name2 = typeStatement.argument ?? "";
-    if (!name2 || BUILTIN.has(name2)) return [];
-    let targetModule = owner;
-    let typedefName = name2;
-    if (name2.includes(":")) {
-      const [prefix, localName] = name2.split(":", 2);
-      typedefName = localName ?? "";
-      const importedName = childrenOf(owner, "import").find((item) => childOf(item, "prefix")?.argument === prefix)?.argument;
-      const imported = allModules.find((item) => item.argument === importedName);
-      if (!imported) return [];
-      targetModule = imported;
-    }
-    const key = `${targetModule.argument}:${typedefName}`;
-    if (visited.has(key)) return [];
-    visited.add(key);
-    const typedef = findTypedef(targetModule, typedefName);
-    if (!typedef) return [];
-    const base = childOf(typedef, "type");
-    return [childOf(typedef, "description")?.argument, ...base ? typedefHelp(targetModule, base, allModules, visited) : []].filter((item) => Boolean(item));
-  }
-  function constraintsOn(node) {
-    const out = [];
-    for (const keyword of ["must", "when", "if-feature"]) {
-      for (const statement of childrenOf(node, keyword)) {
-        const errorMessage = childOf(statement, "error-message")?.argument;
-        out.push({ kind: keyword, expression: statement.argument ?? "", ...errorMessage ? { errorMessage } : {}, source: statement });
-      }
-    }
-    return out;
-  }
   function restrictionsFromType(resolved) {
     const ranges = [];
     const lengths = [];
@@ -7031,86 +7000,178 @@ var YangEngine = (() => {
     if (bits.length) return bits;
     return [];
   }
-  function walkFields(owner, parent, parentPath, allModules, inheritedConstraints, fields, scope, keyNames = /* @__PURE__ */ new Set(), inheritedReadOnly = false) {
-    const containers = /* @__PURE__ */ new Set(["container", "list", "input", "output"]);
-    for (const node of parent.children) {
-      if (node.keyword === "rpc" || node.keyword === "action") {
-        for (const input of childrenOf(node, "input")) walkFields(owner, input, `${parentPath}/${node.argument}/input`, allModules, inheritedConstraints, fields, node.keyword === "rpc" ? "rpc-input" : "action-input", /* @__PURE__ */ new Set(), false);
-        for (const output of childrenOf(node, "output")) walkFields(owner, output, `${parentPath}/${node.argument}/output`, allModules, inheritedConstraints, fields, node.keyword === "rpc" ? "rpc-output" : "action-output", /* @__PURE__ */ new Set(), false);
+  function typeLayersOf(node) {
+    const typedefTypes = node.typedefChain.map((typedef) => childOf(typedef, "type")).filter((type) => Boolean(type));
+    return node.type ? [node.type, ...typedefTypes] : typedefTypes;
+  }
+  function resolvedOfNode(node, schema) {
+    const name2 = node.resolvedType ?? "";
+    if (name2 === "union" && node.type) {
+      const ownerDocument = documentOf(schema, node.declaredIn) ?? documentOf(schema, node.module);
+      const allModules = [...schema.modules, ...schema.submodules];
+      const unionTypes = ownerDocument ? childrenOf(node.type, "type").map((member) => resolveType(ownerDocument, member, allModules, /* @__PURE__ */ new Set())) : [];
+      return { name: name2, layers: typeLayersOf(node), unresolved: false, unionTypes };
+    }
+    return { name: name2, layers: typeLayersOf(node), unresolved: !name2 };
+  }
+  function constraintsOfNode(node) {
+    const out = [];
+    for (const statement of node.must) {
+      const errorMessage = childOf(statement, "error-message")?.argument;
+      out.push({ kind: "must", expression: statement.argument ?? "", ...errorMessage ? { errorMessage } : {}, source: statement });
+    }
+    for (const [index, statement] of node.whenConstraints.entries()) {
+      out.push({ kind: "when", expression: statement.argument ?? "", source: statement });
+    }
+    return out;
+  }
+  function walkFields(schema, nodes, context, inherited, fields, choices) {
+    for (const node of nodes) {
+      const path = `${context.parentPath}/${node.name}${node.kind === "list" ? "[*]" : ""}`;
+      if (node.kind === "container" || node.kind === "list") {
+        walkFields(
+          schema,
+          node.children,
+          { ...context, parentPath: path, keyNames: node.kind === "list" ? new Set(node.keys) : context.keyNames },
+          { constraints: [...inherited.constraints, ...constraintsOfNode(node)], readOnly: inherited.readOnly || !node.config },
+          fields,
+          choices
+        );
         continue;
       }
-      if (containers.has(node.keyword)) {
-        const segment = node.keyword === "input" || node.keyword === "output" ? node.keyword : node.argument ?? node.keyword;
-        const path2 = `${parentPath}/${segment}${node.keyword === "list" ? "[*]" : ""}`;
-        const listKeys = node.keyword === "list" ? new Set((childOf(node, "key")?.argument ?? "").split(/\s+/).filter(Boolean)) : /* @__PURE__ */ new Set();
-        walkFields(owner, node, path2, allModules, [...inheritedConstraints, ...constraintsOn(node)], fields, scope, listKeys, inheritedReadOnly || childOf(node, "config")?.argument === "false");
+      if (node.kind === "choice") {
+        const caseList = [];
+        for (const caseNode of node.children) {
+          if (caseNode.kind !== "case") continue;
+          const caseFields = [];
+          walkFields(
+            schema,
+            caseNode.children,
+            { ...context, parentPath: context.parentPath, choicePath: path, caseName: caseNode.name },
+            { constraints: [...inherited.constraints, ...constraintsOfNode(caseNode)], readOnly: inherited.readOnly || !caseNode.config },
+            caseFields,
+            choices
+          );
+          fields.push(...caseFields);
+          const requiredFieldPaths = caseNode.children.filter((child) => child.kind === "leaf" && (child.properties["mandatory"]?.[0]?.argument ?? "") === "true").map((child) => `${context.parentPath}/${child.name}`);
+          caseList.push({ name: caseNode.name, requiredFieldPaths });
+        }
+        const choice = {
+          name: node.name,
+          path,
+          required: (node.properties["mandatory"]?.[0]?.argument ?? "") === "true",
+          ...childOf(node.source, "default")?.argument ? { defaultCase: childOf(node.source, "default").argument } : {},
+          cases: caseList,
+          source: node.source
+        };
+        choices.push(choice);
         continue;
       }
-      if (node.keyword === "choice" || node.keyword === "case") {
-        walkFields(owner, node, parentPath, allModules, [...inheritedConstraints, ...constraintsOn(node)], fields, scope, keyNames, inheritedReadOnly);
-        continue;
-      }
-      if (node.keyword !== "leaf" && node.keyword !== "leaf-list") continue;
-      const name2 = node.argument ?? "";
-      const typeStatement = childOf(node, "type");
-      if (!typeStatement) continue;
-      const resolved = resolveType(owner, typeStatement, allModules, /* @__PURE__ */ new Set());
-      const typedModule = scope === "data" ? owner : owner;
+      if (node.kind !== "leaf" && node.kind !== "leaf-list") continue;
+      const name2 = node.name;
+      const resolved = resolvedOfNode(node, schema);
       const descriptions = [
-        childOf(node, "description")?.argument,
-        ...typedefHelp(owner, typeStatement, allModules),
+        childOf(node.source, "description")?.argument,
+        ...node.typedefChain.map((typedef) => childOf(typedef, "description")?.argument),
         ...resolved.layers.map((layer) => childOf(layer, "description")?.argument)
       ].filter((value, index, all) => Boolean(value) && all.indexOf(value) === index);
       const description = descriptions.join("\n\n");
-      const path = `${parentPath}/${name2}`;
-      const constraints = [...inheritedConstraints, ...constraintsOn(node)];
+      const inheritedConstraints = [
+        ...inherited.constraints,
+        // Node if-features stay pending constraints: the feature verdict lives
+        // in the compiled schema (compiling with `enabledFeatures` drops the
+        // node entirely); a raw feature expression needs schema context again.
+        ...node.featureRequirements.map((requirement) => ({ kind: "if-feature", expression: requirement.expression, source: node.source }))
+      ];
+      const insideCase = context.caseName !== void 0 && context.choicePath !== void 0;
+      const mandatory = (node.properties["mandatory"]?.[0]?.argument ?? "") === "true" || context.keyNames.has(name2);
       const field = {
         name: name2,
         path,
-        module: typedModule.argument,
-        scope,
+        module: node.module,
+        scope: context.scope,
         control: CONTROL_BY_TYPE[resolved.name] ?? "unsupported",
         yangType: resolved.name,
         label: name2,
         ...description ? { help: description } : {},
-        ...childOf(node, "units")?.argument ? { units: childOf(node, "units").argument } : {},
-        ...childOf(node, "default")?.argument ? { defaultValue: childOf(node, "default").argument } : {},
-        required: childOf(node, "mandatory")?.argument === "true" || keyNames.has(name2),
-        readOnly: inheritedReadOnly || childOf(node, "config")?.argument === "false",
-        multiple: node.keyword === "leaf-list",
-        ...childOf(node, "min-elements")?.argument ? { minElements: Number(childOf(node, "min-elements").argument) } : {},
-        ...childOf(node, "max-elements")?.argument ? { maxElements: Number(childOf(node, "max-elements").argument) } : {},
-        options: optionsFromType(resolved),
+        ...childOf(node.source, "units")?.argument ? { units: childOf(node.source, "units").argument } : {},
+        ...node.properties["default"]?.[0]?.argument ? { defaultValue: node.properties["default"][0].argument } : {},
+        // §87: a mandatory leaf inside a case is required only while its case
+        // is active — the choice's models carry it instead (see FormChoice).
+        required: insideCase ? false : mandatory,
+        readOnly: inherited.readOnly || !node.config,
+        multiple: node.kind === "leaf-list",
+        ...node.properties["min-elements"]?.[0]?.argument ? { minElements: Number(node.properties["min-elements"][0].argument) } : {},
+        ...node.properties["max-elements"]?.[0]?.argument ? { maxElements: Number(node.properties["max-elements"][0].argument) } : {},
+        options: filterDisabledOptions(optionsFromType(resolved), node.featureDisabledValues),
         restrictions: restrictionsFromType(resolved),
-        constraints,
-        source: node,
-        unresolvedType: resolved.unresolved
+        constraints: [...inheritedConstraints, ...constraintsOfNode(node)],
+        source: node.source,
+        unresolvedType: resolved.unresolved,
+        ...insideCase ? { casePath: context.choicePath, caseName: context.caseName } : {}
       };
       fields.push(field);
     }
   }
-  function createFormModel(module, options = {}) {
-    const modules = [module, ...(options.modules ?? []).filter((candidate) => candidate.argument !== module.argument)];
+  function filterDisabledOptions(options, disabled) {
+    if (!disabled?.length) return options;
+    const disabledNames = new Set(disabled);
+    return options.filter((option) => !disabledNames.has(option.value));
+  }
+  function createFormModel(input, options = {}) {
+    const schema = isCompiledSchema(input) ? input : schemaOfModule(input, options);
+    const roots = options.module ? schema.roots.filter((root) => root.module === options.module) : schema.roots;
     const fields = [];
-    walkFields(module, module, "", modules, [], fields, "data");
-    const operations = childrenOf(module, "rpc").map((rpc) => {
-      const name2 = rpc.argument ?? "";
-      const prefix = `/${name2}/`;
-      const description = childOf(rpc, "description")?.argument;
+    const choices = [];
+    walkFields(schema, roots, { scope: "data", parentPath: "", keyNames: /* @__PURE__ */ new Set() }, { constraints: [], readOnly: false }, fields, choices);
+    const topModules = {};
+    for (const root of roots) topModules[root.name] = root.module;
+    const operations = schema.operations.filter((operation) => operation.kind !== "notification").map((operation) => {
+      const scopeInput = operation.kind === "rpc" ? "rpc-input" : "action-input";
+      const scopeOutput = operation.kind === "rpc" ? "rpc-output" : "action-output";
+      const inputRoot = { scope: scopeInput, parentPath: `${operation.path}/input`, keyNames: /* @__PURE__ */ new Set() };
+      const outputRoot = { scope: scopeOutput, parentPath: `${operation.path}/output`, keyNames: /* @__PURE__ */ new Set() };
+      const inputFields = [];
+      const outputFields = [];
+      walkFields(schema, operation.input, inputRoot, { constraints: [], readOnly: false }, inputFields, choices);
+      walkFields(schema, operation.output, outputRoot, { constraints: [], readOnly: false }, outputFields, choices);
+      fields.push(...inputFields, ...outputFields);
+      const description = childOf(operation.source, "description")?.argument;
       return {
-        kind: "rpc",
-        name: name2,
-        module: module.argument,
-        label: name2,
+        kind: operation.kind,
+        name: operation.name,
+        module: operation.module,
+        label: operation.name,
         ...description ? { help: description } : {},
-        hasInput: childrenOf(rpc, "input").length > 0,
-        hasOutput: childrenOf(rpc, "output").length > 0,
-        inputFields: fields.filter((field) => field.scope === "rpc-input" && field.path.startsWith(`${prefix}input/`)),
-        outputFields: fields.filter((field) => field.scope === "rpc-output" && field.path.startsWith(`${prefix}output/`)),
-        source: rpc
+        hasInput: childrenOf(operation.source, "input").length > 0,
+        hasOutput: childrenOf(operation.source, "output").length > 0,
+        inputFields,
+        outputFields,
+        source: operation.source
       };
     });
-    return { module: module.argument, fields, operations, completeness: "type-validation-with-pending-yang-constraints" };
+    return {
+      module: options.module ?? roots[0]?.module ?? "",
+      fields,
+      operations,
+      choices,
+      ...options.module ? {} : { topModules },
+      completeness: "type-validation-with-pending-yang-constraints"
+    };
+  }
+  function isCompiledSchema(input) {
+    return input.roots !== void 0 && input.operations !== void 0;
+  }
+  function schemaOfModule(module, options) {
+    const seen = /* @__PURE__ */ new Set();
+    const modules = [module, ...options.modules ?? []].filter((candidate) => {
+      const name2 = candidate.argument ?? "";
+      if (seen.has(name2)) return false;
+      seen.add(name2);
+      return true;
+    });
+    const moduleSet = { roots: [module], modules, submodules: [], diagnostics: [] };
+    return compileYangModules(moduleSet, {});
   }
   function absent(value) {
     return value === void 0 || value === null || value === "";
@@ -7340,7 +7401,7 @@ var YangEngine = (() => {
   function validateFormValue(field, value, crossReference) {
     const errors = [];
     if (absent(value)) {
-      if (field.required) errors.push({ code: "required", message: `${field.label} is required.` });
+      if (field.required && field.casePath === void 0) errors.push({ code: "required", message: `${field.label} is required.` });
       if (field.multiple && field.minElements !== void 0 && field.minElements > 0) {
         errors.push({ code: "constraint.min-elements", message: `${field.label} needs at least ${field.minElements} value(s).` });
       }
@@ -7609,7 +7670,8 @@ var YangEngine = (() => {
     }
     const body = {};
     for (const [name2, fields] of topLevel) {
-      body[`${model.module}:${name2}`] = buildBody(fields, values, `/${name2}/`);
+      const qualifier = model.topModules?.[name2] ?? model.module;
+      body[`${qualifier}:${name2}`] = buildBody(fields, values, `/${name2}/`);
     }
     return body;
   }

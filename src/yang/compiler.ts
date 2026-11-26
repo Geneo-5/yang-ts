@@ -394,7 +394,9 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
         report("unresolved-feature", `Feature '${token}' could not be resolved`, context, source);
         return false;
       }
-      if (!options.enabledFeatures?.has(`${canonicalModule(resolved.module).argument}:${resolved.name}`)) return false;
+      // No supplied feature set means every declared feature is available,
+      // matching how feature-gated nodes are kept by default.
+      if (options.enabledFeatures && !options.enabledFeatures.has(`${canonicalModule(resolved.module).argument}:${resolved.name}`)) return false;
       // RFC 7950 section 7.20.2: a feature's own if-feature gates the feature
       // itself; the inner expression resolves in the feature's declaring
       // module. An in-flight name seen again means the requirements cycle.

@@ -1,6 +1,7 @@
 import { YangModule, YangStatement } from "../yang/ast.js";
-import { CompiledYangSchema, isIdentityDerivedFrom } from "../yang/compiler.js";
 import { childOf, childrenOf } from "../yang/parser.js";
+import { compileYangModules, CompiledOperation, CompiledSchemaNode, CompiledYangSchema, documentOf, isIdentityDerivedFrom } from "../yang/compiler.js";
+import type { YangModuleSet } from "../yang/module-set.js";
 import { findSchemaNodeByPath } from "../xpath/accessible-tree.js";
 import { leafrefPathStatementOf, xmlNamespaceForPrefix } from "../xpath/yang-functions.js";
 import { compileXsdPattern } from "../types/xsd-pattern.js";
@@ -71,16 +72,43 @@ export interface FormField {
   source: YangStatement;
   /** True when the field type/typedef chain could not be resolved from the supplied modules. */
   unresolvedType: boolean;
+  /** Schema path of the `choice` the field belongs to through a `case` (absent outside choices). */
+  casePath?: string;
+  /** Name of the immediate `case` holding the field (absent outside choices). */
+  caseName?: string;
+}
+/** One `case` of a choice: the mandatory values a submitted entry must carry when the case is the active one. */
+export interface FormChoiceCase {
+  name: string;
+  requiredFieldPaths: readonly string[];
+}
+/**
+ * RFC 7950 §7.9 choice metadata: at most one case of a choice is active, so a
+ * mandatory leaf of a case is required only when its case is the active one.
+ * UIs and validators use the cases' `requiredFieldPaths` with the active-case
+ * state instead of the fields' own `required` flags (those stay `false` inside
+ * a case).
+ */
+export interface FormChoice {
+  name: string;
+  path: string;
+  required: boolean;
+  defaultCase?: string;
+  cases: readonly FormChoiceCase[];
+  source: YangStatement;
 }
 export interface FormModel {
   module: string;
   fields: FormField[];
   operations: FormRpcOperation[];
+  /** Per top-level node module map (`name` → module): qualifiers for RESTCONF JSON bodies of multi-module schemas. */
+  topModules?: Readonly<Record<string, string>>;
+  choices: readonly FormChoice[];
   /** Module-level limitations are explicit; callers should not imply full YANG validation. */
   completeness: "type-validation-with-pending-yang-constraints";
 }
 export interface FormRpcOperation {
-  kind: "rpc";
+  kind: "rpc" | "action";
   name: string;
   module: string;
   label: string;
@@ -92,8 +120,10 @@ export interface FormRpcOperation {
   source: YangStatement;
 }
 export interface FormModelOptions {
-  /** Imported modules available for typedef resolution. Include the complete import closure. */
+  /** Imported modules available for typedef resolution when a raw module is supplied. Include the complete import closure. */
   modules?: readonly YangModule[];
+  /** When a compiled multi-module schema is supplied: model only this module's top-level trees (default: all roots). */
+  module?: string;
 }
 
 interface ResolvedType { name: string; layers: YangStatement[]; unresolved: boolean; unionTypes?: ResolvedType[] }
@@ -133,7 +163,7 @@ function resolveType(owner: YangModule, typeStatement: YangStatement, allModules
   const nextStack = new Set(stack);
   nextStack.add(key);
   const resolved = resolveType(targetModule, baseType, allModules, nextStack);
-  return { ...resolved, layers: [typeStatement, ...resolved.layers] };
+  return {...resolved, layers: [typeStatement, ...resolved.layers] };
 }
 
 function findTypedef(module: YangModule, name: string): YangStatement | undefined {
@@ -146,39 +176,6 @@ function findTypedef(module: YangModule, name: string): YangStatement | undefine
     return undefined;
   };
   return visit(module);
-}
-
-function typedefHelp(owner: YangModule, typeStatement: YangStatement, allModules: readonly YangModule[], visited = new Set<string>()): string[] {
-  const name = typeStatement.argument ?? "";
-  if (!name || BUILTIN.has(name)) return [];
-  let targetModule = owner;
-  let typedefName = name;
-  if (name.includes(":")) {
-    const [prefix, localName] = name.split(":", 2);
-    typedefName = localName ?? "";
-    const importedName = childrenOf(owner, "import").find(item => childOf(item, "prefix")?.argument === prefix)?.argument;
-    const imported = allModules.find(item => item.argument === importedName);
-    if (!imported) return [];
-    targetModule = imported;
-  }
-  const key = `${targetModule.argument}:${typedefName}`;
-  if (visited.has(key)) return [];
-  visited.add(key);
-  const typedef = findTypedef(targetModule, typedefName);
-  if (!typedef) return [];
-  const base = childOf(typedef, "type");
-  return [childOf(typedef, "description")?.argument, ...(base ? typedefHelp(targetModule, base, allModules, visited) : [])].filter((item): item is string => Boolean(item));
-}
-
-function constraintsOn(node: YangStatement): FormConstraint[] {
-  const out: FormConstraint[] = [];
-  for (const keyword of ["must", "when", "if-feature"] as const) {
-    for (const statement of childrenOf(node, keyword)) {
-      const errorMessage = childOf(statement, "error-message")?.argument;
-      out.push({ kind: keyword, expression: statement.argument ?? "", ...(errorMessage ? { errorMessage } : {}), source: statement });
-    }
-  }
-  return out;
 }
 
 /** Extract the serializable restriction descriptor from the resolved type layers. */
@@ -245,87 +242,211 @@ function optionsFromType(type: ResolvedType): FormOption[] {
   return [];
 }
 
-function walkFields(
-  owner: YangModule,
-  parent: YangStatement,
-  parentPath: string,
-  allModules: readonly YangModule[],
-  inheritedConstraints: FormConstraint[],
-  fields: FormField[],
-  scope: "data" | "rpc-input" | "rpc-output" | "action-input" | "action-output",
-  keyNames: Set<string> = new Set(),
-  inheritedReadOnly = false,
-): void {
-  const containers = new Set(["container", "list", "input", "output"]);
-  for (const node of parent.children) {
-    if (node.keyword === "rpc" || node.keyword === "action") {
-      for (const input of childrenOf(node, "input")) walkFields(owner, input, `${parentPath}/${node.argument}/input`, allModules, inheritedConstraints, fields, node.keyword === "rpc" ? "rpc-input" : "action-input", new Set(), false);
-      for (const output of childrenOf(node, "output")) walkFields(owner, output, `${parentPath}/${node.argument}/output`, allModules, inheritedConstraints, fields, node.keyword === "rpc" ? "rpc-output" : "action-output", new Set(), false);
-      continue;
-    }
-    if (containers.has(node.keyword)) {
-      const segment = node.keyword === "input" || node.keyword === "output" ? node.keyword : node.argument ?? node.keyword;
-      const path = `${parentPath}/${segment}${node.keyword === "list" ? "[*]" : ""}`;
-      const listKeys = node.keyword === "list" ? new Set((childOf(node, "key")?.argument ?? "").split(/\s+/).filter(Boolean)) : new Set<string>();
-      walkFields(owner, node, path, allModules, [...inheritedConstraints, ...constraintsOn(node)], fields, scope, listKeys, inheritedReadOnly || childOf(node, "config")?.argument === "false");
-      continue;
-    }
-    if (node.keyword === "choice" || node.keyword === "case") {
-      walkFields(owner, node, parentPath, allModules, [...inheritedConstraints, ...constraintsOn(node)], fields, scope, keyNames, inheritedReadOnly);
-      continue;
-    }
-    if (node.keyword !== "leaf" && node.keyword !== "leaf-list") continue;
+/** The type layers of a compiled field: the node's own `type` first, then each typedef's base type, derived-most first. */
+function typeLayersOf(node: CompiledSchemaNode): YangStatement[] {
+  const typedefTypes = node.typedefChain
+    .map(typedef => childOf(typedef, "type"))
+    .filter((type): type is YangStatement => Boolean(type));
+  return node.type ? [node.type, ...typedefTypes] : typedefTypes;
+}
 
-    const name = node.argument ?? "";
-    const typeStatement = childOf(node, "type");
-    if (!typeStatement) continue;
-    const resolved = resolveType(owner, typeStatement, allModules, new Set());
-    const typedModule = scope === "data" ? owner : owner;
+/**
+ * §87 — Resolve a compiled node's type through the compiler-derived chain and
+ * express it in the form-model `ResolvedType` shape (union members keep being
+ * resolved from the parse tree because the compiler stores only the union's
+ * built-in name, not its member chains).
+ */
+function resolvedOfNode(node: CompiledSchemaNode, schema: CompiledYangSchema): ResolvedType {
+  const name = node.resolvedType ?? "";
+  if (name === "union" && node.type) {
+    const ownerDocument = documentOf(schema, node.declaredIn) ?? documentOf(schema, node.module);
+    const allModules = [...schema.modules, ...schema.submodules];
+    const unionTypes = ownerDocument
+      ? childrenOf(node.type, "type").map(member => resolveType(ownerDocument, member, allModules, new Set()))
+      : [];
+    return { name, layers: typeLayersOf(node), unresolved: false, unionTypes };
+  }
+  return { name, layers: typeLayersOf(node), unresolved: !name };
+}
+
+/** Compiled constraint statements (must/when) and feature requirements of one node, in field-constraint shape. */
+function constraintsOfNode(node: CompiledSchemaNode): FormConstraint[] {
+  const out: FormConstraint[] = [];
+  for (const statement of node.must) {
+    const errorMessage = childOf(statement, "error-message")?.argument;
+    out.push({ kind: "must", expression: statement.argument ?? "", ...(errorMessage ? { errorMessage } : {}), source: statement });
+  }
+  for (const [index, statement] of node.whenConstraints.entries()) {
+    out.push({ kind: "when", expression: statement.argument ?? "", source: statement });
+  }
+  return out;
+}
+
+interface WalkContext {
+  scope: FormField["scope"];
+  parentPath: string;
+  keyNames: Set<string>;
+  choicePath?: string;
+  caseName?: string;
+}
+
+/**
+ * §87 — Walk compiled schema nodes (uses/augments/deviations already applied
+ * by the compiler) collecting leaf/leaf-list form fields. Ancestors' must/
+ * when/if-feature constraints accumulate into each field, wrapped with the
+ * node they are held on (RFC 7950 §7.5.3/§7.21.5 evaluation contexts).
+ */
+function walkFields(
+  schema: CompiledYangSchema,
+  nodes: readonly CompiledSchemaNode[],
+  context: WalkContext,
+  inherited: { constraints: FormConstraint[]; readOnly: boolean },
+  fields: FormField[],
+  choices: FormChoice[],
+): void {
+  for (const node of nodes) {
+    const path = `${context.parentPath}/${node.name}${node.kind === "list" ? "[*]" : ""}`;
+    if (node.kind === "container" || node.kind === "list") {
+      walkFields(schema, node.children, { ...context, parentPath: path, keyNames: node.kind === "list" ? new Set(node.keys) : context.keyNames },
+        { constraints: [...inherited.constraints, ...constraintsOfNode(node)], readOnly: inherited.readOnly || !node.config },
+        fields, choices);
+      continue;
+    }
+    if (node.kind === "choice") {
+      const caseList: FormChoiceCase[] = [];
+      // §7.9: explicit cases plus every implicit case the compiler materialized.
+      for (const caseNode of node.children) {
+        if (caseNode.kind !== "case") continue;
+        const caseFields: FormField[] = [];
+        walkFields(schema, caseNode.children, { ...context, parentPath: context.parentPath, choicePath: path, caseName: caseNode.name },
+          { constraints: [...inherited.constraints, ...constraintsOfNode(caseNode)], readOnly: inherited.readOnly || !caseNode.config },
+          caseFields, choices);
+        fields.push(...caseFields);
+        // The case's mandatory leaves: "required" only while the case is the
+        // active one — read from the compiled node (field.required is forced
+        // false inside a case).
+        const requiredFieldPaths = caseNode.children
+          .filter(child => child.kind === "leaf" && (child.properties["mandatory"]?.[0]?.argument ?? "") === "true")
+          .map(child => `${context.parentPath}/${child.name}`);
+        caseList.push({ name: caseNode.name, requiredFieldPaths });
+      }
+      const choice: FormChoice = {
+        name: node.name, path, required: (node.properties["mandatory"]?.[0]?.argument ?? "") === "true",
+        ...(childOf(node.source, "default")?.argument ? { defaultCase: childOf(node.source, "default")!.argument! } : {}),
+        cases: caseList, source: node.source,
+      };
+      choices.push(choice);
+      continue;
+    }
+    if (node.kind !== "leaf" && node.kind !== "leaf-list") continue;
+
+    const name = node.name;
+    const resolved = resolvedOfNode(node, schema);
     const descriptions = [
-      childOf(node, "description")?.argument,
-      ...typedefHelp(owner, typeStatement, allModules),
+      childOf(node.source, "description")?.argument,
+      ...node.typedefChain.map(typedef => childOf(typedef, "description")?.argument),
       ...resolved.layers.map(layer => childOf(layer, "description")?.argument),
     ].filter((value, index, all): value is string => Boolean(value) && all.indexOf(value) === index);
     const description = descriptions.join("\n\n");
-    const path = `${parentPath}/${name}`;
-    const constraints = [...inheritedConstraints, ...constraintsOn(node)];
+    const inheritedConstraints = [...inherited.constraints,
+      // Node if-features stay pending constraints: the feature verdict lives
+      // in the compiled schema (compiling with `enabledFeatures` drops the
+      // node entirely); a raw feature expression needs schema context again.
+      ...node.featureRequirements.map(requirement =>
+        ({ kind: "if-feature", expression: requirement.expression, source: node.source } as FormConstraint))];
+    const insideCase = context.caseName !== undefined && context.choicePath !== undefined;
+    const mandatory = (node.properties["mandatory"]?.[0]?.argument ?? "") === "true" || context.keyNames.has(name);
     const field: FormField = {
-      name, path, module: typedModule.argument, scope, control: CONTROL_BY_TYPE[resolved.name] ?? "unsupported", yangType: resolved.name,
+      name, path, module: node.module, scope: context.scope, control: CONTROL_BY_TYPE[resolved.name] ?? "unsupported", yangType: resolved.name,
       label: name,
       ...(description ? { help: description } : {}),
-      ...(childOf(node, "units")?.argument ? { units: childOf(node, "units")!.argument! } : {}),
-      ...(childOf(node, "default")?.argument ? { defaultValue: childOf(node, "default")!.argument! } : {}),
-      required: childOf(node, "mandatory")?.argument === "true" || keyNames.has(name),
-      readOnly: inheritedReadOnly || childOf(node, "config")?.argument === "false",
-      multiple: node.keyword === "leaf-list",
-      ...(childOf(node, "min-elements")?.argument ? { minElements: Number(childOf(node, "min-elements")!.argument) } : {}),
-      ...(childOf(node, "max-elements")?.argument ? { maxElements: Number(childOf(node, "max-elements")!.argument) } : {}),
-      options: optionsFromType(resolved), restrictions: restrictionsFromType(resolved), constraints, source: node, unresolvedType: resolved.unresolved,
+      ...(childOf(node.source, "units")?.argument ? { units: childOf(node.source, "units")!.argument! } : {}),
+      ...(node.properties["default"]?.[0]?.argument ? { defaultValue: node.properties["default"][0]!.argument! } : {}),
+      // §87: a mandatory leaf inside a case is required only while its case
+      // is active — the choice's models carry it instead (see FormChoice).
+      required: insideCase ? false : mandatory,
+      readOnly: inherited.readOnly || !node.config,
+      multiple: node.kind === "leaf-list",
+      ...(node.properties["min-elements"]?.[0]?.argument ? { minElements: Number(node.properties["min-elements"][0]!.argument) } : {}),
+      ...(node.properties["max-elements"]?.[0]?.argument ? { maxElements: Number(node.properties["max-elements"][0]!.argument) } : {}),
+      options: filterDisabledOptions(optionsFromType(resolved), node.featureDisabledValues),
+      restrictions: restrictionsFromType(resolved),
+      constraints: [...inheritedConstraints, ...constraintsOfNode(node)],
+      source: node.source, unresolvedType: resolved.unresolved,
+      ...(insideCase ? { casePath: context.choicePath, caseName: context.caseName } : {}),
     };
     fields.push(field);
   }
 }
 
-/** Build framework-neutral form metadata from a parsed YANG module. */
-export function createFormModel(module: YangModule, options: FormModelOptions = {}): FormModel {
-  const modules = [module, ...(options.modules ?? []).filter(candidate => candidate.argument !== module.argument)];
+/** §48 — drop enum/bit options whose own `if-feature` is disabled (RFC 7950 §9.6.4/§9.7.4). */
+function filterDisabledOptions(options: FormOption[], disabled: readonly string[] | undefined): FormOption[] {
+  if (!disabled?.length) return options;
+  const disabledNames = new Set(disabled);
+  return options.filter(option => !disabledNames.has(option.value));
+}
+
+/**
+ * Build framework-neutral form metadata from a compiled schema (§87) or, for
+ * compatibility, from a parsed module (compiled on the fly with any supplied
+ * `options.modules`). The compiled path carries `uses` expansions, augments,
+ * deviations, rpc AND action operations, choice/case structure and the
+ * compiler's feature knowledge (feature-gated enum/bit options are dropped);
+ * feature-gated nodes survive as `if-feature` pending constraints unless the
+ * schema was compiled with an `enabledFeatures` set.
+ */
+export function createFormModel(input: CompiledYangSchema | YangModule, options: FormModelOptions = {}): FormModel {
+  const schema = isCompiledSchema(input) ? input : schemaOfModule(input, options);
+  const roots = options.module ? schema.roots.filter(root => root.module === options.module) : schema.roots;
   const fields: FormField[] = [];
-  walkFields(module, module, "", modules, [], fields, "data");
-  const operations: FormRpcOperation[] = childrenOf(module, "rpc").map(rpc => {
-    const name = rpc.argument ?? "";
-    const prefix = `/${name}/`;
-    const description = childOf(rpc, "description")?.argument;
+  const choices: FormChoice[] = [];
+  walkFields(schema, roots, { scope: "data", parentPath: "", keyNames: new Set() }, { constraints: [], readOnly: false }, fields, choices);
+  const topModules: Record<string, string> = {};
+  for (const root of roots) topModules[root.name] = root.module;
+  const operations: FormRpcOperation[] = schema.operations
+    .filter((operation): operation is CompiledOperation & { kind: "rpc" | "action" } => operation.kind !== "notification")
+    .map(operation => {
+    const scopeInput = operation.kind === "rpc" ? "rpc-input" : "action-input";
+    const scopeOutput = operation.kind === "rpc" ? "rpc-output" : "action-output";
+    const inputRoot = { scope: scopeInput, parentPath: `${operation.path}/input`, keyNames: new Set<string>() } as const;
+    const outputRoot = { scope: scopeOutput, parentPath: `${operation.path}/output`, keyNames: new Set<string>() } as const;
+    const inputFields: FormField[] = [];
+    const outputFields: FormField[] = [];
+    walkFields(schema, operation.input, inputRoot, { constraints: [], readOnly: false }, inputFields, choices);
+    walkFields(schema, operation.output, outputRoot, { constraints: [], readOnly: false }, outputFields, choices);
+    fields.push(...inputFields, ...outputFields);
+    const description = childOf(operation.source, "description")?.argument;
     return {
-      kind: "rpc", name, module: module.argument, label: name,
+      kind: operation.kind, name: operation.name, module: operation.module, label: operation.name,
       ...(description ? { help: description } : {}),
-      hasInput: childrenOf(rpc, "input").length > 0,
-      hasOutput: childrenOf(rpc, "output").length > 0,
-      inputFields: fields.filter(field => field.scope === "rpc-input" && field.path.startsWith(`${prefix}input/`)),
-      outputFields: fields.filter(field => field.scope === "rpc-output" && field.path.startsWith(`${prefix}output/`)),
-      source: rpc,
+      hasInput: childrenOf(operation.source, "input").length > 0,
+      hasOutput: childrenOf(operation.source, "output").length > 0,
+      inputFields, outputFields, source: operation.source,
     };
   });
-  return { module: module.argument, fields, operations, completeness: "type-validation-with-pending-yang-constraints" };
+  return {
+    module: options.module ?? roots[0]?.module ?? "",
+    fields, operations, choices,
+    ...(options.module ? {} : { topModules }),
+    completeness: "type-validation-with-pending-yang-constraints",
+  };
+}
+
+function isCompiledSchema(input: CompiledYangSchema | YangModule): input is CompiledYangSchema {
+  return (input as Partial<CompiledYangSchema>).roots !== undefined && (input as Partial<CompiledYangSchema>).operations !== undefined;
+}
+
+/** Compile a raw module (with its import closure) so the form model walks compiled nodes (§87). */
+function schemaOfModule(module: YangModule, options: FormModelOptions): CompiledYangSchema {
+  const seen = new Set<string>();
+  const modules = [module, ...(options.modules ?? [])].filter(candidate => {
+    const name = candidate.argument ?? "";
+    if (seen.has(name)) return false;
+    seen.add(name);
+    return true;
+  });
+  const moduleSet: YangModuleSet = { roots: [module], modules, submodules: [], diagnostics: [] };
+  return compileYangModules(moduleSet, {});
 }
 
 function absent(value: unknown): boolean { return value === undefined || value === null || value === ""; }
@@ -539,7 +660,10 @@ export function validateFormValue(
 ): FormValidationResult {
   const errors: FormError[] = [];
   if (absent(value)) {
-    if (field.required) errors.push({ code: "required", message: `${field.label} is required.` });
+    // §87: a mandatory leaf inside a choice case is required only while its
+    // case is the active one; choice exclusivity is the UI's/validator's call
+    // (model.choices carries the cases' mandatory field paths).
+    if (field.required && field.casePath === undefined) errors.push({ code: "required", message: `${field.label} is required.` });
     if (field.multiple && field.minElements !== undefined && field.minElements > 0) {
       errors.push({ code: "constraint.min-elements", message: `${field.label} needs at least ${field.minElements} value(s).` });
     }

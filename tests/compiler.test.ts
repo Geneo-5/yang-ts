@@ -110,6 +110,28 @@ describe("semantic compilation foundation", () => {
     expect(withFeature.diagnostics).toEqual([]);
   });
 
+  it("keeps if-feature enum values available when no feature set is provided", async () => {
+    const module = parseYang(`module gated {
+      namespace "urn:gated"; prefix g;
+      feature advanced;
+      container conf {
+        leaf mode {
+          type enumeration {
+            enum manual;
+            enum turbo { if-feature advanced; }
+          }
+        }
+      }
+    }`);
+    const moduleSet = await resolveModuleSet([module], { async loadModule() { return undefined; } });
+    const unrestricted = compileYangModules(moduleSet);
+    expect(unrestricted.roots[0]?.children[0]?.featureDisabledValues, "no option means every feature available; turbo must not be disabled").toBeUndefined();
+    const withheld = compileYangModules(moduleSet, { enabledFeatures: new Set() });
+    expect(withheld.roots[0]?.children[0]?.featureDisabledValues).toEqual(["turbo"]);
+    const granted = compileYangModules(moduleSet, { enabledFeatures: new Set(["gated:advanced"]) });
+    expect(granted.roots[0]?.children[0]?.featureDisabledValues).toBeUndefined();
+  });
+
   it("compiles nested actions from data nodes, groupings and augments with schema paths", async () => {
     const base = parseYang(`module base {
       namespace "urn:base"; prefix b;
