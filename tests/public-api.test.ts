@@ -25,7 +25,7 @@ const INTERNAL_ONLY = [
   "createYangFunctionLibrary", "createLeafrefResolver", "leafrefPathStatementOf",
   "xmlNamespaceForPrefix", "matchSchemaChild", "schemaNodeForElement", "accessibleDataRoot",
   "flattenDataChildren", "findSchemaNodeByPath", "schemaNodeChainByPath",
-  "childOf", "childrenOf", "moduleNamespacePrefixes", "yangLibraryEntries", "yangLibraryInventory",
+  "childOf", "childrenOf", "moduleNamespacePrefixes", "documentNamespacePrefixes", "yangLibraryEntries", "yangLibraryInventory",
   "BUILTIN_TYPES", "RESTRICTION_BUILTINS", "compileXsdPattern", "finiteDomainOf",
 ];
 

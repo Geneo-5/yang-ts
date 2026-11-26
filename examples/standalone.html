@@ -4394,25 +4394,38 @@ var YangEngine = (() => {
   };
 
   // src/yang/compiler.ts
-  function moduleNamespacePrefixes(schema, moduleName) {
+  function documentOf(schema, documentName) {
+    return schema.modules.find((module) => module.argument === documentName) ?? schema.submodules.find((submodule) => submodule.argument === documentName);
+  }
+  function documentNamespace(schema, documentName) {
+    const doc = documentOf(schema, documentName);
+    if (!doc) return void 0;
+    const belongsTo = childOf(doc, "belongs-to");
+    const parent = belongsTo && schema.modules.find((module) => module.argument === belongsTo.argument);
+    return childOf(doc, "namespace")?.argument ?? (parent ? childOf(parent, "namespace")?.argument : void 0);
+  }
+  function documentNamespacePrefixes(schema, documentName) {
     const map = {};
     const put = (prefix, namespace) => {
       if (prefix && namespace && map[prefix] === void 0) map[prefix] = namespace;
     };
-    const owner = schema.modules.find((module) => module.argument === moduleName);
-    const included = owner ? schema.submodules.filter((submodule) => childOf(submodule, "belongs-to")?.argument === owner.argument) : [];
-    for (const doc of owner ? [owner, ...included] : []) {
-      const belongsTo = doc === owner ? void 0 : childOf(doc, "belongs-to");
-      const parent = belongsTo && schema.modules.find((module) => module.argument === belongsTo.argument);
-      if (doc === owner) {
-        put(childOf(doc, "prefix")?.argument, childOf(doc, "namespace")?.argument);
-      } else if (parent) {
-        put(belongsTo && childOf(belongsTo, "prefix")?.argument, childOf(parent, "namespace")?.argument);
+    const doc = documentOf(schema, documentName);
+    if (!doc) return map;
+    const belongsTo = childOf(doc, "belongs-to");
+    const parent = belongsTo && schema.modules.find((module) => module.argument === belongsTo.argument);
+    if (belongsTo && parent) {
+      for (const importNode of [...childrenOf(parent, "import"), ...childrenOf(doc, "import")]) {
+        const imported = schema.modules.find((module) => module.argument === importNode.argument);
+        put(childOf(importNode, "prefix")?.argument, imported && childOf(imported, "namespace")?.argument);
       }
+      put(childOf(parent, "prefix")?.argument, childOf(parent, "namespace")?.argument);
+      put(childOf(belongsTo, "prefix")?.argument, childOf(parent, "namespace")?.argument);
+    } else {
       for (const importNode of childrenOf(doc, "import")) {
         const imported = schema.modules.find((module) => module.argument === importNode.argument);
         put(childOf(importNode, "prefix")?.argument, imported && childOf(imported, "namespace")?.argument);
       }
+      put(childOf(doc, "prefix")?.argument, childOf(doc, "namespace")?.argument);
     }
     return map;
   }
@@ -4805,6 +4818,7 @@ var YangEngine = (() => {
         name: name2,
         module: instantiatingModule.argument,
         namespace: childOf(instantiatingModule, "namespace")?.argument ?? "",
+        declaredIn: sourceModule.argument ?? "",
         path,
         config,
         keys,
@@ -4864,6 +4878,7 @@ var YangEngine = (() => {
           name: child.name,
           module: child.module,
           namespace: child.namespace,
+          declaredIn: child.declaredIn,
           path,
           config: child.config,
           keys: [],
@@ -5654,7 +5669,7 @@ var YangEngine = (() => {
           compiled = compileYangXPath(
             pathStatement.argument,
             childOf(owner, "namespace")?.argument ?? "",
-            moduleNamespacePrefixes(schema, chosen.module)
+            documentNamespacePrefixes(schema, chosen.module)
           );
         } catch {
           return void 0;
@@ -5853,7 +5868,7 @@ var YangEngine = (() => {
       libraryCache.set(moduleName, created);
       return created;
     };
-    const compiledFor = (expressionModule, expression) => compileModuleExpression(schema, expressionModule, expression);
+    const compiledFor = (expressionModule, expression, documentName) => compileModuleExpression(schema, expressionModule, expression, documentName ?? expressionModule);
     const finish = (kind, statement, status) => ({
       kind,
       expression: statement.argument ?? "",
@@ -5878,7 +5893,7 @@ var YangEngine = (() => {
           if (kind === "when") {
             const context = holder ? contextForWhen(holder) : element;
             if (!context) return finish(kind, statement, "indeterminate");
-            const compiled2 = compiledFor(moduleName, statement.argument ?? "");
+            const compiled2 = compiledFor(moduleName, statement.argument ?? "", schemaNode.declaredIn);
             if (!compiled2) return finish(kind, statement, "indeterminate");
             try {
               return finish(kind, statement, compiled2.evaluateBoolean({
@@ -5891,7 +5906,7 @@ var YangEngine = (() => {
               return finish(kind, statement, "indeterminate");
             }
           }
-          const compiled = compiledFor(moduleName, statement.argument ?? "");
+          const compiled = compiledFor(moduleName, statement.argument ?? "", schemaNode.declaredIn);
           if (!compiled) return finish(kind, statement, "indeterminate");
           try {
             return finish(kind, statement, compiled.evaluateBoolean({
@@ -5910,19 +5925,19 @@ var YangEngine = (() => {
     };
   }
   var moduleExpressionCache = /* @__PURE__ */ new WeakMap();
-  function compileModuleExpression(schema, moduleName, expression) {
+  function compileModuleExpression(schema, moduleName, expression, documentName) {
+    const docName = documentName ?? moduleName;
     let scoped = moduleExpressionCache.get(schema);
     if (!scoped) {
       scoped = /* @__PURE__ */ new Map();
       moduleExpressionCache.set(schema, scoped);
     }
-    const key = `${moduleName}:${expression}`;
+    const key = `${docName}:${expression}`;
     if (scoped.has(key)) return scoped.get(key);
     let created;
     try {
-      const owner = schema.modules.find((module) => module.argument === moduleName);
-      if (!owner) throw new Error(`module ${moduleName} is not part of the schema`);
-      created = compileYangXPath(expression, childOf(owner, "namespace")?.argument ?? "", moduleNamespacePrefixes(schema, moduleName));
+      if (!documentOf(schema, docName)) throw new Error(`document ${docName} is not part of the schema`);
+      created = compileYangXPath(expression, documentNamespace(schema, docName) ?? "", documentNamespacePrefixes(schema, docName));
     } catch {
       created = void 0;
     }
@@ -6073,7 +6088,7 @@ var YangEngine = (() => {
       if (!statements.length) return;
       let parsed = uniqueStepsCache.get(child);
       if (!parsed) {
-        const prefixes = moduleNamespacePrefixes(schema, child.module);
+        const prefixes = documentNamespacePrefixes(schema, child.declaredIn || child.module);
         parsed = statements.map((statement) => ({
           argument: statement.argument,
           subPaths: statement.argument.trim().split(/\s+/).map((subPath) => subPath.split("/").map((step) => {
@@ -7016,7 +7031,7 @@ var YangEngine = (() => {
       }
       const pathArgument = leafrefPathStatementOf(schemaNode)?.argument;
       if (!pathArgument) return true;
-      const compiled = compileModuleExpression(crossReference.schema, schemaNode.module, pathArgument);
+      const compiled = compileModuleExpression(crossReference.schema, schemaNode.module, pathArgument, schemaNode.declaredIn ?? schemaNode.module);
       if (!compiled) return true;
       let reached;
       try {

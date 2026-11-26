@@ -627,7 +627,7 @@ function validateSingleCrossReference(field: FormField, value: unknown, errors: 
     // typedef chain (e.g. if:interface-ref), not only on the node's type.
     const pathArgument = leafrefPathStatementOf(schemaNode)?.argument;
     if (!pathArgument) return true;
-    const compiled = compileModuleExpression(crossReference.schema, schemaNode.module, pathArgument);
+    const compiled = compileModuleExpression(crossReference.schema, schemaNode.module, pathArgument, schemaNode.declaredIn ?? schemaNode.module);
     if (!compiled) return true;
     let reached: Element[];
     try {

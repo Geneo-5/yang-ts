@@ -3,7 +3,7 @@ import {
   buildAccessibleTree, canonicalFormOf, compileYangModules, createFormModel, evaluateCandidates,
   parseYang, resolveModuleSet, validateFormValue, validateDataTree, YangSyntaxError,
 } from "../src/index.js";
-import { childOf, compileYangXPath, moduleNamespacePrefixes } from "../src/internal.js";
+import { childOf, compileYangXPath, documentNamespacePrefixes, moduleNamespacePrefixes } from "../src/internal.js";
 import type { CompiledSchemaNode, CompiledYangSchema } from "../src/index.js";
 import { parseXml, serializeNode } from "./dom.js";
 
@@ -27,6 +27,13 @@ describe("Stage 7 P1 – submodule compile context (RFC 7950 §5.6.2)", () => {
     import dep { prefix dp; }
     include parts;
     leaf flagged { type boolean; }
+    container gadget {
+      leaf pick {
+        type enumeration { enum a; enum b; }
+        must "../op:beta = 'moved'";
+      }
+      leaf beta { type string; }
+    }
   }`;
   const depYang = `module dep {
     yang-version 1.1;
@@ -93,14 +100,38 @@ describe("Stage 7 P1 – submodule compile context (RFC 7950 §5.6.2)", () => {
     expect(() => childAt(root, "dep-container")).not.toThrow();
   });
 
-  it("resolves XPath prefixes declared by the module and its submodules", async () => {
+  it("keeps the module map to the module's own prefixes (RFC 7950 §6.4.1)", async () => {
     const schema = await compileSet;
-    expect(moduleNamespacePrefixes(schema, "owner")).toMatchObject({
+    // Pre-fix the map merged every included submodule's prefixes in, so the
+    // module's expressions could use `op` (parts' belongs-to prefix) and `sp`
+    // (parts' import) — prefixes the module document never declared.
+    expect(moduleNamespacePrefixes(schema, "owner")).toEqual({
       own: "urn:owner",
       dp: "urn:dep",
+    });
+  });
+
+  it("maps a submodule document to its own and its parent's prefixes", async () => {
+    const schema = await compileSet;
+    expect(documentNamespacePrefixes(schema, "parts")).toEqual({
       op: "urn:owner",
       sp: "urn:dep",
+      own: "urn:owner",
+      dp: "urn:dep",
     });
+  });
+
+  it("treats a module expression using another document's prefix as unevaluable", async () => {
+    const schema = await compileSet;
+    expect(schema.diagnostics).toEqual([]);
+    // `op` resolves only through submodule parts; the module's must cannot use
+    // it. Pre-fix the merged map bound op→urn:owner, the element test matched
+    // the module's own beta, and both enum candidates were wrongly allowed.
+    const result = evaluateCandidates(schema, xml(
+      `<wrap xmlns="urn:owner"><beta>moved</beta><gadget><pick>b</pick></gadget></wrap>`),
+      "/gadget/pick");
+    const statuses = new Set(result.candidates.map(candidate => candidate.status));
+    expect([...statuses]).toEqual(["indeterminate"]);
   });
 });
 

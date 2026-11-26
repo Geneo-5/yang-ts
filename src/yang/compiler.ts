@@ -3,39 +3,73 @@ import { childOf, childrenOf } from "./parser.js";
 import { YangModuleSet } from "./module-set.js";
 import { BUILTIN_TYPES, RESTRICTION_BUILTINS } from "../types/builtins.js";
 
-/** Prefix → namespace map for XPath written inside `moduleName`: its own prefix first (RFC 7950 §6.4.1), then imports.
- * Submodules included by `moduleName` contribute their imports too, and their
- * `belongs-to` prefix resolves to the module's namespace; the module's own
- * declarations win over collisions. */
-export function moduleNamespacePrefixes(schema: CompiledYangSchema, moduleName: string): Record<string, string> {
+/** The document (module or submodule) named `documentName`, or `undefined`. */
+export function documentOf(schema: CompiledYangSchema, documentName: string): YangModule | undefined {
+  return schema.modules.find(module => module.argument === documentName)
+    ?? schema.submodules.find(submodule => submodule.argument === documentName);
+}
+
+/** The namespace URN that unprefixed node tests of expressions belong to (RFC 7950 §6.4.1). */
+export function documentNamespace(schema: CompiledYangSchema, documentName: string): string | undefined {
+  const doc = documentOf(schema, documentName);
+  if (!doc) return undefined;
+  const belongsTo = childOf(doc, "belongs-to");
+  const parent = belongsTo && schema.modules.find(module => module.argument === belongsTo.argument);
+  return childOf(doc, "namespace")?.argument ?? (parent ? childOf(parent, "namespace")?.argument : undefined);
+}
+
+/**
+ * Prefix → namespace map for the namespace declarations IN SCOPE for
+ * expressions of the document named `documentName` (RFC 7950 §6.4.1): a
+ * module contributes only its own prefix and imports; a submodule contributes
+ * its `belongs-to` prefix, its own imports, and its parent module's prefix
+ * and imports. Prefixes of other submodules (siblings) are never in scope.
+ * A document's own declarations win over the parent's on collision.
+ */
+export function documentNamespacePrefixes(schema: CompiledYangSchema, documentName: string): Record<string, string> {
   const map: Record<string, string> = {};
   const put = (prefix: string | undefined, namespace: string | undefined) => {
     if (prefix && namespace && map[prefix] === undefined) map[prefix] = namespace;
   };
-  const owner = schema.modules.find(module => module.argument === moduleName);
-  const included = owner ? schema.submodules.filter(submodule => childOf(submodule, "belongs-to")?.argument === owner.argument) : [];
-  for (const doc of owner ? [owner, ...included] : []) {
-    const belongsTo = doc === owner ? undefined : childOf(doc, "belongs-to");
-    const parent = belongsTo && schema.modules.find(module => module.argument === belongsTo.argument);
-    if (doc === owner) {
-      put(childOf(doc, "prefix")?.argument, childOf(doc, "namespace")?.argument);
-    } else if (parent) {
-      put(belongsTo && childOf(belongsTo, "prefix")?.argument, childOf(parent, "namespace")?.argument);
+  const doc = documentOf(schema, documentName);
+  if (!doc) return map;
+  const belongsTo = childOf(doc, "belongs-to");
+  const parent = belongsTo && schema.modules.find(module => module.argument === belongsTo.argument);
+  if (belongsTo && parent) {
+    // The submodule's belongs-to prefix resolves in the parent's namespace.
+    for (const importNode of [...childrenOf(parent, "import"), ...childrenOf(doc, "import")]) {
+      const imported = schema.modules.find(module => module.argument === importNode.argument);
+      put(childOf(importNode, "prefix")?.argument, imported && childOf(imported, "namespace")?.argument);
     }
+    put(childOf(parent, "prefix")?.argument, childOf(parent, "namespace")?.argument);
+    put(childOf(belongsTo, "prefix")?.argument, childOf(parent, "namespace")?.argument);
+  } else {
     for (const importNode of childrenOf(doc, "import")) {
       const imported = schema.modules.find(module => module.argument === importNode.argument);
       put(childOf(importNode, "prefix")?.argument, imported && childOf(imported, "namespace")?.argument);
     }
+    put(childOf(doc, "prefix")?.argument, childOf(doc, "namespace")?.argument);
   }
   return map;
 }
 
+/**
+ * Prefix map of the namespace declarations of the MODULE document named
+ * `moduleName` — the map for expressions written in the module itself
+ * (RFC 7950 §6.4.1). Included submodules contribute nothing; prefer
+ * `documentNamespacePrefixes` when the declaring document may be a submodule.
+ */
+export function moduleNamespacePrefixes(schema: CompiledYangSchema, moduleName: string): Record<string, string> {
+  return documentNamespacePrefixes(schema, moduleName);
+}
 export type SchemaNodeKind = "container" | "list" | "leaf" | "leaf-list" | "choice" | "case" | "anydata" | "anyxml";
 export interface CompiledSchemaNode {
   kind: SchemaNodeKind;
   name: string;
   module: string;
   namespace: string;
+  /** Document (module or submodule name) carrying the node's statements (RFC 7950 §5.6.2/§6.4.1). */
+  declaredIn: string;
   path: string;
   config: boolean;
   keys: string[];
@@ -538,6 +572,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     if (typeStatement && !resolvedType?.name) report("unresolved-type", `Type '${typeStatement.argument ?? ""}' could not be resolved`, owner, typeStatement);
     const node: CompiledSchemaNode = {
       kind, name, module: instantiatingModule.argument, namespace: childOf(instantiatingModule, "namespace")?.argument ?? "",
+      declaredIn: sourceModule.argument ?? "",
       path, config, keys,
       ...(typeStatement ? { type: typeStatement } : {}),
       ...(resolvedType?.name ? { resolvedType: resolvedType.name } : {}),
@@ -601,7 +636,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       };
       rebase(child, child.path, `${path}/${child.name}`);
       return {
-        kind: "case", name: child.name, module: child.module, namespace: child.namespace,
+        kind: "case", name: child.name, module: child.module, namespace: child.namespace, declaredIn: child.declaredIn,
         path, config: child.config, keys: [], typedefChain: [], typedefChainModules: [], must: [], whenConstraints: [], whenHolders: [],
         ifFeatures: [], featureRequirements: [], properties: {}, deviations: [], source: child.source,
         children: [child],

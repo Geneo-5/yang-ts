@@ -1,4 +1,4 @@
-import { CompiledSchemaNode, CompiledYangSchema, moduleNamespacePrefixes } from "../yang/compiler.js";
+import { CompiledSchemaNode, CompiledYangSchema, documentNamespacePrefixes } from "../yang/compiler.js";
 import { childOf } from "../yang/parser.js";
 import { createConstraintEvaluator } from "../xpath/evaluate-constraints.js";
 import { createLeafrefResolver, leafrefPathStatementOf } from "../xpath/yang-functions.js";
@@ -224,7 +224,7 @@ export function validateDataTree(
     if (!statements.length) return;
     let parsed = uniqueStepsCache.get(child);
     if (!parsed) {
-      const prefixes = moduleNamespacePrefixes(schema, child.module);
+      const prefixes = documentNamespacePrefixes(schema, child.declaredIn || child.module);
       parsed = statements.map(statement => ({
         argument: statement.argument!,
         subPaths: statement.argument!.trim().split(/\s+/).map(subPath => subPath.split("/").map(step => {

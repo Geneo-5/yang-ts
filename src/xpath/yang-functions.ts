@@ -1,7 +1,7 @@
 import { XPathFunction, XPathResult } from "xpath";
 import { YangModule, YangStatement } from "../yang/ast.js";
 import { childOf, childrenOf } from "../yang/parser.js";
-import { CompiledSchemaNode, CompiledYangSchema, isIdentityDerivedFrom, moduleNamespacePrefixes } from "../yang/compiler.js";
+import { CompiledSchemaNode, CompiledYangSchema, documentNamespacePrefixes, isIdentityDerivedFrom } from "../yang/compiler.js";
 import { schemaNodeForElement } from "./accessible-tree.js";
 import { compileYangXPath } from "./xpath.js";
 import { compileXsdPattern } from "../types/xsd-pattern.js";
@@ -64,7 +64,7 @@ export function createLeafrefResolver(schema: CompiledYangSchema): LeafrefResolv
         compiled = compileYangXPath(
           pathStatement.argument,
           childOf(owner, "namespace")?.argument ?? "",
-          moduleNamespacePrefixes(schema, chosen.module),
+          documentNamespacePrefixes(schema, chosen.module),
         );
       } catch {
         // An uncompilable path (unresolvable prefix, wrong syntax) means the

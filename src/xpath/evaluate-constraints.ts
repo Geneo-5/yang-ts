@@ -1,6 +1,7 @@
 import { YangStatement } from "../yang/ast.js";
 import { childOf, childrenOf } from "../yang/parser.js";
-import { CompiledSchemaNode, CompiledYangSchema, moduleNamespacePrefixes } from "../yang/compiler.js";
+import { CompiledSchemaNode, CompiledYangSchema, documentNamespacePrefixes } from "../yang/compiler.js";
+import { documentNamespace as documentNamespaceOfSchema, documentOf as documentOfSchema } from "../yang/compiler.js";
 import { schemaNodeForElement } from "./accessible-tree.js";
 import { compileYangXPath } from "./xpath.js";
 import { XPathFunction } from "xpath";
@@ -55,8 +56,10 @@ export function createConstraintEvaluator(schema: CompiledYangSchema): Constrain
     libraryCache.set(moduleName, created);
     return created;
   };
-  const compiledFor = (expressionModule: string, expression: string) =>
-    compileModuleExpression(schema, expressionModule, expression);
+  // A constraint's prefixes live in the document that declared it: the module,
+  // or the submodule carrying the statement (RFC 7950 §6.4.1).
+  const compiledFor = (expressionModule: string, expression: string, documentName?: string) =>
+    compileModuleExpression(schema, expressionModule, expression, documentName ?? expressionModule);
   const finish = (kind: "must" | "when", statement: YangStatement, status: ConstraintStatus): ConstraintEvaluation => ({
     kind, expression: statement.argument ?? "", status, source: statement,
   });
@@ -85,7 +88,7 @@ export function createConstraintEvaluator(schema: CompiledYangSchema): Constrain
         if (kind === "when") {
           const context = holder ? contextForWhen(holder) : element;
           if (!context) return finish(kind, statement, "indeterminate");
-          const compiled = compiledFor(moduleName, statement.argument ?? "");
+          const compiled = compiledFor(moduleName, statement.argument ?? "", schemaNode.declaredIn);
           if (!compiled) return finish(kind, statement, "indeterminate");
           try {
             return finish(kind, statement, compiled.evaluateBoolean({
@@ -98,7 +101,7 @@ export function createConstraintEvaluator(schema: CompiledYangSchema): Constrain
             return finish(kind, statement, "indeterminate");
           }
         }
-        const compiled = compiledFor(moduleName, statement.argument ?? "");
+        const compiled = compiledFor(moduleName, statement.argument ?? "", schemaNode.declaredIn);
         if (!compiled) return finish(kind, statement, "indeterminate");
         try {
           return finish(kind, statement, compiled.evaluateBoolean({
@@ -125,20 +128,23 @@ const moduleExpressionCache = new WeakMap<CompiledYangSchema, Map<string, Return
 
 /**
  * Compile an RFC 7950 XPath for reuse across constraint and validation passes:
- * the expression's prefixes resolve through the declaring module's imports and
- * unprefixed node tests resolve in the module namespace.
+ * the expression's prefixes resolve through the namespace declarations in
+ * scope for `documentName` (RFC 7950 §6.4.1 — the module's own, or the named
+ * submodule's plus its parent's), and unprefixed node tests resolve in the
+ * document's namespace. `documentName` defaults to `moduleName` for callers
+ * that know the expression is written in the module document; constraint
+ * compilation passes the declaring submodule name so its prefixes resolve.
  */
-export function compileModuleExpression(schema: CompiledYangSchema, moduleName: string, expression: string) {
+export function compileModuleExpression(schema: CompiledYangSchema, moduleName: string, expression: string, documentName?: string) {
+  const docName = documentName ?? moduleName;
   let scoped = moduleExpressionCache.get(schema);
   if (!scoped) { scoped = new Map(); moduleExpressionCache.set(schema, scoped); }
-  const key = `${moduleName}:${expression}`;
+  const key = `${docName}:${expression}`;
   if (scoped.has(key)) return scoped.get(key);
   let created: ReturnType<typeof compileYangXPath> | undefined;
   try {
-    const owner = schema.modules.find(module => module.argument === moduleName);
-    if (!owner) throw new Error(`module ${moduleName} is not part of the schema`);
-    // Own prefix plus imports; RSFC 7950 §6.4.1 requires both in the maps.
-    created = compileYangXPath(expression, childOf(owner, "namespace")?.argument ?? "", moduleNamespacePrefixes(schema, moduleName));
+    if (!documentOfSchema(schema, docName)) throw new Error(`document ${docName} is not part of the schema`);
+    created = compileYangXPath(expression, documentNamespaceOfSchema(schema, docName) ?? "", documentNamespacePrefixes(schema, docName));
   } catch {
     created = undefined;
   }
