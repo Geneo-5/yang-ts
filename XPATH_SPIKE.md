@@ -16,20 +16,14 @@ Use the `xpath` package as the XPath 1.0 expression parser/evaluator, with a YAN
 
 ## Status of the original limits (2026-11-26)
 
-The spike listed what was missing before the adapter could back validation. Most of it has since been built; what remains is recorded here and in `ROADMAP.md` (Stage 4 and Stage 7).
+The spike listed what was missing before the adapter could back validation; all of it is closed. Current state, each row backed by its `CONFORMANCE.md` evidence:
 
-Resolved:
-
-- The RFC 7950 accessible tree (§6.4.1) is built by `buildAccessibleTree` for datastore config/state, notification and RPC/action input/output contexts, with declared defaults injected in datastore contexts.
-- `current()` is bound per evaluation to the original context node.
-- The function library (`re-match`, `derived-from`, `derived-from-or-self`, `deref`, `enum-value`, `bit-is-set`) exists in `src/xpath/yang-functions.ts`.
+- The RFC 7950 accessible tree (§6.4.1) is built by `buildAccessibleTree` for datastore config/state, notification and RPC/action input/output contexts, with declared defaults injected (§7.6.1, case defaults per §7.9.3) and wrapper documents (e.g. NETCONF `<data>`) accepted — `tests/accessible-tree.test.ts`.
+- `current()` binds per evaluation to the original context node; the function library (`re-match`, `derived-from(-or-self)`, `deref`, `enum-value`, `bit-is-set`) lives in `src/xpath/yang-functions.ts`. `enum-value` resolves the argument node's own enumeration type through the typedef chain (§10.5.1) and `derived-from*` qualify XML prefixes through each member's in-scope `xmlns` bindings (§9.10.4).
+- Prefix maps include the module's own `prefix`, its imports and each declaring document's submodule bindings (`moduleNamespacePrefixes`/`documentNamespacePrefixes`, §6.4.1) — expressions using the module's own prefix resolve.
+- `qualifyYangXPathNodeTests` is covered by a seeded differential/fuzz corpus (`tests/differential.test.ts`): the rewrite is a pure prefix insertion and unprefixed and explicitly prefixed spellings agree, mutation-tested.
 
 Still open:
 
-- The prefix→namespace maps contain imported prefixes only; the module's own `prefix` is missing, so expressions using it fail to resolve.
-- Identityref values are matched as `module-name:identity`; XML prefixes bound by namespace are not mapped back to modules.
-- `enum-value` uses a schema-wide name table rather than the argument node's type.
-- `buildAccessibleTree` accepts a single root element and injects defaults of inactive cases.
-- `qualifyYangXPathNodeTests` is a token-scanning heuristic covered by focused examples, not by the full XPath 1.0 grammar or a differential/fuzz corpus.
-- No step or time budget exists for evaluating XPath from untrusted modules.
+- A single XPath expression cannot be interrupted mid-evaluation: the third-party evaluator is synchronous, so no in-process step/time budget exists. Loading budgets, the schema-node expansion budget, validation/candidate deadlines and worker isolation (`createYangRunner`) cover everything around it.
 - Dependency note: `xpath` is the only runtime dependency of the package; it is pre-1.0 and pinned with a caret on a `0.0.x` version (patch range only).

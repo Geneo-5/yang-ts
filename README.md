@@ -9,7 +9,7 @@ const module = parseYang(`module demo { yang-version 1.1; namespace "urn:demo"; 
 console.log(module.argument); // demo
 ```
 
-The package parses the generic YANG statement grammar into a source-located AST, resolves module import/include closures through an injected async loader, and has an **initial semantic compiler** for source-linked schema trees, use-site grouping expansion with refinements, augments, deviations, identities and optional `if-feature` filtering. It also includes a **partial form helper** for data and RPC input/output field metadata and safe, local type checks. The package evaluates compiled `must`/`when` expressions over RFC 7950 accessible trees (XPath 1.0 through the `xpath` package) and validates instance data and finite-domain candidate values with valid/invalid/indeterminate results. These layers are partial: complete RFC 7950 semantics are not implemented, and a source review (2026-11-26) found open defects that are listed in [ROADMAP.md](./ROADMAP.md). See [ARCHITECTURE.md](./ARCHITECTURE.md) for scope and design, [ROADMAP.md](./ROADMAP.md) for milestones, and [TESTING.md](./TESTING.md) for validation gates and coverage policy.
+The package parses the generic YANG statement grammar into a source-located AST, resolves module import/include closures through an injected async loader, and has an **initial semantic compiler** for source-linked schema trees, use-site grouping expansion with refinements, augments, deviations, identities and optional `if-feature` filtering. It also includes a form helper that turns the compiled schema into typed field metadata (data, RPC/action input/output, choice/case structure) with local type checks, and optional browser entries: a RESTCONF client, RFC 8040 §6 notification streams, a precompile CLI and headless React bindings. The package evaluates compiled `must`/`when` expressions over RFC 7950 accessible trees (XPath 1.0 through the `xpath` package) and validates instance data and finite-domain candidate values with valid/invalid/indeterminate results. These layers are partial: complete RFC 7950 semantics are not implemented, and the remaining defects and milestones are listed in [ROADMAP.md](./ROADMAP.md). See [ARCHITECTURE.md](./ARCHITECTURE.md) for scope and design, [ROADMAP.md](./ROADMAP.md) for milestones, and [TESTING.md](./TESTING.md) for validation gates and coverage policy.
 
 ## Module dependencies
 
@@ -63,7 +63,7 @@ const result = validateFormValue(timing, "now");
 // result.pending: must/when/if-feature or unsupported checks not evaluated
 ```
 
-The helper currently extracts descriptions, units, defaults, required/read-only flags, enums, bits, simple types and cardinality. It resolves local typedefs; pass imported modules in `createFormModel(module, { modules })` to resolve imported typedefs. Type/range/length checks are performed locally. Patterns outside the supported XML Schema/JavaScript subset, leafref/identityref values checked without a `FormCrossReference` context, and unresolved types are marked indeterminate; `must`, `when` and `if-feature` expressions are returned as pending with their YANG `error-message` when available. This avoids presenting partial checks as full model validation. The form model is built from the parsed module only: it ignores `uses`, augments, features, deviations and choice exclusivity. Range, length, pattern, fraction-digits, identityref-base and bits restrictions travel on a serializable descriptor carried by the field, so copies, clones and reactive proxies keep validating.
+The form helper is built on the compiled schema (`CompiledYangSchema`), so `uses`, augments and deviations arrive already applied, choices are exposed with their case structure and `form.operations` lists rpcs **and** actions. Pass a parsed module to `createFormModel` as a compatibility entry — it is then compiled on the fly (pass `modules` to resolve imported typedefs). Type/range/length checks are performed locally. Patterns outside the supported XML Schema/JavaScript subset, leafref/identityref values checked without a `FormCrossReference` context, and unresolved types are marked indeterminate; `must`, `when` and `if-feature` expressions are returned as pending with their YANG `error-message` when available. This avoids presenting partial checks as full model validation. Range, length, pattern, fraction-digits, identityref-base and bits restrictions travel on a serializable descriptor carried by the field, so copies, clones and reactive proxies keep validating. Notification payloads are not modeled as form fields (they arrive by stream).
 
 ## RPC and RESTCONF helpers
 
@@ -143,6 +143,16 @@ const edited = documentToYangJson(schema, doc);         // send it back as a PUT
 
 Module-qualified member names appear only at namespace changes; int64/uint64/decimal64 stay strings; `empty` is `[null]`; `bits` are space-separated strings; unknown or ambiguous members raise `YangJsonError` naming the JSON path.
 
+## Running the requests: RESTCONF client, notifications, React
+
+The request builders are paired with an optional browser client and React bindings, both shipped as optional entries that never enter the compiler core:
+
+- `createRestconfClient({ baseUrl, fetchImpl, headers, credentials, signal })` executes builder-produced requests through an injected `fetch` (no global access at import time), maps RFC 8040 `ietf-restconf:errors` to typed `RestconfRequestError`s, reads `Location`/`ETag`/`Last-Modified`, supports timeouts, opt-in retry for idempotent methods only, and wraps browser network failures (`TypeError`, CORS preflight) in a `RestconfNetworkError` carrying the CORS checklist.
+- `createRestconfNotificationStream` subscribes to RFC 8040 §6 SSE streams discovered from `ietf-restconf-monitoring:restconf-state`, with capped exponential reconnect and cleanup.
+- `yang-browser-engine/react` (optional peer dependency) exposes `YangProvider`/`useYangSchema` plus `useFormModel`, `useFieldValidation`, `useDataValidation`, `useCandidates` and `useRestconfResource` as headless hooks, and `createYangRunner`/`spawnYangWorker` to run compilation and validation in a Web Worker with a main-thread fallback.
+
+See [GUIDE.md](./GUIDE.md) for end-to-end usage of each.
+
 ## Browser example
 
 After building, serve the repository root over HTTP and open [`examples/browser-usage.html`](./examples/browser-usage.html). It parses the Sysrepo oven model in the browser, populates the `insert-food` timing enum, validates the selected value, and previews the corresponding RESTCONF RPC request. The example does not send the request, resolve typedefs, apply augments, or evaluate `must`/`when` constraints.
@@ -155,8 +165,8 @@ This is a pre-1.0 engine, not a conformance-tested YANG implementation. Where an
 - [GUIDE.md](./GUIDE.md) is the end-to-end usage guide (pipeline, validation, forms, RFC 7951 JSON, RESTCONF, precompilation, untrusted-source safety).
 - [ROADMAP.md](./ROADMAP.md) lists the open defects by stage and the priority order for fixing them.
 - `capabilities` in the bundle reports possession of a feature layer, not conformance; `validation` is `partial` (see `CONFORMANCE.md` for the exact rows).
-- The optional YANG Library loader (`createRestconfModuleLoader`) has open issues with URL shape and submodule lists; see the roadmap before relying on it against a real server.
-- Resource budgets cover module loading only; treat compilation and validation of untrusted modules as unbounded in time and memory.
+- The optional YANG Library loader (`createRestconfModuleLoader`) reads RFC 7895/8525 payloads — including RFC 8525 nested `submodule` lists and `import-only-module` entries — and forwards `AbortSignal`s; its request shapes are tested against a simulated fetch, not yet against a real server.
+- Resource budgets cover module loading (counts, source characters, deadline, `maxDepth`), grouping/`uses` fan-out (`maxSchemaNodes`) and validation/candidate evaluation (`deadlineMs`, `AbortSignal`); pattern compilation is guarded against oversized and ReDoS-shaped regexes. A single XPath expression still cannot be interrupted mid-evaluation — long-running stores need the host's worker isolation (see `createYangRunner`).
 
 ## Development
 

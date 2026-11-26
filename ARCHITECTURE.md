@@ -12,12 +12,15 @@ RFC 7950 uses XPath 1.0 semantics, with YANG-specific namespace resolution, an a
 
 ```text
 src/
-  index.ts            public entry point (currently `export *` from every module)
+  index.ts            curated public barrel; src/internal.ts holds the internal helpers
+  bin/                precompile CLI (Node, build-time tool)
   yang/               ast, tokenizer + parser, module-set resolver, semantic compiler / schema IR
+  types/              built-in type registry, shared XSD pattern translation
   xpath/              XPath adapter, RFC 7950 function library, accessible trees, constraint evaluation
   validation/         data-tree validation (validate-instance), candidate-value evaluation
-  forms/              form-model: framework-neutral field metadata and local type validation
-  restconf/           RESTCONF path/request builders (paths), YANG Library loader adapter
+  forms/              form model on the compiled schema, binding helpers, RESTCONF body bridge
+  restconf/           request/path builders, YANG Library loader, revision audit, RFC 7951 adapter, client
+  react/              optional entry point: provider/hooks, worker protocol + runner
 tests/                one file per layer, plus fixtures/yang (RFC and Sysrepo corpora)
 scripts/              build-example.mjs (bundles examples/standalone.html)
 ```
@@ -29,23 +32,23 @@ scripts/              build-example.mjs (bundles examples/standalone.html)
 - `restconf/`: request/path builders (RFC 8040, RFC 8527 NMDA) and an optional YANG Library module loader. Neither is part of the compiler core; nothing in the package sends a request except through a caller-supplied `fetch`.
 - `types/`: `builtins.ts` (single-sourced RFC 7950 §9 built-in registry and restriction compatibility) and `xsd-pattern.ts` (shared pattern translation and the untrusted-pattern guards). Feature evaluation stays in `compiler.ts`; constraints are in `xpath/` and `validation/`; there is no `ui/` layer beyond `forms/` and `validation/candidates.ts`.
 
-## Planned optional entry points (ROADMAP Stage 8)
+## Optional entry points (ROADMAP Stage 8)
 
-Target use: a Next.js site built with `output: 'export'`, running entirely in the browser against a RESTCONF API. None of the following exists yet; the compiler, validators and form model stay framework-neutral and never depend on these entry points.
+Target use: a Next.js site built with `output: 'export'`, running entirely in the browser against a RESTCONF API. The compiler, validators and form model stay framework-neutral and never depend on these entry points.
 
-- `client` (framework-neutral): RFC 7951 JSON ↔ instance-tree bridge and a browser RESTCONF client built on the existing request builders, with injectable `fetch`, auth header callback, `ietf-restconf:errors` mapping, `ETag`/`If-Match` handling and `AbortSignal`. No global access at import time.
-- `react` (`"use client"`): headless provider and hooks over the engine; engine initialization in an effect or a `ssr: false` dynamic import; compilation and validation in a Web Worker with a main-thread fallback.
-- `next`: a `withYangEngine(nextConfig)` helper or documented snippet for static export (`images.unoptimized`, `basePath`/`assetPrefix`, worker and precompiled-schema assets).
-- Build-time precompilation: a serializable, versioned form of `CompiledYangSchema` and a script that writes it to `public/`, with a runtime fallback that discovers modules through the YANG Library loader.
+Delivered (2026-11-26, tests cited in `CONFORMANCE.md`):
 
-Static export has no server runtime, so the RESTCONF API is cross-origin unless the static files are served from the same origin or behind the same reverse proxy; deployment must provide CORS or same-origin hosting. Prerequisites in the compiler and forms (serializable `FormField` restrictions, validation without mutating the caller's document, curated exports, budgets with worker cancellation) are listed as blockers in `ROADMAP.md`.
+- `restconf/`: the RFC 7951 JSON ↔ instance-tree adapter, the YANG Library module loader with the revision-mismatch audit, and `createRestconfClient` executed through an injected `fetch` (typed errors, `ETag`/`If-Match`, opt-in idempotent retry, timeouts), plus RFC 8040 §6 notification streams.
+- `forms/`: RESTCONF body helpers (`formValuesToRestconfBody`, `formInputToRestconfBody`, `formPathToYangPathSegments`) and the case-selection/list-entry binding API.
+- Bin: `yang-browser-engine precompile` writes the versioned serialized schema, verbatim module texts and a manifest for build-time precompilation.
+- `react/`: `YangProvider`/`useYangSchema` and headless hooks (`useFormModel`, `useFieldValidation`, `useDataValidation`, `useCandidates`, `useRestconfResource`), plus worker delegation (`createYangRunner`, `spawnYangWorker`) with a main-thread fallback. React stays an optional peer dependency; the core barrel remains React-free.
+- Remaining (8.4–8.6): the optimistic edit flow (red-first suite in the tree), the `withYangEngine` static-export helper and recipe (8.5), and the `examples/next-static/` app with mock server, Playwright e2e and bundle budget (8.6).
+
+Static export has no server runtime, so the RESTCONF API is cross-origin unless the static files are served from the same origin or behind the same reverse proxy; deployment must provide CORS or same-origin hosting. The compiler/form prerequisites (serializable `FormField` restrictions, validation without mutating the caller's document, curated exports, budgets with worker cancellation) closed on 2026-11-26; the remaining Stage 8 items are 8.4 – 8.6.
 
 ## Known architectural debt
 
-- **Two schema stacks.** `createFormModel` walks the parsed statement tree with its own type resolution, while everything else uses `CompiledYangSchema`. The form path ignores `uses`, augments, features, deviations and choice exclusivity, and its `[*]` list paths do not match schema paths. Target: rebuild forms on the compiled schema.
-- **Range/length endpoints that do not parse.** Unparsable `range`/`length` endpoints are treated as unbounded (constraint silently satisfied) instead of failing closed.
-
-Closed in the 2026-11-26 review: form restrictions are now a serializable field descriptor (no identity-keyed side tables), compiled-XPath caches are schema-scoped and the pattern text cache is bounded, the public barrel is curated (`src/index.ts` vs `src/internal.ts`), and validation/candidate evaluation run on the accessible tree. Type logic was single-sourced under `types/`; differential testing of the XPath rewrite runs as a seeded fuzz corpus.
+None as of 2026-11-26: the two former items are closed. The form model is rebuilt on `CompiledYangSchema` (the `YangModule` entry compiles on the fly as a compatibility path), and unparsable `range`/`length` endpoints fail closed with `invalid-type-restriction` at compile time. Also closed in the 2026-11-26 review: form restrictions are a serializable field descriptor (no identity-keyed side tables), compiled-XPath caches are schema-scoped and the pattern text cache is bounded, the public barrel is curated (`src/index.ts` vs `src/internal.ts`), and validation/candidate evaluation run on the accessible tree; type logic is single-sourced under `types/`, with the XPath-rewrite differential fuzz corpus in `tests/differential.test.ts`. Open work lives in `ROADMAP.md` (Stage 8.4 – 8.6 plus the named engine limitations), not in architectural debt.
 
 ## RFC 7950 scope, staged
 
@@ -61,7 +64,7 @@ Candidate values are contextual. A finite enumeration can be filtered when const
 - Parsing YANG is implemented in package source to preserve source locations and control grammar behavior.
 - The only runtime dependency is `xpath`, audited as browser-safe (`tests/browser-readiness.test.ts`). Test/build tooling is dev-only: TypeScript, Vitest, esbuild and `@xmldom/xmldom`. Any new runtime dependency needs a documented compatibility and bundle audit.
 - Keep core independent of fetch, RESTCONF, framework and persistence. The loader interface is async and injected so callers decide how YANG Library resources are obtained.
-- Resource limits cover module loading only (module/submodule counts, source size, deadline, abort signal; `maxDepth` is declared but not enforced). Before exposing compilation of untrusted or large server-provided modules in a UI, limits are also needed for grouping expansion, XPath evaluation, regex execution and parser nesting depth, with real cancellation (for example a worker with a timeout). Patterns from server-provided modules are executed as JavaScript regular expressions, so ReDoS is an open risk.
+- Resource limits: module loading budgets (module/submodule counts, source size, deadline, enforced `maxDepth`), a schema-node expansion budget for `uses`/grouping fan-out, pending-pattern guards against oversized or ReDoS-shaped regexes, a parser nesting-depth cap of 200, and cooperative `AbortSignal` cancellation (`deadlineMs` included) in `resolveModuleSet`, `validateDataTree` and `evaluateCandidates`. Compiled XPath expressions live in a schema-scoped `WeakMap`; the pattern text cache is bounded. A single XPath expression cannot be interrupted mid-evaluation (synchronous third-party evaluator): long-running stores need worker isolation, which `createYangRunner` provides with a main-thread fallback.
 
 ## Quality gates
 

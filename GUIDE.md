@@ -22,8 +22,9 @@ dans le baril public.
 npm install yang-browser-engine
 ```
 
-Le paquet expose un **seul point d'entrée** (la carte `exports` ne contient
-que `.`) : importez toujours depuis la racine. Les fichiers `.d.ts` sont
+Le paquet expose **deux points d'entrée** : la racine (`.`) pour le moteur, et
+`yang-browser-engine/react` (§6) pour les bindings React (peer dependency
+optionnelle). Les fichiers `.d.ts` sont
 embarqués, la bibliothèque reste utilisable en TypeScript sans configuration :
 
 ```ts
@@ -212,8 +213,8 @@ implémente) :
 ## 3. Lire le schéma compilé
 
 `schema.modules` expose un `CompiledModule` par module compilé, avec les
-modèles de données assemblés. Le format de chaque noeud est documenté dans
-[docs/schema.md](docs/schema.md). Deux raccourcis utiles : les chemins de
+modèles de données assemblés. Le format de chaque noeud est celui des types `CompiledSchemaNode`/`CompiledModule` déclarés dans
+`src/yang/compiler.ts`. Deux raccourcis utiles : les chemins de
 schémas (`acme-rooter:interfaces/acme-router:interface`) servent d'identifiants
 stables dans les API ci-dessous, et le moteur sérialise les entiers 64 bits et
 les `decimal64` en chaînes — jamais en nombres JavaScript.
@@ -254,7 +255,7 @@ compilé** (`CompiledYangSchema`) : champs (`FormField`), types d'origine YANG,
 contraintes à évaluer, opérations `rpc` **et** `action`, structure
 `choice`/`case`. Les `uses`, `augment` et `deviation` sont déjà appliqués par
 le compilateur — le formulaire décrit le schéma développé complet. C'est un
-modèle neutre, sans aucun DOM : la couche UI (React, Lit, …) reste yours.
+modèle neutre, sans aucun DOM : la couche UI (React, Lit, …) reste à votre charge.
 
 ```ts
 import { canonicalFormOf, compileYangModules, createFormModel, parseYang, resolveModuleSet, validateFormValue } from "yang-browser-engine";
@@ -304,7 +305,7 @@ avant envoi.
 restent `pending` sur leurs vérifications croisées `leafref` s'ils sont
 trouvés par chemin nu.
 
-L'**API de binding** (§212 de la roadmap) assiste l'UI pour la sélection du
+L'**API de binding** (roadmap Stage 8.4) assiste l'UI pour la sélection du
 case actif et le ciblage d'une entrée de liste, alignée sur le contrat de
 `formValuesToRestconfBody` (les entrées vivent à la liste `[*]`, chaque
 enregistrement clé par les chemins complets des champs enfants) :
@@ -326,8 +327,7 @@ jamais la carte d'entrée (snapshot immuable).
 
 ## 6. React (`yang-browser-engine/react`)
 
-Le sous-chemin `yang-browser-engine/react` fournit des hooks **headless** (§208
-de la roadmap) : état sérialisable, sûr sous React strict mode et rendu
+Le sous-chemin `yang-browser-engine/react` fournit des hooks **headless** (roadmap Stage 8.4) : état sérialisable, sûr sous React strict mode et rendu
 concurrent. React est une **peer dependency optionnelle** — le noyau du
 moteur n'en dépend pas et les projets non-React n'installent rien.
 
@@ -335,7 +335,7 @@ moteur n'en dépend pas et les projets non-React n'installent rien.
 import { YangProvider, useYangSchema, useFormModel, useFieldValidation } from "yang-browser-engine/react";
 ```
 
-`YangProvider` initialise le moteur **dans un effet** (§209) : le premier
+`YangProvider` initialise le moteur **dans un effet** (roadmap Stage 8.4) : le premier
 rendu — serveur ou prérendu — montre un état `loading` et l'hydratation ne
 diverge pas. Deux entrées possibles : `schema` déjà compilé (rendu `ready` dès
 le premier rendu) ou une fabrique `compile: () => Promise<CompiledYangSchema>`
@@ -352,10 +352,9 @@ Les hooks: `useYangSchema()` (état loading/ready/error), `useFormModel(options?
 (validation d'arbre complète), `useCandidates(document, path)` (candidats
 contextuels du §4) et `useRestconfResource(client, path, { resource })` (GET
 RFC 8040 avec donnees brutes JSON, état loading/ready/error, `refetch()`,
-abandon à démontage). Le flux d'édition optimiste reste à venir (§211 de la
-roadmap).
+abandon à démontage). Le flux d'édition optimiste reste à venir (roadmap Stage 8.4 : la suite de tests red-first est écrite).
 
-## 6.1 Worker (§210)
+## 6.1 Worker (roadmap Stage 8.4)
 
 La validation et la compilation peuvent sortir du fil principal:
 `createYangRunner({ worker, parseXml })` délègue à un module worker; sans
@@ -375,7 +374,7 @@ const verdict = await runner.validate(schema, instanceXml, { deadlineMs: 5000 })
 
 `runner.validate/candidates/formModel` retournent des données sérialisables;
 les tâches longues ne s'interrompent que là où le moteur vérifie les signaux
-(visites de validation) — cf. §10 de la roadmap pour la limite XPath sync.
+(visites de validation) — la limite XPath synchrone est documentée au Stage 7b P2 de la roadmap.
 
 ```ts
 const model = useFormModel({ module: "acme-router" });
@@ -445,7 +444,7 @@ explicitement, jamais interprété approximativement.
 
 ## 9. RESTCONF : chargement de schéma, librairie et requêtes
 
-### 8.1 Charger les modules depuis le serveur
+### 9.1 Charger les modules depuis le serveur
 
 Un serveur RESTCONF expose sa librairie de schémas
 (RFC 8040 `ietf-yang-library:modules-state`) avec des `location` par module.
@@ -472,7 +471,7 @@ requête `modules-state`) puis charge chaque module via son `location`. Les
 option `fetchImpl` et `signal` permettent l'injection de test et
 l'annulation coopérative.
 
-### 8.2 Auditer les révisions (schéma embarqué vs serveur)
+### 9.2 Auditer les révisions (schéma embarqué vs serveur)
 
 Avant de faire confiance à un schéma précompilé invoqué côté navigateur,
 comparez-le avec la librairie du serveur :
@@ -497,12 +496,13 @@ for (const gap of mismatches) {
 if (mismatches.length > 0) throw new Error("schéma et serveur divergent : refusez la session");
 ```
 
-`SchemaRevisionMismatch.kind` vaut `only-in-schema`, `only-in-library`,
-`revision-mismatch` ou `schema-parity` (présent des deux côtés, révisions
-identiques). Rejeter la session en cas d'écart évite de valider des données
+`SchemaRevisionMismatch.kind` vaut `only-in-schema`, `only-in-library` ou
+`different-revision` (les deux révisions sont alors nommées) ; une
+correspondance exacte ne produit aucune entrée, et les modules `import` du
+serveur ne sont jamais signalés. Rejeter la session en cas d'écart évite de valider des données
 contre un schéma que le serveur ne reconnait pas.
 
-### 8.3 Construire les requêtes (sans les envoyer)
+### 9.3 Construire les requêtes (sans les envoyer)
 
 Les constructeurs de requêtes produisent des `RestconfDataRequest` /
 `RestconfRpcRequest` avec `method`, `path` (URL-échappée), `headers`
@@ -573,7 +573,7 @@ const interface2 = readRestconfData(await (await send(read)).json(), "acme-route
 interface2.speed;
 ```
 
-### 8.4 RPC et datastore NMDA
+### 9.4 RPC et datastore NMDA
 
 Les `rpc` d'un module deviennent des `FormRpcOperation` dans le modèle de
 formulaire (§5) ; `createRestconfRpcRequest` produit la requête POST RFC 8040
@@ -611,7 +611,7 @@ const restconfPath = nodeToRestconfDataPath(path);  // /restconf/data/…, ident
 nodeToRestconfDataPath(path) === createRestconfGetRequest(path).path;
 ```
 
-### 8.5 Le client RESTCONF (exécution des requêtes)
+### 9.5 Le client RESTCONF (exécution des requêtes)
 
 Les constructeurs produisent les requêtes ; `createRestconfClient` les
 exécute avec un fetch injectable (aucun accès global à l'import), fusionne
@@ -668,7 +668,7 @@ une `RestconfNetworkError` : le message porte la liste de contrôle CORS
 (`Access-Control-Allow-Origin`, méthodes/en-têtes autorisés, réponse à
 `OPTIONS`, URL/réseau) et l'erreur d'origine reste dans `cause`.
 
-### 8.6 Flux de notification (`EventSource`, RFC 8040 §6)
+### 9.6 Flux de notification (`EventSource`, RFC 8040 §6)
 
 `createRestconfNotificationStream` découvre l'URL du flux dans
 `ietf-restconf-monitoring` (préfixe de module optionnel), s'abonne via l'
@@ -760,14 +760,14 @@ de l'artefact.
   `readRestconfData` ne décode que du JSON ;
 - XPath : moteur compatible XPath 1.0 sur l'arbre accessible — l'intersection
   exacte est listée dans [CONFORMANCE.md](CONFORMANCE.md), interruption
-  synchrone en attente (§35 de la roadmap) ;
+  synchrone impossible dans l'évaluateur tiers (limite documentée, Stage 7b P2) ;
 - `deref()`, metadata annotations (`md:annotation`) et formes canoniques
   d'identités/iid ne sont pas implémentés ;
 - L'exclusivité `case` des `choice` et le développement `uses`/`augment`
   niveau option ne sont pas couverts dans le modèle de formulaire (§5).
 
 Autres ressources : [README.md](README.md) (aperçu et statut),
-[docs/](docs/) (spécifications par composant), [examples/](examples/)
+[examples/](examples/)
 (`standalone.html`, `browser-usage.html` : HTML autonome, aucune commande, un
 navigateur suffit), [ROADMAP.md](ROADMAP.md) (travail ouvert), et
-`npx vitest run` pour la suite de tests complète (243 tests).
+`npx vitest run` pour la suite de tests complète.
