@@ -109,6 +109,24 @@ Every RESTCONF request builder accepts an optional `RestconfQueryParameters` rec
 
 RFC 8527 NMDA datastore resources are available through `nodeToRestconfDatastorePath` and `createRestconfDatastoreRequest`. Use the namespace-qualified identities `ietf-datastores:operational`, `ietf-datastores:running`, and `ietf-datastores:intended`; custom datastore identities can also be passed module-qualified. `createRestconfNmdaProbeRequest()` prepares a `HEAD /restconf/ds/ietf-datastores:operational` capability probe. On operational datastore GETs, `{ "with-origin": true }` emits the presence-only `?with-origin` flag; `false` omits it. The helper exposes datastore requests and does not discover server capabilities or enforce whether a datastore is writable. NMDA server support is advertised through the operational datastore resource and YANG Library as specified by [RFC 8527](https://datatracker.ietf.org/doc/html/rfc8527).
 
+## Precompiling schemas
+
+Compilation is the expensive step; `yang-browser-engine precompile` does it at build time so the browser only loads the result:
+
+```sh
+npx yang-browser-engine precompile src/yang/*.yang --features my-module:my-feature --out public
+```
+
+It writes `public/yang-schema.json` (the versioned serialized schema), verbatim copies under `public/yang-modules/`, and `public/yang-manifest.json` (module name/revision/namespace/file inventory). In the browser, load and revive the bundle without the parser or compiler:
+
+```ts
+import { deserializeCompiledSchema } from "yang-browser-engine";
+const payload = JSON.parse(await (await fetch("yang-schema.json")).text());
+const schema = deserializeCompiledSchema(payload); // → CompiledYangSchema
+```
+
+`deserializeCompiledSchema` throws `CompiledSchemaFormatError` with a `code` (`format`, `version`, `structure`) when the artifact is stale or corrupt — recompile with the matching release. Parse errors, module-set diagnostics and compile diagnostics make the CLI exit 2 and write nothing.
+
 ## Browser example
 
 After building, serve the repository root over HTTP and open [`examples/browser-usage.html`](./examples/browser-usage.html). It parses the Sysrepo oven model in the browser, populates the `insert-food` timing enum, validates the selected value, and previews the corresponding RESTCONF RPC request. The example does not send the request, resolve typedefs, apply augments, or evaluate `must`/`when` constraints.

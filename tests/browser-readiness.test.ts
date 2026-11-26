@@ -27,7 +27,13 @@ const FORBIDDEN = [
 
 describe("browser readiness audit", () => {
   it("keeps every shipped source file free of Node built-ins and globals", () => {
-    const sources = [...walk(`${root}/src`), ...(existsSync(`${root}/dist`) ? walk(`${root}/dist`) : [])];
+    const sources = [
+      ...walk(`${root}/src`),
+      ...(existsSync(`${root}/dist`) ? walk(`${root}/dist`) : []),
+      // The `yang-browser-engine` CLI (Roadmap 8.1) is a build-time Node
+      // tool by design: it only ever runs in npm scripts and CI, never in
+      // the browser runtime the engine ships.
+    ].filter(file => !file.includes("/src/bin/") && !file.includes("/dist/bin/"));
     expect(sources.length).toBeGreaterThan(10);
     const offenders: string[] = [];
     for (const file of sources) {
