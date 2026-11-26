@@ -2,7 +2,7 @@ import { YangModule, YangStatement } from "../yang/ast.js";
 import { CompiledYangSchema, isIdentityDerivedFrom } from "../yang/compiler.js";
 import { childOf, childrenOf } from "../yang/parser.js";
 import { findSchemaNodeByPath } from "../xpath/accessible-tree.js";
-import { leafrefPathStatementOf } from "../xpath/yang-functions.js";
+import { leafrefPathStatementOf, xmlNamespaceForPrefix } from "../xpath/yang-functions.js";
 import { compileXsdPattern } from "../types/xsd-pattern.js";
 import { compileModuleExpression } from "../xpath/evaluate-constraints.js";
 
@@ -643,15 +643,15 @@ function validateSingleCrossReference(field: FormField, value: unknown, errors: 
   }
   // RFC 7950 section 9.10: an identityref evaluates to an identity derived
   // from one of the type's declared bases. Values may be module-qualified
-  // ("module:name") or plain identity names; XML namespace prefixes are not
-  // resolvable here and stay indeterminate through the unqualified case.
+  // ("module:name"), XML-prefixed (resolved through the anchor element's
+  // in-scope xmlns bindings, RFC 7950 §9.10.4) or plain identity names.
   const bases = field.restrictions.bases
     .map(base => resolveBaseRef(base, field.module, crossReference.schema))
     .filter((base): base is string => Boolean(base));
   if (!bases.length) return true;
   const text = typeof value === "string" ? value.trim() : "";
   if (!text) { errors.push({ code: "type.identityref", message: `${field.label} must name an identity.` }); return false; }
-  const derived = bases.some(base => matchesIdentityBase(crossReference.schema, text, base));
+  const derived = bases.some(base => matchesIdentityBase(crossReference.schema, text, base, crossReference.anchor));
   if (!derived) {
     errors.push({ code: "type.identityref", message: `${field.label} must be an identity derived from ${bases.join(", ")}.` });
   }
@@ -671,11 +671,33 @@ function resolveBaseRef(base: string, moduleName: string, schema: CompiledYangSc
   return importedName ? `${importedName}:${base.slice(separator + 1)}` : undefined;
 }
 
-function matchesIdentityBase(schema: CompiledYangSchema, value: string, base: string): boolean {
-  if (value.includes(":")) return value === base || isIdentityDerivedFrom(schema, value, base);
+function matchesIdentityBase(schema: CompiledYangSchema, value: string, base: string, anchor?: Element): boolean {
+  if (value.includes(":")) {
+    // XML-prefixed values (RFC 7950 §9.10.4) resolve only through the anchor's
+    // in-scope bindings; when the prefix is bound the qualified name decides.
+    // Otherwise the value may still be a module-qualified name.
+    const qualified = xmlQualifiedIdentity(schema, value, anchor);
+    if (qualified) return qualified === base || isIdentityDerivedFrom(schema, qualified, base);
+    return value === base || isIdentityDerivedFrom(schema, value, base);
+  }
   return schema.identities.some(identity =>
     identity.name === value
     && (identity.module === base.slice(0, base.indexOf(":")) || isIdentityDerivedFrom(schema, `${identity.module}:${identity.name}`, base)));
+}
+
+/**
+ * Resolve an XML-prefixed identityref value to "module:name" through the
+ * anchor element's in-scope xmlns bindings (RFC 7950 §9.10.4). Returns
+ * undefined when there is no anchor, the prefix is unbound (or bound to a
+ * namespace outside the schema) — leaving other resolution paths to try.
+ */
+function xmlQualifiedIdentity(schema: CompiledYangSchema, value: string, anchor?: Element): string | undefined {
+  if (!anchor || !value.includes(":")) return undefined;
+  const separator = value.indexOf(":");
+  const namespace = xmlNamespaceForPrefix(anchor, value.slice(0, separator));
+  if (!namespace) return undefined;
+  const owner = schema.modules.find(module => childOf(module, "namespace")?.argument === namespace);
+  return owner ? `${owner.argument}:${value.slice(separator + 1)}` : undefined;
 }
 
 /**

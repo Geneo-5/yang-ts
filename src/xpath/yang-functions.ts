@@ -89,6 +89,41 @@ function nodeSetMembers(item: Argument | undefined): Node[] {
   return [];
 }
 
+/** Integer value of an enum member as declared on the node's own enumeration type (RFC 7950 §9.6.4). */
+function enumPositionOf(schemaNode: CompiledSchemaNode, name: string): number | undefined {
+  const layers = [schemaNode.type, ...schemaNode.typedefChain.map(typedef => childOf(typedef, "type"))]
+    .filter((layer): layer is YangStatement => Boolean(layer));
+  for (let index = layers.length - 1; index >= 0; index--) {
+    const layer = layers[index]!;
+    if (layer.argument !== "enumeration") continue;
+    const members = childrenOf(layer, "enum");
+    const found = members.findIndex(member => member.argument === name);
+    if (found < 0) continue;
+    const value = childOf(members[found]!, "value")?.argument;
+    return value !== undefined && /^-?\d+$/.test(value) ? Number(value) : found;
+  }
+  return undefined;
+}
+
+/**
+ * XML namespace URI bound to a prefix at the node (including redeclarations on
+ * closer ancestors). Walks `xmlns:*` attributes instead of the DOM's
+ * lookupNamespaceURI, whose xmldom implementation loses bindings on cloned
+ * subtrees — and constraint evaluation evaluates must/when over clones.
+ */
+export function xmlNamespaceForPrefix(node: Node, prefix: string): string | undefined {
+  let current: Node | null = node.nodeType === 1 ? node : node.parentNode;
+  while (current && current.nodeType === 1) {
+    const attributes = (current as Element).attributes;
+    for (let index = 0; attributes && index < attributes.length; index++) {
+      const attribute = attributes[index]!;
+      if (attribute.name === (prefix ? `xmlns:${prefix}` : "xmlns")) return attribute.value;
+    }
+    current = current.parentNode;
+  }
+  return undefined;
+}
+
 /** Build the RFC 7950 section 10 function library for evaluation against compiled schemas. */
 export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Record<string, XPathFunction> {
   const { schema, module } = options;
@@ -99,10 +134,21 @@ export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Re
     const resolvedName = separator < 0 ? prefixOrModule! : options.prefixModules?.[prefixOrModule!] ?? prefixOrModule!;
     return nativeModule(resolvedName) ? `${resolvedName}:${localName}` : undefined;
   };
-  const qualifiedValue = (value: string): string | undefined => {
+  const qualifiedValue = (value: string, contextNode?: Node): string | undefined => {
     const separator = value.indexOf(":");
-    if (separator >= 0) return nativeModule(value.slice(0, separator)) ? value : undefined;
-    return nativeModule(module) ? `${module}:${value}` : undefined;
+    if (separator < 0) return nativeModule(module) ? `${module}:${value}` : undefined;
+    const prefix = value.slice(0, separator);
+    const localName = value.slice(separator + 1);
+    // RFC 7950 §9.10.4: XML-encoded identityrefs carry XML prefixes bound in
+    // the instance document; resolve them through the value node first, then
+    // through the expression's prefix map and bare module names.
+    const xmlNamespace = contextNode && xmlNamespaceForPrefix(contextNode, prefix);
+    if (xmlNamespace) {
+      const ownerModule = schema.modules.find(candidate => childOf(candidate, "namespace")?.argument === xmlNamespace);
+      if (ownerModule) return `${ownerModule.argument}:${localName}`;
+    }
+    if (options.prefixModules?.[prefix]) return `${options.prefixModules[prefix]}:${localName}`;
+    return nativeModule(prefix) ? value : undefined;
   };
   const positions = collectOptionPositions(schema.modules);
   const resolveLeafref = createLeafrefResolver(schema);
@@ -110,13 +156,20 @@ export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Re
   // original context node even inside predicates, and the redoable evaluator
   // extends the context per step; the XPath adapter binds it per evaluation.
   const library: Record<string, XFpFunction> = {
-    // RFC 7950 section 10.4.
+    // RFC 7950 section 10.4: every identityref node of the set participates;
+    // XML-prefixed values (§9.10.4) qualify through the node's own bindings.
     "derived-from": (context, item, ...bases) => {
-      const value = qualifiedValue(requireString(item, "derived-from"));
-      if (!value) return false;
-      return bases.some(base => {
-        const baseId = qualifiedBase(requireString(base, "derived-from"));
-        return Boolean(baseId && isIdentityDerivedFrom(schema, value, baseId));
+      const members = nodeSetMembers(item);
+      const baseIds = bases
+        .map(base => qualifiedBase(requireString(base, "derived-from")))
+        .filter((base): base is string => Boolean(base));
+      return members.some(member => {
+        if (member.nodeType !== 1) return false;
+        const element = member as Element;
+        const schemaNode = schemaNodeForElement(schema, element);
+        if (schemaNode && schemaNode.resolvedType !== "identityref") return false;
+        const value = qualifiedValue(element.textContent ?? "", element);
+        return Boolean(value && baseIds.some(base => isIdentityDerivedFrom(schema, value, base)));
       });
     },
     // RFC 7950 section 10.5: follow leafref paths from built accessible trees.
@@ -131,11 +184,16 @@ export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Re
       return resolved ?? item;
     },
     "derived-from-or-self": (context, item, ...bases) => {
-      const value = qualifiedValue(requireString(item, "derived-from-or-self"));
-      if (!value) return false;
-      return bases.some(base => {
-        const baseId = qualifiedBase(requireString(base, "derived-from-or-self"));
-        return Boolean(baseId && (value === baseId || isIdentityDerivedFrom(schema, value, baseId)));
+      const baseIds = bases
+        .map(base => qualifiedBase(requireString(base, "derived-from-or-self")))
+        .filter((base): base is string => Boolean(base));
+      return nodeSetMembers(item).some(member => {
+        if (member.nodeType !== 1) return false;
+        const element = member as Element;
+        const schemaNode = schemaNodeForElement(schema, element);
+        if (schemaNode && schemaNode.resolvedType !== "identityref") return false;
+        const value = qualifiedValue(element.textContent ?? "", element);
+        return Boolean(value && baseIds.some(base => value === base || isIdentityDerivedFrom(schema, value, base)));
       });
     },
     // RFC 7950 section 10.6. Patterns are implicitly anchored XML Schema regexes.
@@ -146,12 +204,15 @@ export function createYangFunctionLibrary(options: YangXPathFunctionOptions): Re
       if (!compiled) throw new Error(`re-match pattern '${source}' is not a supported XML Schema regular expression`);
       return compiled.test(value);
     },
-    // RFC 7950 section 10.8: the numeric position of the item's enum value.
+    // RFC 7950 section 10.5.1: the first node's own enumeration type decides
+    // the numeric position; empty sets and non-enum nodes return NaN instead
+    // of consulting a schema-wide name table (ambiguous names stay local).
     "enum-value": (context, item) => {
-      const name = requireString(item, "enum-value");
-      const position = positions.enums.get(name);
-      if (typeof position !== "number") throw new Error(`enum-value: enum '${name}' is not uniquely defined in the compiled schema`);
-      return position;
+      const target = nodeSetMembers(item)[0];
+      if (!target || target.nodeType !== 1) return NaN;
+      const schemaNode = schemaNodeForElement(schema, target as Element);
+      if (!schemaNode) return NaN;
+      return enumPositionOf(schemaNode, (target as Element).textContent ?? "") ?? NaN;
     },
     // RFC 7950 section 10.9.
     "bit-is-set": (context, bits, bit) => {

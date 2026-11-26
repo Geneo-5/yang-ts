@@ -3938,6 +3938,7 @@ var YangEngine = (() => {
     schemaNodeForElement: () => schemaNodeForElement,
     validateDataTree: () => validateDataTree,
     validateFormValue: () => validateFormValue,
+    xmlNamespaceForPrefix: () => xmlNamespaceForPrefix,
     yangLibraryEntries: () => yangLibraryEntries,
     yangLibraryInventory: () => yangLibraryInventory
   });
@@ -5286,8 +5287,19 @@ var YangEngine = (() => {
   function matchingElements(parent, namespace, name2) {
     return Array.from(parent.childNodes).filter((child) => isElement(child) && child.localName === name2 && child.namespaceURI === namespace);
   }
+  var XMLNS_NAMESPACE = "http://www.w3.org/2000/xmlns/";
+  function copyNamespaceDeclarations(source, copy) {
+    const attributes = source.attributes;
+    for (let index = 0; attributes && index < attributes.length; index++) {
+      const attribute = attributes[index];
+      if (attribute.name === "xmlns" || attribute.name.startsWith("xmlns:")) {
+        copy.setAttributeNS(XMLNS_NAMESPACE, attribute.name, attribute.value);
+      }
+    }
+  }
   function accessibleDataRoot(rootNode, source, scope, document2) {
     const copy = document2.createElementNS(rootNode.namespace, rootNode.name);
+    copyNamespaceDeclarations(source, copy);
     copyScope(rootNode.children, source, copy, scope, document2);
     return copy;
   }
@@ -5301,6 +5313,7 @@ var YangEngine = (() => {
       const present = matchingElements(source, node.namespace, node.name);
       for (const element of present) {
         const copy = document2.createElementNS(node.namespace, node.name);
+        copyNamespaceDeclarations(element, copy);
         if (node.kind === "leaf" || node.kind === "leaf-list") copy.textContent = element.textContent;
         else copyScope(node.children, element, copy, scope, document2);
         target.appendChild(copy);
@@ -5451,6 +5464,31 @@ var YangEngine = (() => {
     if (typeof set.first === "function") return [set.first()].filter(Boolean);
     return [];
   }
+  function enumPositionOf(schemaNode, name2) {
+    const layers = [schemaNode.type, ...schemaNode.typedefChain.map((typedef) => childOf(typedef, "type"))].filter((layer) => Boolean(layer));
+    for (let index = layers.length - 1; index >= 0; index--) {
+      const layer = layers[index];
+      if (layer.argument !== "enumeration") continue;
+      const members = childrenOf(layer, "enum");
+      const found = members.findIndex((member) => member.argument === name2);
+      if (found < 0) continue;
+      const value = childOf(members[found], "value")?.argument;
+      return value !== void 0 && /^-?\d+$/.test(value) ? Number(value) : found;
+    }
+    return void 0;
+  }
+  function xmlNamespaceForPrefix(node, prefix) {
+    let current = node.nodeType === 1 ? node : node.parentNode;
+    while (current && current.nodeType === 1) {
+      const attributes = current.attributes;
+      for (let index = 0; attributes && index < attributes.length; index++) {
+        const attribute = attributes[index];
+        if (attribute.name === (prefix ? `xmlns:${prefix}` : "xmlns")) return attribute.value;
+      }
+      current = current.parentNode;
+    }
+    return void 0;
+  }
   function createYangFunctionLibrary(options) {
     const { schema, module } = options;
     const nativeModule = (name2) => schema.modules.find((candidate) => candidate.argument === name2);
@@ -5460,21 +5498,34 @@ var YangEngine = (() => {
       const resolvedName = separator < 0 ? prefixOrModule : options.prefixModules?.[prefixOrModule] ?? prefixOrModule;
       return nativeModule(resolvedName) ? `${resolvedName}:${localName}` : void 0;
     };
-    const qualifiedValue = (value) => {
+    const qualifiedValue = (value, contextNode) => {
       const separator = value.indexOf(":");
-      if (separator >= 0) return nativeModule(value.slice(0, separator)) ? value : void 0;
-      return nativeModule(module) ? `${module}:${value}` : void 0;
+      if (separator < 0) return nativeModule(module) ? `${module}:${value}` : void 0;
+      const prefix = value.slice(0, separator);
+      const localName = value.slice(separator + 1);
+      const xmlNamespace = contextNode && xmlNamespaceForPrefix(contextNode, prefix);
+      if (xmlNamespace) {
+        const ownerModule = schema.modules.find((candidate) => childOf(candidate, "namespace")?.argument === xmlNamespace);
+        if (ownerModule) return `${ownerModule.argument}:${localName}`;
+      }
+      if (options.prefixModules?.[prefix]) return `${options.prefixModules[prefix]}:${localName}`;
+      return nativeModule(prefix) ? value : void 0;
     };
     const positions = collectOptionPositions(schema.modules);
     const resolveLeafref = createLeafrefResolver(schema);
     const library = {
-      // RFC 7950 section 10.4.
+      // RFC 7950 section 10.4: every identityref node of the set participates;
+      // XML-prefixed values (§9.10.4) qualify through the node's own bindings.
       "derived-from": (context, item, ...bases) => {
-        const value = qualifiedValue(requireString(item, "derived-from"));
-        if (!value) return false;
-        return bases.some((base) => {
-          const baseId = qualifiedBase(requireString(base, "derived-from"));
-          return Boolean(baseId && isIdentityDerivedFrom(schema, value, baseId));
+        const members = nodeSetMembers(item);
+        const baseIds = bases.map((base) => qualifiedBase(requireString(base, "derived-from"))).filter((base) => Boolean(base));
+        return members.some((member) => {
+          if (member.nodeType !== 1) return false;
+          const element = member;
+          const schemaNode = schemaNodeForElement(schema, element);
+          if (schemaNode && schemaNode.resolvedType !== "identityref") return false;
+          const value = qualifiedValue(element.textContent ?? "", element);
+          return Boolean(value && baseIds.some((base) => isIdentityDerivedFrom(schema, value, base)));
         });
       },
       // RFC 7950 section 10.5: follow leafref paths from built accessible trees.
@@ -5489,11 +5540,14 @@ var YangEngine = (() => {
         return resolved ?? item;
       },
       "derived-from-or-self": (context, item, ...bases) => {
-        const value = qualifiedValue(requireString(item, "derived-from-or-self"));
-        if (!value) return false;
-        return bases.some((base) => {
-          const baseId = qualifiedBase(requireString(base, "derived-from-or-self"));
-          return Boolean(baseId && (value === baseId || isIdentityDerivedFrom(schema, value, baseId)));
+        const baseIds = bases.map((base) => qualifiedBase(requireString(base, "derived-from-or-self"))).filter((base) => Boolean(base));
+        return nodeSetMembers(item).some((member) => {
+          if (member.nodeType !== 1) return false;
+          const element = member;
+          const schemaNode = schemaNodeForElement(schema, element);
+          if (schemaNode && schemaNode.resolvedType !== "identityref") return false;
+          const value = qualifiedValue(element.textContent ?? "", element);
+          return Boolean(value && baseIds.some((base) => value === base || isIdentityDerivedFrom(schema, value, base)));
         });
       },
       // RFC 7950 section 10.6. Patterns are implicitly anchored XML Schema regexes.
@@ -5504,12 +5558,15 @@ var YangEngine = (() => {
         if (!compiled) throw new Error(`re-match pattern '${source}' is not a supported XML Schema regular expression`);
         return compiled.test(value);
       },
-      // RFC 7950 section 10.8: the numeric position of the item's enum value.
+      // RFC 7950 section 10.5.1: the first node's own enumeration type decides
+      // the numeric position; empty sets and non-enum nodes return NaN instead
+      // of consulting a schema-wide name table (ambiguous names stay local).
       "enum-value": (context, item) => {
-        const name2 = requireString(item, "enum-value");
-        const position = positions.enums.get(name2);
-        if (typeof position !== "number") throw new Error(`enum-value: enum '${name2}' is not uniquely defined in the compiled schema`);
-        return position;
+        const target = nodeSetMembers(item)[0];
+        if (!target || target.nodeType !== 1) return NaN;
+        const schemaNode = schemaNodeForElement(schema, target);
+        if (!schemaNode) return NaN;
+        return enumPositionOf(schemaNode, target.textContent ?? "") ?? NaN;
       },
       // RFC 7950 section 10.9.
       "bit-is-set": (context, bits, bit) => {
@@ -6694,7 +6751,7 @@ var YangEngine = (() => {
       errors.push({ code: "type.identityref", message: `${field.label} must name an identity.` });
       return false;
     }
-    const derived = bases.some((base) => matchesIdentityBase(crossReference.schema, text, base));
+    const derived = bases.some((base) => matchesIdentityBase(crossReference.schema, text, base, crossReference.anchor));
     if (!derived) {
       errors.push({ code: "type.identityref", message: `${field.label} must be an identity derived from ${bases.join(", ")}.` });
     }
@@ -6710,9 +6767,21 @@ var YangEngine = (() => {
     const importedName = owner && childrenOf(owner, "import").find((importNode) => childOf(importNode, "prefix")?.argument === qualifier)?.argument;
     return importedName ? `${importedName}:${base.slice(separator + 1)}` : void 0;
   }
-  function matchesIdentityBase(schema, value, base) {
-    if (value.includes(":")) return value === base || isIdentityDerivedFrom(schema, value, base);
+  function matchesIdentityBase(schema, value, base, anchor) {
+    if (value.includes(":")) {
+      const qualified = xmlQualifiedIdentity(schema, value, anchor);
+      if (qualified) return qualified === base || isIdentityDerivedFrom(schema, qualified, base);
+      return value === base || isIdentityDerivedFrom(schema, value, base);
+    }
     return schema.identities.some((identity) => identity.name === value && (identity.module === base.slice(0, base.indexOf(":")) || isIdentityDerivedFrom(schema, `${identity.module}:${identity.name}`, base)));
+  }
+  function xmlQualifiedIdentity(schema, value, anchor) {
+    if (!anchor || !value.includes(":")) return void 0;
+    const separator = value.indexOf(":");
+    const namespace = xmlNamespaceForPrefix(anchor, value.slice(0, separator));
+    if (!namespace) return void 0;
+    const owner = schema.modules.find((module) => childOf(module, "namespace")?.argument === namespace);
+    return owner ? `${owner.argument}:${value.slice(separator + 1)}` : void 0;
   }
   function canonicalFormOf(field, value) {
     if (field.unresolvedType || value === void 0 || value === null) return void 0;

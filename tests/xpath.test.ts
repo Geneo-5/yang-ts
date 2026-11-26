@@ -54,7 +54,7 @@ describe("browser-compatible YANG XPath 1.0 adapter", () => {
       identity subinterface { base interface-type; }
       typedef speed { type enumeration { enum auto { value 0; } enum ten { value 10; } enum hundred { value 100; } } }
       typedef flags { type bits { bit up; bit broadcast { position 2; } bit multicast; } }
-      leaf type-ref { type identityref { base interface-type; } }
+      typedef type-ref { type identityref { base interface-type; } }
     }`);
     const interfaces = parseYang(`module interfaces {
       namespace "urn:if"; prefix i; import types { prefix t; }

@@ -91,6 +91,27 @@ function matchingElements(parent: Element, namespace: string, name: string): Ele
 
 interface ScopeOptions { includeState: boolean; defaults: boolean }
 
+const XMLNS_NAMESPACE = "http://www.w3.org/2000/xmlns/";
+
+/**
+ * Re-declare the source element's xmlns bindings on its accessible-tree copy.
+ * Rebuilt elements carry no attributes, but XML-prefixed identityref values
+ * (RFC 7950 section 9.10.4) resolve through these bindings — must/when
+ * evaluation runs against this tree, so prefixes would otherwise become
+ * unresolvable.
+ */
+function copyNamespaceDeclarations(source: Element, copy: Element): void {
+  const attributes = source.attributes;
+  for (let index = 0; attributes && index < attributes.length; index++) {
+    const attribute = attributes[index]!;
+    if (attribute.name === "xmlns" || attribute.name.startsWith("xmlns:")) {
+      // The XMLNS namespace makes xmldom update the element's namespace map
+      // (setAttribute alone binds nothing for lookups).
+      copy.setAttributeNS(XMLNS_NAMESPACE, attribute.name, attribute.value);
+    }
+  }
+}
+
 /**
  * Accessible copy of one data root: the root element with the schema-visible
  * content copied under `scope` (state filter, with-defaults injection). Used
@@ -98,6 +119,7 @@ interface ScopeOptions { includeState: boolean; defaults: boolean }
  */
 export function accessibleDataRoot(rootNode: CompiledSchemaNode, source: Element, scope: ScopeOptions, document: Document): Element {
   const copy = document.createElementNS(rootNode.namespace, rootNode.name);
+  copyNamespaceDeclarations(source, copy);
   copyScope(rootNode.children, source, copy, scope, document);
   return copy;
 }
@@ -117,6 +139,7 @@ function copyScope(nodes: readonly CompiledSchemaNode[], source: Element, target
     const present = matchingElements(source, node.namespace, node.name);
     for (const element of present) {
       const copy = document.createElementNS(node.namespace, node.name);
+      copyNamespaceDeclarations(element, copy);
       if (node.kind === "leaf" || node.kind === "leaf-list") copy.textContent = element.textContent;
       else copyScope(node.children, element, copy, scope, document);
       target.appendChild(copy);

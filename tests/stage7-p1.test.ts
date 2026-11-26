@@ -555,3 +555,88 @@ describe("Stage 7 P1 – refine, uses augment and symbol scoping (RFC 7950 §7.1
     expect(addr?.resolvedType).toBe("string");
   });
 });
+
+describe("Stage 7 P1 – identityref XML prefixes and enum-value by node type", () => {
+  const compileOne = async (source: string) => compileYangModules(
+    await resolveModuleSet([parseYang(source)], { async loadModule() { return undefined; } }));
+
+  it("returns NaN for non-enumeration nodes and the node's own enum position otherwise", async () => {
+    const schema = await compileOne(`module mux {
+      namespace "urn:mux"; prefix m;
+      container alarm {
+        leaf severity { type enumeration { enum cleared { value 1; } enum minor { value 3; } enum major { value 5; } } }
+        // The same enum name with a different value elsewhere in the schema
+        // must not swing the result: nodes decide, not a schema-wide table.
+        leaf ambient { type enumeration { enum major { value 0; } } }
+        must "enum-value(severity) >= 5";
+      }
+    }`);
+    expect(schema.diagnostics).toEqual([]);
+    const major = validateDataTree(schema, xml(`<alarm xmlns="urn:mux"><severity>major</severity><ambient>major</ambient></alarm>`));
+    expect(major.status).toBe("valid");
+    const minor = validateDataTree(schema, xml(`<alarm xmlns="urn:mux"><severity>minor</severity><ambient>major</ambient></alarm>`));
+    expect(minor.status).toBe("invalid");
+    expect(minor.issues.some(issue => issue.code === "must-unmet")).toBe(true);
+  });
+
+  it("resolves identityref values through XML namespace prefixes in derived-from", async () => {
+    const schema = await compileOne(`module routing {
+      namespace "urn:routing"; prefix r;
+      identity tunnel-type;
+      identity gre { base tunnel-type; }
+      identity lisp { base tunnel-type; }
+      container topo {
+        leaf gateway {
+          type identityref { base tunnel-type; }
+          must "derived-from(., 'tunnel-type')";
+        }
+      }
+    }`);
+    expect(schema.diagnostics).toEqual([]);
+    // XML prefix bound to the identity's module namespace (RFC 7950 §9.10.4).
+    const qualified = validateDataTree(schema, xml(
+      `<topo xmlns="urn:routing" xmlns:g="urn:routing"><gateway>g:gre</gateway></topo>`));
+    expect(qualified.status).toBe("valid");
+    // A prefix bound to a foreign namespace is not a routable identity.
+    const foreign = validateDataTree(schema, xml(
+      `<topo xmlns="urn:routing" xmlns:z="urn:zeta"><gateway>z:gre</gateway></topo>`));
+    expect(foreign.status).toBe("invalid");
+    // Module-name-qualified and plain values keep working.
+    expect(validateDataTree(schema, xml(
+      `<topo xmlns="urn:routing"><gateway>routing:gre</gateway></topo>`)).status).toBe("valid");
+    expect(validateDataTree(schema, xml(
+      `<topo xmlns="urn:routing"><gateway>gre</gateway></topo>`)).status).toBe("valid");
+  });
+
+  it("resolves XML-prefixed identityref form values through the anchor element", async () => {
+    const schema = await compileOne(`module routing {
+      namespace "urn:routing"; prefix r;
+      identity tunnel-type;
+      identity gre { base tunnel-type; }
+      container topo {
+        leaf gateway { type identityref { base tunnel-type; } }
+      }
+    }`);
+    expect(schema.diagnostics).toEqual([]);
+    const formModel = createFormModel(parseYang(`module routing {
+      namespace "urn:routing"; prefix r;
+      identity tunnel-type;
+      identity gre { base tunnel-type; }
+      container topo {
+        leaf gateway { type identityref { base tunnel-type; } }
+      }
+    }`));
+    const gateway = formModel.fields.find(field => field.path === "/topo/gateway")!;
+    const settings = xml(`<topo xmlns="urn:routing" xmlns:x="urn:routing" xmlns:z="urn:zeta"/>`);
+    const anchor = settings.createElement("gateway");
+    settings.documentElement!.appendChild(anchor);
+    const context = { schema, anchor };
+    // XML prefix bound to the identity's module resolves to routing:gre.
+    expect(validateFormValue(gateway, "x:gre", context).status).toBe("valid");
+    // Module-qualified and plain values keep working.
+    expect(validateFormValue(gateway, "routing:gre", context).status).toBe("valid");
+    expect(validateFormValue(gateway, "gre", context).status).toBe("valid");
+    // A prefix bound to a namespace outside the schema is not the identity.
+    expect(validateFormValue(gateway, "z:gre", context).status).toBe("invalid");
+  });
+});

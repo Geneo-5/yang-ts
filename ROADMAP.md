@@ -61,8 +61,8 @@ Delivered: `xpath@0.0.36` adapter with unprefixed-name qualification, `current()
 
 Open defects:
 - [x] The module's own `prefix` is in the prefix→namespace maps of must/when compilation, the leafref resolver and the identity library (`moduleNamespacePrefixes`, fixed 2026-11-26, `tests/stage7-p0.test.ts`).
-- [ ] Identityref values are resolved as `module-name:identity`; XML instances use arbitrary prefixes bound by namespace, so `ianaift:ethernetCsmacd` does not match.
-- [ ] `enum-value` uses a schema-wide name→value table and throws on ambiguous names instead of resolving the argument node's own type.
+- [x] Identityref values are resolved as `module-name:identity`; XML instances use arbitrary prefixes bound by namespace, so `ianaift:ethernetCsmacd` does not match (closed 2026-11-26, `tests/stage7-p1.test.ts`): `derived-from`/`derived-from-or-self` iterate the node-set and qualify each member's value through its own in-scope `xmlns` bindings (`xmlNamespaceForPrefix`), and form-level identityref checks resolve prefixes through the anchor element — a prefix bound to a namespace outside the schema stays invalid.
+- [x] `enum-value` uses a schema-wide name→value table and throws on ambiguous names instead of resolving the argument node's own type (closed 2026-11-26, `tests/stage7-p1.test.ts`): RFC 7950 §10.5.1 semantics — the first node-set member's own enumeration type (through the typedef chain) decides the integer value; empty sets and non-enum nodes return NaN instead of consulting schema-wide names.
 - [ ] `buildAccessibleTree`: the datastore context node is now the datastore document with the data root as document element (RFC 6.4.1, fixed 2026-11-26), so absolute YANG paths resolve; still open: only a single root element is accepted, and defaults of inactive cases are injected.
 - [ ] Module-level compiled-expression caches are keyed without schema identity and grow without bound.
 - [ ] `qualifyYangXPathNodeTests` is a heuristic token scanner; it needs a differential/fuzz corpus against the evaluator's own parser.
@@ -117,7 +117,7 @@ New stage collecting the review findings by priority. Each item is closed by a f
 - [x] `evaluateCandidates` location, entry targeting and non-mutation (Stage 5) — closed 2026-11-26, see Stage 5.
 - [x] `refine` `mandatory`; `augment` under `uses`; typedef/grouping scoping and index (Stage 2) — closed 2026-11-26, see Stage 2.
 - [x] RESTCONF loader paths and submodule lists (Stage 6) — closed 2026-11-26, see Stage 6.
-- [ ] Namespace-aware identityref resolution for XML; `enum-value` by node type (Stage 4).
+- [x] Namespace-aware identityref resolution for XML; `enum-value` by node type (Stage 4) — closed 2026-11-26, see Stage 4. The accessible-tree rebuild now also re-declares the instance's `xmlns` bindings so `must`/`when` evaluation keeps resolving XML prefixes.
 - [ ] Accessible tree: wrapper documents, inactive-case defaults (Stage 4).
 
 **P2 — hardening for untrusted modules**
