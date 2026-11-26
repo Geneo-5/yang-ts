@@ -203,17 +203,21 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     visit(root, root);
   };
   /** Resolve a type reference to its underlying built-in name without emitting diagnostics. */
-  const resolveBuiltinQuietly = (owner: YangModule, type: YangStatement, seen: ReadonlySet<string> = new Set()): string | undefined => {
+  const resolveBuiltinQuietly = (owner: YangModule, type: YangStatement, seen: ReadonlySet<string> = new Set(), scope: readonly ScopeLevel[] = []): string | undefined => {
     const name = type.argument ?? "";
     if (builtinTypes.has(name)) return name;
-    const resolved = resolveQName(owner, name, modules, moduleSet.submodules);
-    if (!resolved) return undefined;
-    const key = `${moduleId(resolved.module)}:${resolved.name}`;
+    const entry = name.includes(":")
+      ? (() => {
+        const resolved = resolveQName(owner, name, modules, moduleSet.submodules);
+        return resolved ? familyIndexOf(resolved.module).typedefs.get(resolved.name) : undefined;
+      })()
+      : findSymbol("typedef", scope, owner, name);
+    if (!entry) return undefined;
+    const key = `${moduleId(entry.document)}:${entry.statement.argument ?? ""}`;
     if (seen.has(key)) return undefined;
-    const typedef = findTypedef(resolved.module, resolved.name);
-    const baseType = typedef && childOf(typedef, "type");
+    const baseType = childOf(entry.statement, "type");
     if (!baseType) return undefined;
-    return resolveBuiltinQuietly(resolved.module, baseType, new Set([...seen, key]));
+    return resolveBuiltinQuietly(entry.document, baseType, new Set([...seen, key]), entry.scope);
   };
   const checkDuplicates = (nodes: readonly CompiledSchemaNode[], owner: YangModule) => {
     const seen = new Set<string>();
@@ -235,16 +239,41 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     return [parent, ...submodulesFor(parent)];
   };
   const canonicalModule = (context: YangModule): YangModule => parentModuleFor(context);
-  const findTypedef = (module: YangModule, name: string): YangStatement | undefined => {
-    const visit = (statement: YangStatement): YangStatement | undefined => {
-      for (const child of statement.children) {
-        if (child.keyword === "typedef" && child.argument === name) return child;
-        const nested = visit(child);
-        if (nested) return nested;
+  /** One enclosing grouping level of a scope chain, with its declaring document for prefix resolution. */
+  type ScopeLevel = { statement: YangStatement; document: YangModule };
+  interface SymbolEntry { statement: YangStatement; document: YangModule; scope: readonly ScopeLevel[]; }
+  interface FamilyIndex { typedefs: Map<string, SymbolEntry>; groupings: Map<string, SymbolEntry>; }
+  // Per-module-family index of TOP-LEVEL symbols (RFC 7950 §6.2.1): built
+  // once instead of walking whole documents per reference.
+  const familyIndexes = new Map<string, FamilyIndex>();
+  const familyIndexOf = (module: YangModule): FamilyIndex => {
+    const parent = parentModuleFor(module);
+    const key = moduleId(parent);
+    let index = familyIndexes.get(key);
+    if (!index) {
+      index = { typedefs: new Map(), groupings: new Map() };
+      for (const source of [parent, ...submodulesFor(parent)]) {
+        for (const child of source.children) {
+          if (child.keyword === "typedef" && child.argument) index.typedefs.set(child.argument, { statement: child, document: source, scope: [] });
+          if (child.keyword === "grouping" && child.argument) index.groupings.set(child.argument, { statement: child, document: source, scope: [] });
+        }
       }
-      return undefined;
-    };
-    return relatedSources(module).map(visit).find(Boolean);
+      familyIndexes.set(key, index);
+    }
+    return index;
+  };
+  /**
+   * Scoped symbol lookup (RFC 7950 §6.2.1): declarations nested in an
+   * enclosing grouping are visible only within that grouping, innermost
+   * shadows outer and shadows top-level; a module's own prefix and its
+   * imports resolve in the declaring document.
+   */
+  const findSymbol = (kind: "typedef" | "grouping", scope: readonly ScopeLevel[], module: YangModule, name: string): SymbolEntry | undefined => {
+    for (let index = scope.length - 1; index >= 0; index--) {
+      const found = scope[index]!.statement.children.find(child => child.keyword === kind && child.argument === name);
+      if (found) return { statement: found, document: scope[index]!.document, scope: scope.slice(0, index + 1) };
+    }
+    return familyIndexOf(module)[kind === "typedef" ? "typedefs" : "groupings"].get(name);
   };
   const builtinTypes = new Set([
     "binary", "bits", "boolean", "decimal64", "empty", "enumeration", "identityref", "instance-identifier",
@@ -308,38 +337,31 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   };
   const featureRequirementsEnabled = (requirements: readonly { module: string; expression: string; source: YangStatement }[]) =>
     requirements.every(requirement => evaluateFeature(requirement.module, requirement.expression, requirement.source));
-  const resolveType = (owner: YangModule, type: YangStatement, stack: readonly string[] = []): { name?: string; chain: YangStatement[] } => {
+  const resolveType = (owner: YangModule, type: YangStatement, stack: readonly string[] = [], scope: readonly ScopeLevel[] = []): { name?: string; chain: YangStatement[] } => {
     const typeName = type.argument ?? "";
     if (builtinTypes.has(typeName)) return { name: typeName, chain: [] };
-    const resolved = resolveQName(owner, typeName, modules, moduleSet.submodules);
-    if (!resolved) return { chain: [] };
-    const key = `${moduleId(resolved.module)}:${resolved.name}`;
+    const entry = typeName.includes(":")
+      ? (() => {
+        const resolved = resolveQName(owner, typeName, modules, moduleSet.submodules);
+        return resolved ? familyIndexOf(resolved.module).typedefs.get(resolved.name) : undefined;
+      })()
+      : findSymbol("typedef", scope, owner, typeName);
+    if (!entry) return { chain: [] };
+    const key = `${moduleId(entry.document)}:${entry.statement.argument ?? ""}`;
     if (stack.includes(key)) {
       report("typedef-cycle", `Typedef cycle: ${[...stack, key].join(" -> ")}`, owner, type);
       return { chain: [] };
     }
-    const typedef = findTypedef(resolved.module, resolved.name);
-    const baseType = typedef && childOf(typedef, "type");
-    if (!typedef || !baseType) return { chain: [] };
-    const base = resolveType(resolved.module, baseType, [...stack, key]);
-    return { ...(base.name ? { name: base.name } : {}), chain: [typedef, ...base.chain] };
-  };
-  const findGrouping = (owner: YangModule, name: string): YangStatement | undefined => {
-    const visit = (node: YangStatement): YangStatement | undefined => {
-      for (const child of node.children) {
-        if (child.keyword === "grouping" && child.argument === name) return child;
-        const found = visit(child);
-        if (found) return found;
-      }
-      return undefined;
-    };
-    return relatedSources(owner).map(visit).find(Boolean);
+    const baseType = childOf(entry.statement, "type");
+    if (!baseType) return { chain: [] };
+    const base = resolveType(entry.document, baseType, [...stack, key], entry.scope);
+    return { ...(base.name ? { name: base.name } : {}), chain: [entry.statement, ...base.chain] };
   };
   for (const module of modules) for (const source of [module, ...submodulesFor(module)]) validateCardinality(source);
 
   const makeNode = (
     statement: YangStatement, owner: YangModule, parentPath: string, inheritedConfig: boolean,
-    groupingStack: readonly string[] = [], inheritedWhen: readonly YangStatement[] = [],
+    groupingStack: readonly ScopeLevel[] = [], inheritedWhen: readonly YangStatement[] = [],
     inheritedFeatures: readonly { module: string; expression: string; source: YangStatement }[] = [],
     instantiatingModule: YangModule = owner,
     // Prefixes of type/uses references resolve in the document that carries the
@@ -347,18 +369,30 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     sourceModule: YangModule = owner,
   ): CompiledSchemaNode[] => {
     if (statement.keyword === "uses") {
-      const resolved = resolveQName(sourceModule, statement.argument ?? "", modules, moduleSet.submodules);
-      if (!resolved) { report("unresolved-prefix", `Cannot resolve uses '${statement.argument ?? ""}'`, owner, statement); return []; }
-      const groupingId = `${moduleId(resolved.module)}:${resolved.name}`;
-      if (groupingStack.includes(groupingId)) { report("uses-cycle", `Grouping uses cycle: ${[...groupingStack, groupingId].join(" -> ")}`, owner, statement); return []; }
-      const grouping = findGrouping(resolved.module, resolved.name);
-      if (!grouping) { report("unresolved-grouping", `Grouping '${statement.argument ?? ""}' was not found`, owner, statement); return []; }
+      const rawName = statement.argument ?? "";
+      // Grouping references resolve with the RFC 7950 §6.2.1 scope of the
+      // statement itself: unqualified names look through the enclosing
+      // grouping levels first, then the module family's top level; qualified
+      // names address the family (groupings are never imported).
+      const entry = rawName.includes(":")
+        ? (() => {
+          const resolved = resolveQName(sourceModule, rawName, modules, moduleSet.submodules);
+          return resolved ? familyIndexOf(resolved.module).groupings.get(resolved.name) : undefined;
+        })()
+        : findSymbol("grouping", groupingStack, sourceModule, rawName);
+      if (!entry) { report("unresolved-grouping", `Grouping '${rawName}' was not found`, owner, statement); return []; }
+      if (groupingStack.some(level => level.statement === entry.statement)) {
+        report("uses-cycle", `Grouping uses cycle: ${[...groupingStack.map(level => level.statement.argument ?? ""), rawName].join(" -> ")}`, owner, statement);
+        return [];
+      }
+      const childScope = [...entry.scope, { statement: entry.statement, document: entry.document }];
       const features = [...inheritedFeatures, ...childrenOf(statement, "if-feature").map(item => ({ module: owner.argument, expression: item.argument ?? "", source: item }))];
       if (options.enabledFeatures && !featureRequirementsEnabled(features)) return [];
       const when = [...inheritedWhen, ...childrenOf(statement, "when")];
-      const expanded = dataChildren(grouping).flatMap(child => makeNode(child, resolved.module, parentPath, inheritedConfig, [...groupingStack, groupingId], when, features, instantiatingModule, resolved.module));
+      const expanded = dataChildren(entry.statement).flatMap(child => makeNode(child, entry.document, parentPath, inheritedConfig, childScope, when, features, instantiatingModule, entry.document));
       const refineAllowed: Record<string, ReadonlySet<string>> = {
-        leaf: new Set(["default", "description", "reference", "config", "must", "if-feature"]),
+        // RFC 7950 §7.13.2: a refine may change a leaf's mandatory statement.
+        leaf: new Set(["default", "description", "reference", "config", "mandatory", "must", "if-feature"]),
         "leaf-list": new Set(["default", "description", "reference", "config", "min-elements", "max-elements", "must", "if-feature"]),
         list: new Set(["description", "reference", "config", "min-elements", "max-elements", "must", "if-feature"]),
         container: new Set(["description", "reference", "config", "presence", "must", "if-feature"]),
@@ -379,7 +413,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       };
       for (const refine of childrenOf(statement, "refine")) {
         const target = findRelative(expanded, (refine.argument ?? "").split("/").filter(Boolean));
-        if (!target) { report("unresolved-refine", `Refine target '${refine.argument ?? ""}' was not found in grouping '${resolved.name}'`, owner, refine); continue; }
+        if (!target) { report("unresolved-refine", `Refine target '${refine.argument ?? ""}' was not found in grouping '${entry.statement.argument ?? ""}'`, owner, refine); continue; }
         const allowed = refineAllowed[target.kind];
         for (const property of refine.children) {
           if (!allowed?.has(property.keyword)) { report("invalid-refine", `Property '${property.keyword}' cannot refine a '${target.kind}' node`, owner, property); continue; }
@@ -396,6 +430,33 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
         const refinedFeatures = (target.properties["if-feature"] ?? []).map(feature => ({ module: owner.argument, expression: feature.argument ?? "", source: feature }));
         target.featureRequirements = [...target.featureRequirements, ...refinedFeatures.map(({ module, expression }) => ({ module, expression }))];
         target.ifFeatures = [...target.ifFeatures, ...refinedFeatures.map(feature => feature.expression)];
+      }
+      // RFC 7950 §7.17: an augment inside uses adds nodes to a target inside
+      // the expanded grouping (target relative to the grouping instance);
+      // the uses' when/if-feature apply to the additions as well.
+      for (const augment of childrenOf(statement, "augment")) {
+        const target = findRelative(expanded, (augment.argument ?? "").split("/").filter(Boolean));
+        if (!target) { report("unresolved-augment", `Augment target '${augment.argument ?? ""}' was not found in grouping '${entry.statement.argument ?? ""}'`, owner, augment); continue; }
+        if (!["container", "list", "choice", "case"].includes(target.kind)) {
+          report("invalid-augment-target", `Node '${target.path}' of kind '${target.kind}' cannot be augmented`, owner, augment);
+          continue;
+        }
+        const augmentWhen = [...when, ...childrenOf(augment, "when")];
+        const augmentFeatures = [...features, ...childrenOf(augment, "if-feature").map(feature => ({ module: owner.argument, expression: feature.argument ?? "", source: feature }))];
+        if (options.enabledFeatures && !featureRequirementsEnabled(augmentFeatures)) continue;
+        const additions = normalizeChoiceChildren(
+          augment.children
+            .filter(child => DATA_KINDS.has(child.keyword as SchemaNodeKind)
+              || child.keyword === "uses" || child.keyword === "action" || child.keyword === "notification")
+            .flatMap(child => makeNode(child, instantiatingModule, target.path, target.config, childScope, augmentWhen, augmentFeatures, instantiatingModule, sourceModule)),
+          target,
+        );
+        for (const addition of additions) {
+          if (target.children.some(child => child.module === addition.module && child.name === addition.name)) {
+            report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${target.path}'`, owner, addition.source);
+          } else target.children.push(addition);
+        }
+        checkDuplicates(target.children, owner);
       }
       const keepEnabledFeatures = (nodes: CompiledSchemaNode[]): CompiledSchemaNode[] => nodes.flatMap(node => {
         const requirements = node.featureRequirements.map(requirement => ({ ...requirement, source: node.source }));
@@ -417,7 +478,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     const nodeWhen = [...inheritedWhen, ...childrenOf(statement, "when")];
     const nodeFeatures = nodeFeatureRequirements.map(requirement => requirement.expression);
     const typeStatement = childOf(statement, "type");
-    const resolvedType = typeStatement ? resolveType(sourceModule, typeStatement) : undefined;
+    const resolvedType = typeStatement ? resolveType(sourceModule, typeStatement, [], groupingStack) : undefined;
     if (typeStatement && !resolvedType?.name) report("unresolved-type", `Type '${typeStatement.argument ?? ""}' could not be resolved`, owner, typeStatement);
     const node: CompiledSchemaNode = {
       kind, name, module: instantiatingModule.argument, namespace: childOf(instantiatingModule, "namespace")?.argument ?? "",

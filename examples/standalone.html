@@ -4480,17 +4480,19 @@ var YangEngine = (() => {
       };
       visit(root, root);
     };
-    const resolveBuiltinQuietly = (owner, type, seen = /* @__PURE__ */ new Set()) => {
+    const resolveBuiltinQuietly = (owner, type, seen = /* @__PURE__ */ new Set(), scope = []) => {
       const name2 = type.argument ?? "";
       if (builtinTypes.has(name2)) return name2;
-      const resolved = resolveQName(owner, name2, modules, moduleSet.submodules);
-      if (!resolved) return void 0;
-      const key = `${moduleId(resolved.module)}:${resolved.name}`;
+      const entry = name2.includes(":") ? (() => {
+        const resolved = resolveQName(owner, name2, modules, moduleSet.submodules);
+        return resolved ? familyIndexOf(resolved.module).typedefs.get(resolved.name) : void 0;
+      })() : findSymbol("typedef", scope, owner, name2);
+      if (!entry) return void 0;
+      const key = `${moduleId(entry.document)}:${entry.statement.argument ?? ""}`;
       if (seen.has(key)) return void 0;
-      const typedef = findTypedef2(resolved.module, resolved.name);
-      const baseType = typedef && childOf(typedef, "type");
+      const baseType = childOf(entry.statement, "type");
       if (!baseType) return void 0;
-      return resolveBuiltinQuietly(resolved.module, baseType, /* @__PURE__ */ new Set([...seen, key]));
+      return resolveBuiltinQuietly(entry.document, baseType, /* @__PURE__ */ new Set([...seen, key]), entry.scope);
     };
     const checkDuplicates = (nodes, owner) => {
       const seen = /* @__PURE__ */ new Set();
@@ -4512,16 +4514,29 @@ var YangEngine = (() => {
       return [parent, ...submodulesFor(parent)];
     };
     const canonicalModule = (context) => parentModuleFor(context);
-    const findTypedef2 = (module, name2) => {
-      const visit = (statement) => {
-        for (const child of statement.children) {
-          if (child.keyword === "typedef" && child.argument === name2) return child;
-          const nested = visit(child);
-          if (nested) return nested;
+    const familyIndexes = /* @__PURE__ */ new Map();
+    const familyIndexOf = (module) => {
+      const parent = parentModuleFor(module);
+      const key = moduleId(parent);
+      let index = familyIndexes.get(key);
+      if (!index) {
+        index = { typedefs: /* @__PURE__ */ new Map(), groupings: /* @__PURE__ */ new Map() };
+        for (const source of [parent, ...submodulesFor(parent)]) {
+          for (const child of source.children) {
+            if (child.keyword === "typedef" && child.argument) index.typedefs.set(child.argument, { statement: child, document: source, scope: [] });
+            if (child.keyword === "grouping" && child.argument) index.groupings.set(child.argument, { statement: child, document: source, scope: [] });
+          }
         }
-        return void 0;
-      };
-      return relatedSources(module).map(visit).find(Boolean);
+        familyIndexes.set(key, index);
+      }
+      return index;
+    };
+    const findSymbol = (kind, scope, module, name2) => {
+      for (let index = scope.length - 1; index >= 0; index--) {
+        const found = scope[index].statement.children.find((child) => child.keyword === kind && child.argument === name2);
+        if (found) return { statement: found, document: scope[index].document, scope: scope.slice(0, index + 1) };
+      }
+      return familyIndexOf(module)[kind === "typedef" ? "typedefs" : "groupings"].get(name2);
     };
     const builtinTypes = /* @__PURE__ */ new Set([
       "binary",
@@ -4612,57 +4627,48 @@ var YangEngine = (() => {
       }
     };
     const featureRequirementsEnabled = (requirements) => requirements.every((requirement) => evaluateFeature(requirement.module, requirement.expression, requirement.source));
-    const resolveType2 = (owner, type, stack = []) => {
+    const resolveType2 = (owner, type, stack = [], scope = []) => {
       const typeName = type.argument ?? "";
       if (builtinTypes.has(typeName)) return { name: typeName, chain: [] };
-      const resolved = resolveQName(owner, typeName, modules, moduleSet.submodules);
-      if (!resolved) return { chain: [] };
-      const key = `${moduleId(resolved.module)}:${resolved.name}`;
+      const entry = typeName.includes(":") ? (() => {
+        const resolved = resolveQName(owner, typeName, modules, moduleSet.submodules);
+        return resolved ? familyIndexOf(resolved.module).typedefs.get(resolved.name) : void 0;
+      })() : findSymbol("typedef", scope, owner, typeName);
+      if (!entry) return { chain: [] };
+      const key = `${moduleId(entry.document)}:${entry.statement.argument ?? ""}`;
       if (stack.includes(key)) {
         report("typedef-cycle", `Typedef cycle: ${[...stack, key].join(" -> ")}`, owner, type);
         return { chain: [] };
       }
-      const typedef = findTypedef2(resolved.module, resolved.name);
-      const baseType = typedef && childOf(typedef, "type");
-      if (!typedef || !baseType) return { chain: [] };
-      const base = resolveType2(resolved.module, baseType, [...stack, key]);
-      return { ...base.name ? { name: base.name } : {}, chain: [typedef, ...base.chain] };
-    };
-    const findGrouping = (owner, name2) => {
-      const visit = (node) => {
-        for (const child of node.children) {
-          if (child.keyword === "grouping" && child.argument === name2) return child;
-          const found = visit(child);
-          if (found) return found;
-        }
-        return void 0;
-      };
-      return relatedSources(owner).map(visit).find(Boolean);
+      const baseType = childOf(entry.statement, "type");
+      if (!baseType) return { chain: [] };
+      const base = resolveType2(entry.document, baseType, [...stack, key], entry.scope);
+      return { ...base.name ? { name: base.name } : {}, chain: [entry.statement, ...base.chain] };
     };
     for (const module of modules) for (const source of [module, ...submodulesFor(module)]) validateCardinality(source);
     const makeNode = (statement, owner, parentPath, inheritedConfig, groupingStack = [], inheritedWhen = [], inheritedFeatures = [], instantiatingModule = owner, sourceModule = owner) => {
       if (statement.keyword === "uses") {
-        const resolved = resolveQName(sourceModule, statement.argument ?? "", modules, moduleSet.submodules);
-        if (!resolved) {
-          report("unresolved-prefix", `Cannot resolve uses '${statement.argument ?? ""}'`, owner, statement);
+        const rawName = statement.argument ?? "";
+        const entry = rawName.includes(":") ? (() => {
+          const resolved = resolveQName(sourceModule, rawName, modules, moduleSet.submodules);
+          return resolved ? familyIndexOf(resolved.module).groupings.get(resolved.name) : void 0;
+        })() : findSymbol("grouping", groupingStack, sourceModule, rawName);
+        if (!entry) {
+          report("unresolved-grouping", `Grouping '${rawName}' was not found`, owner, statement);
           return [];
         }
-        const groupingId = `${moduleId(resolved.module)}:${resolved.name}`;
-        if (groupingStack.includes(groupingId)) {
-          report("uses-cycle", `Grouping uses cycle: ${[...groupingStack, groupingId].join(" -> ")}`, owner, statement);
+        if (groupingStack.some((level) => level.statement === entry.statement)) {
+          report("uses-cycle", `Grouping uses cycle: ${[...groupingStack.map((level) => level.statement.argument ?? ""), rawName].join(" -> ")}`, owner, statement);
           return [];
         }
-        const grouping = findGrouping(resolved.module, resolved.name);
-        if (!grouping) {
-          report("unresolved-grouping", `Grouping '${statement.argument ?? ""}' was not found`, owner, statement);
-          return [];
-        }
+        const childScope = [...entry.scope, { statement: entry.statement, document: entry.document }];
         const features = [...inheritedFeatures, ...childrenOf(statement, "if-feature").map((item) => ({ module: owner.argument, expression: item.argument ?? "", source: item }))];
         if (options.enabledFeatures && !featureRequirementsEnabled(features)) return [];
         const when = [...inheritedWhen, ...childrenOf(statement, "when")];
-        const expanded = dataChildren(grouping).flatMap((child) => makeNode(child, resolved.module, parentPath, inheritedConfig, [...groupingStack, groupingId], when, features, instantiatingModule, resolved.module));
+        const expanded = dataChildren(entry.statement).flatMap((child) => makeNode(child, entry.document, parentPath, inheritedConfig, childScope, when, features, instantiatingModule, entry.document));
         const refineAllowed = {
-          leaf: /* @__PURE__ */ new Set(["default", "description", "reference", "config", "must", "if-feature"]),
+          // RFC 7950 §7.13.2: a refine may change a leaf's mandatory statement.
+          leaf: /* @__PURE__ */ new Set(["default", "description", "reference", "config", "mandatory", "must", "if-feature"]),
           "leaf-list": /* @__PURE__ */ new Set(["default", "description", "reference", "config", "min-elements", "max-elements", "must", "if-feature"]),
           list: /* @__PURE__ */ new Set(["description", "reference", "config", "min-elements", "max-elements", "must", "if-feature"]),
           container: /* @__PURE__ */ new Set(["description", "reference", "config", "presence", "must", "if-feature"]),
@@ -4684,7 +4690,7 @@ var YangEngine = (() => {
         for (const refine of childrenOf(statement, "refine")) {
           const target = findRelative(expanded, (refine.argument ?? "").split("/").filter(Boolean));
           if (!target) {
-            report("unresolved-refine", `Refine target '${refine.argument ?? ""}' was not found in grouping '${resolved.name}'`, owner, refine);
+            report("unresolved-refine", `Refine target '${refine.argument ?? ""}' was not found in grouping '${entry.statement.argument ?? ""}'`, owner, refine);
             continue;
           }
           const allowed = refineAllowed[target.kind];
@@ -4707,6 +4713,30 @@ var YangEngine = (() => {
           target.featureRequirements = [...target.featureRequirements, ...refinedFeatures.map(({ module, expression }) => ({ module, expression }))];
           target.ifFeatures = [...target.ifFeatures, ...refinedFeatures.map((feature) => feature.expression)];
         }
+        for (const augment of childrenOf(statement, "augment")) {
+          const target = findRelative(expanded, (augment.argument ?? "").split("/").filter(Boolean));
+          if (!target) {
+            report("unresolved-augment", `Augment target '${augment.argument ?? ""}' was not found in grouping '${entry.statement.argument ?? ""}'`, owner, augment);
+            continue;
+          }
+          if (!["container", "list", "choice", "case"].includes(target.kind)) {
+            report("invalid-augment-target", `Node '${target.path}' of kind '${target.kind}' cannot be augmented`, owner, augment);
+            continue;
+          }
+          const augmentWhen = [...when, ...childrenOf(augment, "when")];
+          const augmentFeatures = [...features, ...childrenOf(augment, "if-feature").map((feature) => ({ module: owner.argument, expression: feature.argument ?? "", source: feature }))];
+          if (options.enabledFeatures && !featureRequirementsEnabled(augmentFeatures)) continue;
+          const additions = normalizeChoiceChildren(
+            augment.children.filter((child) => DATA_KINDS.has(child.keyword) || child.keyword === "uses" || child.keyword === "action" || child.keyword === "notification").flatMap((child) => makeNode(child, instantiatingModule, target.path, target.config, childScope, augmentWhen, augmentFeatures, instantiatingModule, sourceModule)),
+            target
+          );
+          for (const addition of additions) {
+            if (target.children.some((child) => child.module === addition.module && child.name === addition.name)) {
+              report("augment-conflict", `Augment adds duplicate node '${addition.name}' at '${target.path}'`, owner, addition.source);
+            } else target.children.push(addition);
+          }
+          checkDuplicates(target.children, owner);
+        }
         const keepEnabledFeatures = (nodes) => nodes.flatMap((node2) => {
           const requirements = node2.featureRequirements.map((requirement) => ({ ...requirement, source: node2.source }));
           if (options.enabledFeatures && !featureRequirementsEnabled(requirements)) return [];
@@ -4727,7 +4757,7 @@ var YangEngine = (() => {
       const nodeWhen = [...inheritedWhen, ...childrenOf(statement, "when")];
       const nodeFeatures = nodeFeatureRequirements.map((requirement) => requirement.expression);
       const typeStatement = childOf(statement, "type");
-      const resolvedType = typeStatement ? resolveType2(sourceModule, typeStatement) : void 0;
+      const resolvedType = typeStatement ? resolveType2(sourceModule, typeStatement, [], groupingStack) : void 0;
       if (typeStatement && !resolvedType?.name) report("unresolved-type", `Type '${typeStatement.argument ?? ""}' could not be resolved`, owner, typeStatement);
       const node = {
         kind,

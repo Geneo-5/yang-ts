@@ -457,3 +457,101 @@ describe("Stage 7 P1 – evaluateCandidates", () => {
     expect(off.reasons.map(reason => reason.code)).toEqual(["must-unmet", "must-unmet"]);
   });
 });
+
+describe("Stage 7 P1 – refine, uses augment and symbol scoping (RFC 7950 §7.13, §6.2.1)", () => {
+  const moduleSet = async (...sources: string[]) => compileYangModules(
+    await resolveModuleSet(sources.map(parseYang), { async loadModule() { return undefined; } }));
+  const moduleSetWithSubmodules = async (submodules: readonly string[], ...sources: string[]) => compileYangModules(
+    await resolveModuleSet(sources.map(parseYang), {
+      async loadModule() { return undefined; },
+      async loadSubmodule() { return parseYang(submodules[0] ?? ""); },
+    }));
+
+  it("refines a leaf's mandatory statement (§7.13.2)", async () => {
+    const schema = await moduleSet(`module probe {
+      namespace "urn:probe"; prefix p;
+      grouping endpoint { leaf address { type string; } }
+      container services {
+        uses endpoint { refine address { mandatory true; } }
+      }
+      container unchecked { uses endpoint; }
+    }`);
+    expect(schema.diagnostics.filter(diagnostics => diagnostics.code === "invalid-refine")).toEqual([]);
+    const document = xml(`<services xmlns="urn:probe"><other/></services>`);
+    const result = validateDataTree(schema, document);
+    expect(result.issues).toContainEqual(expect.objectContaining({
+      code: "missing-mandatory", path: "/services/address",
+    }));
+    const unrefined = validateDataTree(schema, xml(`<unchecked xmlns="urn:probe"/>`));
+    expect(unrefined.issues.filter(issue => issue.code === "missing-mandatory")).toEqual([]);
+  });
+
+  it("expands an augment declared inside uses", async () => {
+    const schema = await moduleSet(`module probe {
+      namespace "urn:probe"; prefix p;
+      grouping base {
+        container tunnel { leaf name { type string; } }
+      }
+      container services {
+        uses base {
+          augment "tunnel" {
+            leaf color { type enumeration { enum red; enum blue; } }
+          }
+        }
+      }
+    }`);
+    expect(schema.diagnostics.filter(diagnostics => diagnostics.code === "unresolved-augment")).toEqual([]);
+    const color = schema.roots[0]!.children.find(node => node.name === "tunnel")
+      ?.children.find(node => node.name === "color");
+    expect(color?.namespace).toBe("urn:probe");
+    expect(color?.resolvedType).toBe("enumeration");
+  });
+
+  it("keeps grouping-scoped symbols out of sibling scopes and lets locals shadow top level", async () => {
+    const source = parseYang(`module probe {
+      namespace "urn:probe"; prefix p;
+      typedef width { type int8; }
+      grouping box {
+        typedef width { type int32; }
+        grouping hidden { container secret; }
+        leaf span { type width { range "300"; } }
+      }
+      container svc { uses box; }
+      container misuse { uses hidden; }
+    }`);
+    const schema = compileYangModules(
+      await resolveModuleSet([source], { async loadModule() { return undefined; } }));
+    const nestedWidth = source.children.find(child => child.keyword === "grouping" && child.argument === "box")!
+      .children.find(child => child.keyword === "typedef" && child.argument === "width")!;
+    // scoping: `uses hidden` outside its grouping is NOT visible from `svc`…
+    expect(schema.diagnostics.some(diagnostics =>
+      diagnostics.code === "unresolved-grouping" && diagnostics.message.includes("hidden") === true)).toBe(true);
+    // …the span leaf resolves `width` to the grouping-local int32 typedef (a
+    // range of 300 only validates for int32), and not the top-level int8.
+    const span = schema.roots[0]!.children.find(node => node.name === "span")!;
+    expect(span.typedefChain[0]).toBe(nestedWidth);
+    expect(schema.diagnostics.some(diagnostics => diagnostics.code === "invalid-type-restriction")).toBe(false);
+  });
+
+  it("resolves a grouping's internal prefixes in its declaring submodule document", async () => {
+    const schema = await moduleSetWithSubmodules(
+      [`submodule parts {
+        belongs-to fam { prefix f; }
+        import net { prefix n; }
+        grouping endpoint { leaf addr { type n:address; } }
+      }`],
+      `module fam {
+        namespace "urn:fam"; prefix f;
+        include parts;
+        container host { uses endpoint; }
+      }`,
+      `module net {
+        namespace "urn:net"; prefix n;
+        typedef address { type string; }
+      }`,
+    );
+    expect(schema.diagnostics.filter(diagnostics => diagnostics.code === "unresolved-type")).toEqual([]);
+    const addr = schema.roots[0]!.children.find(node => node.name === "addr");
+    expect(addr?.resolvedType).toBe("string");
+  });
+});
