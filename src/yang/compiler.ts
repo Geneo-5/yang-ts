@@ -293,6 +293,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   };
   const builtinTypes = BUILTIN_TYPES;
   const featureCache = new Map<string, boolean>();
+  const evaluatingFeatures = new Set<string>();
   const featureExists = (module: YangModule, name: string) => relatedSources(module).some(source =>
     childrenOf(source, "feature").some(feature => feature.argument === name),
   );
@@ -321,11 +322,27 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       const token = tokens[index++];
       if (!token || token === "and" || token === "or" || token === ")") throw new Error("Expected feature identifier");
       const resolved = resolveQName(context, token, modules, submodules);
-      if (!resolved || !featureExists(resolved.module, resolved.name)) {
+      const feature = resolved
+        ? relatedSources(resolved.module).flatMap(declared => childrenOf(declared, "feature")).find(declared => declared.argument === resolved.name)
+        : undefined;
+      if (!resolved || !feature) {
         report("unresolved-feature", `Feature '${token}' could not be resolved`, context, source);
         return false;
       }
-      return Boolean(options.enabledFeatures?.has(`${canonicalModule(resolved.module).argument}:${resolved.name}`));
+      if (!options.enabledFeatures?.has(`${canonicalModule(resolved.module).argument}:${resolved.name}`)) return false;
+      // RFC 7950 section 7.20.2: a feature's own if-feature gates the feature
+      // itself; the inner expression resolves in the feature's declaring
+      // module. An in-flight name seen again means the requirements cycle.
+      const requirements = childrenOf(feature, "if-feature").map(item => ({ module: resolved.module.argument, expression: item.argument ?? "", source: item }));
+      if (!requirements.length) return true;
+      const stackKey = `${resolved.module.argument}:${resolved.name}`;
+      if (evaluatingFeatures.has(stackKey)) return false;
+      evaluatingFeatures.add(stackKey);
+      try {
+        return requirements.every(requirement => evaluateFeature(requirement.module, requirement.expression, requirement.source));
+      } finally {
+        evaluatingFeatures.delete(stackKey);
+      }
     };
     const conjunction = (): boolean => {
       let value = primary();
@@ -434,7 +451,17 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
         let siblings = nodes;
         let found: CompiledSchemaNode | undefined;
         for (const name of names) {
-          found = siblings.find(node => node.name === name);
+          // RFC 7950 sections 7.13.2/7.17: refine and uses-augment targets are
+          // (descendant) schema node identifiers whose prefixes resolve in this
+          // document; the resolved module either instantiates the grouping (its
+          // namespace owns the nodes) or defines it.
+          const resolved = resolveQName(sourceModule, name, modules, submodules);
+          const local = resolved ? resolved.name : name;
+          found = siblings.find(node => node.name === local
+            && (!resolved
+              || resolved.module.argument === owner.argument
+              || resolved.module.argument === entry.document.argument
+              || node.namespace === childOf(resolved.module, "namespace")?.argument));
           if (!found) return undefined;
           siblings = found.children;
         }
@@ -678,88 +705,49 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
   }
   for (const item of pending) report("unresolved-augment", `Augment target '${item.statement.argument ?? ""}' was not found`, item.module, item.statement);
 
-  const locateTarget = (path: Array<{ module: YangModule; name: string }>) => {
-    let siblings = roots;
-    for (const part of path) {
+
+  // RFC 7950 section 7.20.3: deviations may target operation parameter nodes
+  // (`/rpc/input/param`, nested `/cont/act/input/param`, notification data).
+  const walkSchemaSegments = (siblings: CompiledSchemaNode[], path: readonly { module: YangModule; name: string }[]) => {
+    for (let partIndex = 0; partIndex < path.length; partIndex++) {
+      const part = path[partIndex]!;
       const index = siblings.findIndex(node => node.module === part.module.argument && node.name === part.name);
       if (index < 0) return undefined;
       const node = siblings[index]!;
-      if (part === path[path.length - 1]) return { siblings, index, node };
+      if (partIndex === path.length - 1) return { siblings, index, node };
       siblings = node.children;
+    }
+    return undefined;
+  };
+  const locateTarget = (path: Array<{ module: YangModule; name: string }>) => walkSchemaSegments(roots, path);
+  const locateOperationTarget = (path: Array<{ module: YangModule; name: string }>) => {
+    // The operation node may sit behind data-node ancestors (actions), so the
+    // longest schema-path prefix of the target addresses the operation.
+    for (let split = path.length; split >= 1; split--) {
+      const operation = operations.find(candidate =>
+        candidate.schemaPath.length === split
+        && candidate.schemaPath.every((part, index) => part.module === path[index]!.module.argument && part.name === path[index]!.name));
+      if (!operation) continue;
+      const parameterPath = path.slice(split);
+      if (operation.kind === "notification") {
+        if (!parameterPath.length) continue;
+        return walkSchemaSegments(operation.data, parameterPath);
+      }
+      if (parameterPath[0]?.name !== "input" && parameterPath[0]?.name !== "output") continue;
+      return walkSchemaSegments(operation[parameterPath[0].name], parameterPath.slice(1));
     }
     return undefined;
   };
   const deviableProperties = new Set(["config", "default", "mandatory", "max-elements", "min-elements", "must", "type", "unique", "units"]);
   const repeatableProperty = (node: CompiledSchemaNode, property: string) =>
     property === "must" || property === "unique" || (property === "default" && node.kind === "leaf-list");
-  const deviationSources = modules.flatMap(module => [module, ...submodulesFor(module)].flatMap(source =>
-    childrenOf(source, "deviation").map(statement => ({ module, source, statement })),
-  ));
-  for (const { module, source, statement } of deviationSources) {
-    const path = qnamePath(source, statement.argument ?? "");
-    const targetLocation = path && locateTarget(path);
-    if (!targetLocation) {
-      report("unresolved-deviation", `Deviation target '${statement.argument ?? ""}' was not found`, module, statement);
-      continue;
-    }
-    const { siblings, index, node } = targetLocation;
-    node.deviations.push(statement);
-    let removed = false;
-    for (const deviate of childrenOf(statement, "deviate")) {
-      const action = deviate.argument;
-      if (action === "not-supported") { siblings.splice(index, 1); removed = true; break; }
-      if (action !== "add" && action !== "replace" && action !== "delete") {
-        report("invalid-deviation", `Unknown deviate operation '${action ?? ""}'`, module, deviate);
-        continue;
-      }
-      for (const property of deviate.children) {
-        if (!deviableProperties.has(property.keyword)) {
-          report("invalid-deviation", `Property '${property.keyword}' cannot be changed by a deviation`, module, property);
-          continue;
-        }
-        const current = node.properties[property.keyword] ?? [];
-        if (action === "add") {
-          if (!repeatableProperty(node, property.keyword) && current.length > 0) {
-            report("invalid-deviation", `Cannot add '${property.keyword}': the property already exists`, module, property);
-            continue;
-          }
-          node.properties[property.keyword] = [...current, property];
-        } else if (action === "replace") {
-          if (current.length === 0) {
-            report("invalid-deviation", `Cannot replace '${property.keyword}': the property does not exist`, module, property);
-            continue;
-          }
-          node.properties[property.keyword] = [...deviate.children.filter(child => child.keyword === property.keyword)];
-        } else {
-          const match = current.findIndex(existing => existing.argument === property.argument);
-          if (match < 0) {
-            report("invalid-deviation", `Cannot delete '${property.keyword} ${property.argument ?? ""}': no matching property exists`, module, property);
-            continue;
-          }
-          node.properties[property.keyword] = current.filter((_, currentIndex) => currentIndex !== match);
-        }
-      }
-    }
-    if (removed) continue;
-    node.must = node.properties.must ?? [];
-    const replacementType = node.properties.type?.[0];
-    if (replacementType) {
-      node.type = replacementType;
-      const resolved = resolveType(module, replacementType);
-      if (!resolved.name) report("invalid-deviation", `Replacement type '${replacementType.argument ?? ""}' could not be resolved`, module, replacementType);
-      else {
-        node.resolvedType = resolved.name;
-        node.typedefChain = resolved.chain;
-        node.typedefChainModules = resolved.chainModules;
-      }
-    }
-  }
   const refreshConfig = (node: CompiledSchemaNode, inheritedConfig: boolean) => {
     const ownConfig = node.properties.config?.[0]?.argument;
     node.config = ownConfig === "true" ? true : ownConfig === "false" ? false : inheritedConfig;
     node.children.forEach(child => refreshConfig(child, node.config));
   };
-  roots.forEach(node => refreshConfig(node, true));
+
+
 
   const operations: CompiledOperation[] = [];
   const compileOperation = (
@@ -838,6 +826,71 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     }
     checkDuplicates(targetNodes, augment.module);
   }
+  const deviationSources = modules.flatMap(module => [module, ...submodulesFor(module)].flatMap(source =>
+    childrenOf(source, "deviation").map(statement => ({ module, source, statement })),
+  ));
+  for (const { module, source, statement } of deviationSources) {
+    const path = qnamePath(source, statement.argument ?? "");
+    const targetLocation = path && locateTarget(path);
+    const operationLocation = !targetLocation && path ? locateOperationTarget(path) : undefined;
+    if (!targetLocation && !operationLocation) {
+      report("unresolved-deviation", `Deviation target '${statement.argument ?? ""}' was not found`, module, statement);
+      continue;
+    }
+    const { siblings, index, node } = targetLocation ?? operationLocation!;
+    node.deviations.push(statement);
+    let removed = false;
+    for (const deviate of childrenOf(statement, "deviate")) {
+      const action = deviate.argument;
+      if (action === "not-supported") { siblings.splice(index, 1); removed = true; break; }
+      if (action !== "add" && action !== "replace" && action !== "delete") {
+        report("invalid-deviation", `Unknown deviate operation '${action ?? ""}'`, module, deviate);
+        continue;
+      }
+      for (const property of deviate.children) {
+        if (!deviableProperties.has(property.keyword)) {
+          report("invalid-deviation", `Property '${property.keyword}' cannot be changed by a deviation`, module, property);
+          continue;
+        }
+        const current = node.properties[property.keyword] ?? [];
+        if (action === "add") {
+          if (!repeatableProperty(node, property.keyword) && current.length > 0) {
+            report("invalid-deviation", `Cannot add '${property.keyword}': the property already exists`, module, property);
+            continue;
+          }
+          node.properties[property.keyword] = [...current, property];
+        } else if (action === "replace") {
+          if (current.length === 0) {
+            report("invalid-deviation", `Cannot replace '${property.keyword}': the property does not exist`, module, property);
+            continue;
+          }
+          node.properties[property.keyword] = [...deviate.children.filter(child => child.keyword === property.keyword)];
+        } else {
+          const match = current.findIndex(existing => existing.argument === property.argument);
+          if (match < 0) {
+            report("invalid-deviation", `Cannot delete '${property.keyword} ${property.argument ?? ""}': no matching property exists`, module, property);
+            continue;
+          }
+          node.properties[property.keyword] = current.filter((_, currentIndex) => currentIndex !== match);
+        }
+      }
+    }
+    if (removed) continue;
+    node.must = node.properties.must ?? [];
+    const replacementType = node.properties.type?.[0];
+    if (replacementType) {
+      node.type = replacementType;
+      const resolved = resolveType(module, replacementType);
+      if (!resolved.name) report("invalid-deviation", `Replacement type '${replacementType.argument ?? ""}' could not be resolved`, module, replacementType);
+      else {
+        node.resolvedType = resolved.name;
+        node.typedefChain = resolved.chain;
+        node.typedefChainModules = resolved.chainModules;
+      }
+    }
+  }
+  roots.forEach(node => refreshConfig(node, true));
+
   const identities: CompiledIdentity[] = [];
   for (const module of modules) {
     for (const source of [module, ...submodulesFor(module)]) {

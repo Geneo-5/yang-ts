@@ -4576,6 +4576,7 @@ var YangEngine = (() => {
     };
     const builtinTypes = BUILTIN_TYPES;
     const featureCache = /* @__PURE__ */ new Map();
+    const evaluatingFeatures = /* @__PURE__ */ new Set();
     const featureExists = (module, name2) => relatedSources(module).some(
       (source) => childrenOf(source, "feature").some((feature) => feature.argument === name2)
     );
@@ -4607,11 +4608,22 @@ var YangEngine = (() => {
         const token = tokens[index++];
         if (!token || token === "and" || token === "or" || token === ")") throw new Error("Expected feature identifier");
         const resolved = resolveQName(context, token, modules, submodules);
-        if (!resolved || !featureExists(resolved.module, resolved.name)) {
+        const feature = resolved ? relatedSources(resolved.module).flatMap((declared) => childrenOf(declared, "feature")).find((declared) => declared.argument === resolved.name) : void 0;
+        if (!resolved || !feature) {
           report("unresolved-feature", `Feature '${token}' could not be resolved`, context, source);
           return false;
         }
-        return Boolean(options.enabledFeatures?.has(`${canonicalModule(resolved.module).argument}:${resolved.name}`));
+        if (!options.enabledFeatures?.has(`${canonicalModule(resolved.module).argument}:${resolved.name}`)) return false;
+        const requirements = childrenOf(feature, "if-feature").map((item) => ({ module: resolved.module.argument, expression: item.argument ?? "", source: item }));
+        if (!requirements.length) return true;
+        const stackKey = `${resolved.module.argument}:${resolved.name}`;
+        if (evaluatingFeatures.has(stackKey)) return false;
+        evaluatingFeatures.add(stackKey);
+        try {
+          return requirements.every((requirement) => evaluateFeature(requirement.module, requirement.expression, requirement.source));
+        } finally {
+          evaluatingFeatures.delete(stackKey);
+        }
       };
       const conjunction = () => {
         let value = primary();
@@ -4708,7 +4720,9 @@ var YangEngine = (() => {
           let siblings = nodes;
           let found;
           for (const name3 of names) {
-            found = siblings.find((node2) => node2.name === name3);
+            const resolved = resolveQName(sourceModule, name3, modules, submodules);
+            const local = resolved ? resolved.name : name3;
+            found = siblings.find((node2) => node2.name === local && (!resolved || resolved.module.argument === owner.argument || resolved.module.argument === entry.document.argument || node2.namespace === childOf(resolved.module, "namespace")?.argument));
             if (!found) return void 0;
             siblings = found.children;
           }
@@ -4979,91 +4993,39 @@ var YangEngine = (() => {
       }
     }
     for (const item of pending) report("unresolved-augment", `Augment target '${item.statement.argument ?? ""}' was not found`, item.module, item.statement);
-    const locateTarget = (path) => {
-      let siblings = roots;
-      for (const part of path) {
+    const walkSchemaSegments = (siblings, path) => {
+      for (let partIndex = 0; partIndex < path.length; partIndex++) {
+        const part = path[partIndex];
         const index = siblings.findIndex((node2) => node2.module === part.module.argument && node2.name === part.name);
         if (index < 0) return void 0;
         const node = siblings[index];
-        if (part === path[path.length - 1]) return { siblings, index, node };
+        if (partIndex === path.length - 1) return { siblings, index, node };
         siblings = node.children;
+      }
+      return void 0;
+    };
+    const locateTarget = (path) => walkSchemaSegments(roots, path);
+    const locateOperationTarget = (path) => {
+      for (let split = path.length; split >= 1; split--) {
+        const operation = operations.find((candidate) => candidate.schemaPath.length === split && candidate.schemaPath.every((part, index) => part.module === path[index].module.argument && part.name === path[index].name));
+        if (!operation) continue;
+        const parameterPath = path.slice(split);
+        if (operation.kind === "notification") {
+          if (!parameterPath.length) continue;
+          return walkSchemaSegments(operation.data, parameterPath);
+        }
+        if (parameterPath[0]?.name !== "input" && parameterPath[0]?.name !== "output") continue;
+        return walkSchemaSegments(operation[parameterPath[0].name], parameterPath.slice(1));
       }
       return void 0;
     };
     const deviableProperties = /* @__PURE__ */ new Set(["config", "default", "mandatory", "max-elements", "min-elements", "must", "type", "unique", "units"]);
     const repeatableProperty = (node, property) => property === "must" || property === "unique" || property === "default" && node.kind === "leaf-list";
-    const deviationSources = modules.flatMap((module) => [module, ...submodulesFor(module)].flatMap(
-      (source) => childrenOf(source, "deviation").map((statement) => ({ module, source, statement }))
-    ));
-    for (const { module, source, statement } of deviationSources) {
-      const path = qnamePath(source, statement.argument ?? "");
-      const targetLocation = path && locateTarget(path);
-      if (!targetLocation) {
-        report("unresolved-deviation", `Deviation target '${statement.argument ?? ""}' was not found`, module, statement);
-        continue;
-      }
-      const { siblings, index, node } = targetLocation;
-      node.deviations.push(statement);
-      let removed = false;
-      for (const deviate of childrenOf(statement, "deviate")) {
-        const action = deviate.argument;
-        if (action === "not-supported") {
-          siblings.splice(index, 1);
-          removed = true;
-          break;
-        }
-        if (action !== "add" && action !== "replace" && action !== "delete") {
-          report("invalid-deviation", `Unknown deviate operation '${action ?? ""}'`, module, deviate);
-          continue;
-        }
-        for (const property of deviate.children) {
-          if (!deviableProperties.has(property.keyword)) {
-            report("invalid-deviation", `Property '${property.keyword}' cannot be changed by a deviation`, module, property);
-            continue;
-          }
-          const current = node.properties[property.keyword] ?? [];
-          if (action === "add") {
-            if (!repeatableProperty(node, property.keyword) && current.length > 0) {
-              report("invalid-deviation", `Cannot add '${property.keyword}': the property already exists`, module, property);
-              continue;
-            }
-            node.properties[property.keyword] = [...current, property];
-          } else if (action === "replace") {
-            if (current.length === 0) {
-              report("invalid-deviation", `Cannot replace '${property.keyword}': the property does not exist`, module, property);
-              continue;
-            }
-            node.properties[property.keyword] = [...deviate.children.filter((child) => child.keyword === property.keyword)];
-          } else {
-            const match = current.findIndex((existing) => existing.argument === property.argument);
-            if (match < 0) {
-              report("invalid-deviation", `Cannot delete '${property.keyword} ${property.argument ?? ""}': no matching property exists`, module, property);
-              continue;
-            }
-            node.properties[property.keyword] = current.filter((_, currentIndex) => currentIndex !== match);
-          }
-        }
-      }
-      if (removed) continue;
-      node.must = node.properties.must ?? [];
-      const replacementType = node.properties.type?.[0];
-      if (replacementType) {
-        node.type = replacementType;
-        const resolved = resolveType2(module, replacementType);
-        if (!resolved.name) report("invalid-deviation", `Replacement type '${replacementType.argument ?? ""}' could not be resolved`, module, replacementType);
-        else {
-          node.resolvedType = resolved.name;
-          node.typedefChain = resolved.chain;
-          node.typedefChainModules = resolved.chainModules;
-        }
-      }
-    }
     const refreshConfig = (node, inheritedConfig) => {
       const ownConfig = node.properties.config?.[0]?.argument;
       node.config = ownConfig === "true" ? true : ownConfig === "false" ? false : inheritedConfig;
       node.children.forEach((child) => refreshConfig(child, node.config));
     };
-    roots.forEach((node) => refreshConfig(node, true));
     const operations = [];
     const compileOperation = (module, statement, parentPath = "", parentSchemaPath = [], sourceModule = module) => {
       if (statement.keyword !== "rpc" && statement.keyword !== "action" && statement.keyword !== "notification") return;
@@ -5142,6 +5104,74 @@ var YangEngine = (() => {
       }
       checkDuplicates(targetNodes, augment.module);
     }
+    const deviationSources = modules.flatMap((module) => [module, ...submodulesFor(module)].flatMap(
+      (source) => childrenOf(source, "deviation").map((statement) => ({ module, source, statement }))
+    ));
+    for (const { module, source, statement } of deviationSources) {
+      const path = qnamePath(source, statement.argument ?? "");
+      const targetLocation = path && locateTarget(path);
+      const operationLocation = !targetLocation && path ? locateOperationTarget(path) : void 0;
+      if (!targetLocation && !operationLocation) {
+        report("unresolved-deviation", `Deviation target '${statement.argument ?? ""}' was not found`, module, statement);
+        continue;
+      }
+      const { siblings, index, node } = targetLocation ?? operationLocation;
+      node.deviations.push(statement);
+      let removed = false;
+      for (const deviate of childrenOf(statement, "deviate")) {
+        const action = deviate.argument;
+        if (action === "not-supported") {
+          siblings.splice(index, 1);
+          removed = true;
+          break;
+        }
+        if (action !== "add" && action !== "replace" && action !== "delete") {
+          report("invalid-deviation", `Unknown deviate operation '${action ?? ""}'`, module, deviate);
+          continue;
+        }
+        for (const property of deviate.children) {
+          if (!deviableProperties.has(property.keyword)) {
+            report("invalid-deviation", `Property '${property.keyword}' cannot be changed by a deviation`, module, property);
+            continue;
+          }
+          const current = node.properties[property.keyword] ?? [];
+          if (action === "add") {
+            if (!repeatableProperty(node, property.keyword) && current.length > 0) {
+              report("invalid-deviation", `Cannot add '${property.keyword}': the property already exists`, module, property);
+              continue;
+            }
+            node.properties[property.keyword] = [...current, property];
+          } else if (action === "replace") {
+            if (current.length === 0) {
+              report("invalid-deviation", `Cannot replace '${property.keyword}': the property does not exist`, module, property);
+              continue;
+            }
+            node.properties[property.keyword] = [...deviate.children.filter((child) => child.keyword === property.keyword)];
+          } else {
+            const match = current.findIndex((existing) => existing.argument === property.argument);
+            if (match < 0) {
+              report("invalid-deviation", `Cannot delete '${property.keyword} ${property.argument ?? ""}': no matching property exists`, module, property);
+              continue;
+            }
+            node.properties[property.keyword] = current.filter((_, currentIndex) => currentIndex !== match);
+          }
+        }
+      }
+      if (removed) continue;
+      node.must = node.properties.must ?? [];
+      const replacementType = node.properties.type?.[0];
+      if (replacementType) {
+        node.type = replacementType;
+        const resolved = resolveType2(module, replacementType);
+        if (!resolved.name) report("invalid-deviation", `Replacement type '${replacementType.argument ?? ""}' could not be resolved`, module, replacementType);
+        else {
+          node.resolvedType = resolved.name;
+          node.typedefChain = resolved.chain;
+          node.typedefChainModules = resolved.chainModules;
+        }
+      }
+    }
+    roots.forEach((node) => refreshConfig(node, true));
     const identities = [];
     for (const module of modules) {
       for (const source of [module, ...submodulesFor(module)]) {
