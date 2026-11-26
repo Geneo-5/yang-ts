@@ -82,7 +82,7 @@ Open defects (several return *valid* where the result is unknown — highest pri
 - [x] `findSchemaNodeByPath` strips one trailing `[*]` predicate per path segment, so form fields under lists reach their schema node and leafref cross-reference checks no longer stay `pending` (fixed 2026-11-26, `tests/stage7-p1.test.ts`).
 - [x] Leaf-lists of leafref/identityref are validated entry by entry against the cross-reference context instead of erroring on the array; union leaf-lists validate through the precomputed union member descriptors (including their restrictions) instead of staying `indeterminate`; per-entry errors carry an `(entry N)` suffix (fixed 2026-11-26, `tests/stage7-p1.test.ts`).
 - [ ] `createFormModel` is a parallel, parse-tree-based path that ignores `uses`, augments, features, deviations and choice exclusivity (mandatory leaves in a case are marked `required` regardless of the active case). Rebuild it on `CompiledYangSchema`.
-- [ ] `evaluateCandidates`: location uses `node.path` (which contains choice/case segments) and the leaf's namespace for every ancestor, so augmented nodes and nodes under choices are never found; no way to target a specific list entry; the caller's document is mutated without `try/finally`; only constraints declared on the node itself are considered, not sibling constraints that depend on it.
+- [x] `evaluateCandidates` locates the target through a segment-by-segment schema chain: choice/case segment names are tolerated, each segment is checked against its own schema namespace (augmented ancestors are found) and key predicates such as `[name='core']` select a specific list entry; probing runs on a private clone of the instance document so the caller's document is never mutated (empty elements previously kept the last candidate value); ancestor and present-sibling `must`/`when` constraints that reference the node are folded into each candidate's verdict (fixed 2026-11-26, `tests/stage7-p1.test.ts`).
 
 ## Stage 6 — Browser release readiness (partial)
 
@@ -114,7 +114,7 @@ New stage collecting the review findings by priority. Each item is closed by a f
 - [x] Submodule compilation context (Stage 2) — closed 2026-11-26, see Stage 2.
 - [x] Validate on the accessible tree (defaults, config/state) (Stage 5) — closed 2026-11-26, see Stage 5.
 - [x] `FormField` restriction descriptor; `[*]` path mismatch; leaf-list cross-references (Stage 5) — closed 2026-11-26 by regressions in `tests/stage7-p1.test.ts` against RFC 7950 §6.2.1/§9.9/§9.10: fields carry a serializable `restrictions` descriptor so copies and proxies keep range/length/pattern/fraction-digits (a `WeakMap` lost them); `findSchemaNodeByPath` strips `[*]` per segment; leaf-lists of leafref/identityref validate entry by entry with `(entry N)` errors and union leaf-lists pick up member restrictions.
-- [ ] `evaluateCandidates` location, entry targeting and non-mutation (Stage 5).
+- [x] `evaluateCandidates` location, entry targeting and non-mutation (Stage 5) — closed 2026-11-26, see Stage 5.
 - [ ] `refine` `mandatory`; `augment` under `uses`; typedef/grouping scoping and index (Stage 2).
 - [ ] RESTCONF loader paths and submodule lists (Stage 6).
 - [ ] Namespace-aware identityref resolution for XML; `enum-value` by node type (Stage 4).
@@ -145,7 +145,7 @@ Static-export constraints that shape the design (verify against the current Next
 
 **Dependencies on earlier stages (blockers).** Do not build the adapters before these Stage 7 items close, because React state management triggers exactly the failure modes they describe:
 - [x] Serializable `FormField` restriction descriptor (P1) — closed 2026-11-26, see Stage 5.
-- [ ] Validation and candidate evaluation on the accessible tree without mutating the caller's document (P0/P1): validation is done (`validateDataTree` via `buildAccessibleTree`, 2026-11-26); candidate evaluation still pending (`evaluateCandidates`).
+- [x] Validation and candidate evaluation on the accessible tree without mutating the caller's document (P0/P1) — both closed 2026-11-26, see Stage 5.
 - [x] Leafref via typedef, validation under `choice`/`case`, `unique`, own-prefix XPath, cross-module groupings (P0) — all closed 2026-11-26, see the per-stage items.
 - [ ] RESTCONF loader fixes: `/data/` URL shape, nested submodule lists, RFC 7895 `schema`, `AbortSignal` (P1).
 - [ ] Curated named exports and `sideEffects`-safe entry points (P3), so the Next.js bundle only contains what the page imports.
