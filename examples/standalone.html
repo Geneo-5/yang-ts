@@ -4360,6 +4360,40 @@ var YangEngine = (() => {
     };
   }
 
+  // src/types/builtins.ts
+  var BUILTIN_TYPES = /* @__PURE__ */ new Set([
+    "binary",
+    "bits",
+    "boolean",
+    "decimal64",
+    "empty",
+    "enumeration",
+    "identityref",
+    "instance-identifier",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "leafref",
+    "string",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "union"
+  ]);
+  var RESTRICTION_BUILTINS = {
+    range: /* @__PURE__ */ new Set(["int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "decimal64"]),
+    length: /* @__PURE__ */ new Set(["string", "binary"]),
+    pattern: /* @__PURE__ */ new Set(["string"]),
+    path: /* @__PURE__ */ new Set(["leafref"]),
+    "require-instance": /* @__PURE__ */ new Set(["leafref", "instance-identifier"]),
+    "fraction-digits": /* @__PURE__ */ new Set(["decimal64"]),
+    base: /* @__PURE__ */ new Set(["identityref"]),
+    enum: /* @__PURE__ */ new Set(["enumeration"]),
+    bit: /* @__PURE__ */ new Set(["bits"])
+  };
+
   // src/yang/compiler.ts
   function moduleNamespacePrefixes(schema, moduleName) {
     const map = {};
@@ -4442,17 +4476,6 @@ var YangEngine = (() => {
       leaf: ["type"],
       "leaf-list": ["type"],
       "belongs-to": ["prefix"]
-    };
-    const RESTRICTION_BUILTINS = {
-      range: /* @__PURE__ */ new Set(["int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "decimal64"]),
-      length: /* @__PURE__ */ new Set(["string", "binary"]),
-      pattern: /* @__PURE__ */ new Set(["string"]),
-      path: /* @__PURE__ */ new Set(["leafref"]),
-      "require-instance": /* @__PURE__ */ new Set(["leafref", "instance-identifier"]),
-      "fraction-digits": /* @__PURE__ */ new Set(["decimal64"]),
-      base: /* @__PURE__ */ new Set(["identityref"]),
-      enum: /* @__PURE__ */ new Set(["enumeration"]),
-      bit: /* @__PURE__ */ new Set(["bits"])
     };
     const validateCardinality = (root) => {
       const visit = (statement, owner) => {
@@ -4542,27 +4565,7 @@ var YangEngine = (() => {
       }
       return familyIndexOf(module)[kind === "typedef" ? "typedefs" : "groupings"].get(name2);
     };
-    const builtinTypes = /* @__PURE__ */ new Set([
-      "binary",
-      "bits",
-      "boolean",
-      "decimal64",
-      "empty",
-      "enumeration",
-      "identityref",
-      "instance-identifier",
-      "int8",
-      "int16",
-      "int32",
-      "int64",
-      "leafref",
-      "string",
-      "uint8",
-      "uint16",
-      "uint32",
-      "uint64",
-      "union"
-    ]);
+    const builtinTypes = BUILTIN_TYPES;
     const featureCache = /* @__PURE__ */ new Map();
     const featureExists = (module, name2) => relatedSources(module).some(
       (source) => childrenOf(source, "feature").some((feature) => feature.argument === name2)
@@ -6338,27 +6341,7 @@ var YangEngine = (() => {
   }
 
   // src/forms/form-model.ts
-  var BUILTIN = /* @__PURE__ */ new Set([
-    "binary",
-    "bits",
-    "boolean",
-    "decimal64",
-    "empty",
-    "enumeration",
-    "identityref",
-    "instance-identifier",
-    "int8",
-    "int16",
-    "int32",
-    "int64",
-    "leafref",
-    "string",
-    "uint8",
-    "uint16",
-    "uint32",
-    "uint64",
-    "union"
-  ]);
+  var BUILTIN = BUILTIN_TYPES;
   var CONTROL_BY_TYPE = {
     boolean: "boolean",
     enumeration: "enum",

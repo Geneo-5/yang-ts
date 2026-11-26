@@ -4,6 +4,7 @@ import { childOf, childrenOf } from "../yang/parser.js";
 import { findSchemaNodeByPath } from "../xpath/accessible-tree.js";
 import { leafrefPathStatementOf, xmlNamespaceForPrefix } from "../xpath/yang-functions.js";
 import { compileXsdPattern } from "../types/xsd-pattern.js";
+import { BUILTIN_TYPES } from "../types/builtins.js";
 import { compileModuleExpression } from "../xpath/evaluate-constraints.js";
 
 export type FormValidationStatus = "valid" | "invalid" | "indeterminate";
@@ -97,10 +98,7 @@ export interface FormModelOptions {
 
 interface ResolvedType { name: string; layers: YangStatement[]; unresolved: boolean; unionTypes?: ResolvedType[] }
 
-const BUILTIN = new Set([
-  "binary", "bits", "boolean", "decimal64", "empty", "enumeration", "identityref", "instance-identifier",
-  "int8", "int16", "int32", "int64", "leafref", "string", "uint8", "uint16", "uint32", "uint64", "union",
-]);
+const BUILTIN = BUILTIN_TYPES;
 const CONTROL_BY_TYPE: Record<string, FormControlKind> = {
   boolean: "boolean", enumeration: "enum", bits: "bits", string: "text", binary: "text",
   int8: "number", int16: "number", int32: "number", int64: "number", uint8: "number", uint16: "number", uint32: "number", uint64: "number", decimal64: "number",

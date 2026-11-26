@@ -1,6 +1,7 @@
 import { YangModule, YangStatement } from "./ast.js";
 import { childOf, childrenOf } from "./parser.js";
 import { YangModuleSet } from "./module-set.js";
+import { BUILTIN_TYPES, RESTRICTION_BUILTINS } from "../types/builtins.js";
 
 /** Prefix → namespace map for XPath written inside `moduleName`: its own prefix first (RFC 7950 §6.4.1), then imports.
  * Submodules included by `moduleName` contribute their imports too, and their
@@ -162,19 +163,6 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     module: ["namespace", "prefix"], submodule: ["belongs-to"], typedef: ["type"],
     leaf: ["type"], "leaf-list": ["type"], "belongs-to": ["prefix"],
   };
-  // RFC 7950 section 9.2.1: restrictions are only legal on built-in types that
-  // support them, including types derived from those built-ins via typedefs.
-  const RESTRICTION_BUILTINS: Readonly<Record<string, ReadonlySet<string>>> = {
-    range: new Set(["int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "decimal64"]),
-    length: new Set(["string", "binary"]),
-    pattern: new Set(["string"]),
-    path: new Set(["leafref"]),
-    "require-instance": new Set(["leafref", "instance-identifier"]),
-    "fraction-digits": new Set(["decimal64"]),
-    base: new Set(["identityref"]),
-    enum: new Set(["enumeration"]),
-    bit: new Set(["bits"]),
-  };
   const validateCardinality = (root: YangModule): void => {
     const visit = (statement: YangStatement, owner: YangModule): void => {
       for (const keyword of singletonChildren[statement.keyword] ?? []) {
@@ -285,10 +273,7 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     }
     return familyIndexOf(module)[kind === "typedef" ? "typedefs" : "groupings"].get(name);
   };
-  const builtinTypes = new Set([
-    "binary", "bits", "boolean", "decimal64", "empty", "enumeration", "identityref", "instance-identifier",
-    "int8", "int16", "int32", "int64", "leafref", "string", "uint8", "uint16", "uint32", "uint64", "union",
-  ]);
+  const builtinTypes = BUILTIN_TYPES;
   const featureCache = new Map<string, boolean>();
   const featureExists = (module: YangModule, name: string) => relatedSources(module).some(source =>
     childrenOf(source, "feature").some(feature => feature.argument === name),
