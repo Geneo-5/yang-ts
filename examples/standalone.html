@@ -4897,6 +4897,17 @@ var YangEngine = (() => {
           }
         }
       }
+      if (node.kind === "choice") {
+        const memberSeen = /* @__PURE__ */ new Map();
+        for (const caseNode of node.children) {
+          for (const member of caseNode.kind === "case" ? caseNode.children : [caseNode]) {
+            const memberKey = `${member.module}:${member.name}`;
+            if (memberSeen.has(memberKey)) {
+              report("duplicate-node", `Node '${member.name}' is declared in more than one case of choice '${node.name}'`, owner, member.source);
+            } else memberSeen.set(memberKey, member.source);
+          }
+        }
+      }
       checkDuplicates(node.children, owner);
       return [node];
     };

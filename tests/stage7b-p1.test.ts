@@ -114,3 +114,52 @@ describe("prefixed refine and uses-augment targets", () => {
     expect(inner.children.find(child => child.name === "extra")).toBeDefined();
   });
 });
+
+/** Stage 7b P1 (ROADMAP §48 remainder): name uniqueness across choice cases (RFC 7950 §7.9). */
+describe("choice case name uniqueness", () => {
+  it("reports a data node name shared by two cases of one choice", async () => {
+    const schema = await compile(`module clash {
+      namespace "urn:clash"; prefix c;
+      choice transport {
+        case wired {
+          leaf speed { type string; }
+          leaf media { type string; }
+        }
+        case wireless {
+          leaf media { type string; }
+          leaf band { type string; }
+        }
+      }
+    }`);
+    // Pre-fix each case was duplicate-checked in isolation and the shared
+    // name went unnoticed.
+    expect(schema.diagnostics.map(item => item.code)).toContain("duplicate-node");
+  });
+
+  it("allows distinct names across cases and the same name in another choice", async () => {
+    const schema = await compile(`module calm {
+      namespace "urn:calm"; prefix c;
+      choice transport {
+        case wired { leaf speed { type string; } leaf media { type string; } }
+        case wireless { leaf band { type string; } }
+      }
+      choice security {
+        case tls { leaf media { type string; } }
+      }
+    }`);
+    // `media` appears in a different choice — legal; within `transport` the
+    // names are distinct.
+    expect(schema.diagnostics.map(item => item.code)).toEqual([]);
+  });
+
+  it("checks shorthand case members too", async () => {
+    const schema = await compile(`module shorth {
+      namespace "urn:shorth"; prefix s;
+      choice direct {
+        leaf speed { type string; }
+        leaf speed { type string; }
+      }
+    }`);
+    expect(schema.diagnostics.map(item => item.code)).toContain("duplicate-node");
+  });
+});

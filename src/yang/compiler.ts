@@ -663,6 +663,20 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
         }
       }
     }
+    // RFC 7950 §7.9: data nodes of different cases of the same choice must
+    // have distinct names — the per-node duplicate check above runs per case
+    // and never compares case siblings.
+    if (node.kind === "choice") {
+      const memberSeen = new Map<string, YangStatement>();
+      for (const caseNode of node.children) {
+        for (const member of caseNode.kind === "case" ? caseNode.children : [caseNode]) {
+          const memberKey = `${member.module}:${member.name}`;
+          if (memberSeen.has(memberKey)) {
+            report("duplicate-node", `Node '${member.name}' is declared in more than one case of choice '${node.name}'`, owner, member.source);
+          } else memberSeen.set(memberKey, member.source);
+        }
+      }
+    }
     checkDuplicates(node.children, owner);
     return [node];
   };
