@@ -16,6 +16,32 @@ export interface FormConstraint {
   errorMessage?: string;
   source: YangStatement;
 }
+export interface FormPatternRestriction { expression: string; invertMatch: boolean }
+export interface FormBitRestriction { name: string; position: number }
+export interface FormUnionMember {
+  name: string;
+  control: FormControlKind;
+  options: FormOption[];
+  unresolved: boolean;
+  restrictions: FormFieldRestrictions;
+}
+/** Serializable type restrictions carried on the field itself, so copies, clones and reactive proxies keep validating. */
+export interface FormFieldRestrictions {
+  /** range expressions in layer order (declared `type` first). */
+  ranges: string[];
+  /** length expressions in layer order (declared `type` first). */
+  lengths: string[];
+  /** patterns in declaration order with their per-pattern modifier (RFC 7950 §9.4.6.2). */
+  patterns: FormPatternRestriction[];
+  /** decimal64 fraction digits from the first layer that declares one. */
+  fractionDigits?: number;
+  /** identityref base arguments in declaration order (raw; resolved against the schema at validation). */
+  bases: string[];
+  /** bits with RFC 7950 §9.7.6 positions: explicit or declaration order in the base bits type. */
+  bits: FormBitRestriction[];
+  /** union member descriptors when the field's type is a union. */
+  unionMembers?: FormUnionMember[];
+}
 export interface FormError { code: string; message: string; source?: YangStatement }
 export interface FormValidationResult {
   status: FormValidationStatus;
@@ -39,6 +65,7 @@ export interface FormField {
   minElements?: number;
   maxElements?: number;
   options: FormOption[];
+  restrictions: FormFieldRestrictions;
   constraints: FormConstraint[];
   source: YangStatement;
   /** True when the field type/typedef chain could not be resolved from the supplied modules. */
@@ -156,6 +183,42 @@ function constraintsOn(node: YangStatement): FormConstraint[] {
   return out;
 }
 
+/** Extract the serializable restriction descriptor from the resolved type layers. */
+function restrictionsFromType(resolved: ResolvedType): FormFieldRestrictions {
+  const ranges: string[] = [];
+  const lengths: string[] = [];
+  const patterns: FormPatternRestriction[] = [];
+  const bases: string[] = [];
+  let fractionDigits: number | undefined;
+  for (const layer of resolved.layers) {
+    for (const statement of childrenOf(layer, "range")) ranges.push(statement.argument ?? "");
+    for (const statement of childrenOf(layer, "length")) lengths.push(statement.argument ?? "");
+    for (const statement of childrenOf(layer, "pattern")) {
+      patterns.push({ expression: statement.argument ?? "", invertMatch: childOf(statement, "modifier")?.argument === "invert-match" });
+    }
+    const digits = childOf(layer, "fraction-digits")?.argument;
+    if (fractionDigits === undefined && digits !== undefined) fractionDigits = Number(digits);
+    for (const statement of childrenOf(layer, "base")) bases.push(statement.argument ?? "");
+  }
+  // Positions default to the declaration order of the base bits type (the
+  // last layer, restricted derivation never repositions bits).
+  const bitsLayer = [...resolved.layers].reverse().find(layer => layer.argument === "bits");
+  const bits: FormBitRestriction[] = bitsLayer
+    ? childrenOf(bitsLayer, "bit").map((bit, index) => {
+      const explicit = childOf(bit, "position")?.argument;
+      return { name: bit.argument ?? "", position: explicit !== undefined ? Number(explicit) : index };
+    })
+    : [];
+  const unionMembers = resolved.unionTypes?.map(member => ({
+    name: member.name,
+    control: CONTROL_BY_TYPE[member.name] ?? "unsupported" as const,
+    options: optionsFromType(member),
+    unresolved: member.unresolved,
+    restrictions: restrictionsFromType(member),
+  }));
+  return { ranges, lengths, patterns, ...(fractionDigits !== undefined ? { fractionDigits } : {}), bases, bits, ...(unionMembers ? { unionMembers } : {}) };
+}
+
 function optionsFromType(type: ResolvedType): FormOption[] {
   const optionList = (keyword: "enum" | "bit"): FormOption[] => {
     let baseIndex = -1;
@@ -239,10 +302,8 @@ function walkFields(
       multiple: node.keyword === "leaf-list",
       ...(childOf(node, "min-elements")?.argument ? { minElements: Number(childOf(node, "min-elements")!.argument) } : {}),
       ...(childOf(node, "max-elements")?.argument ? { maxElements: Number(childOf(node, "max-elements")!.argument) } : {}),
-      options: optionsFromType(resolved), constraints, source: node, unresolvedType: resolved.unresolved,
+      options: optionsFromType(resolved), restrictions: restrictionsFromType(resolved), constraints, source: node, unresolvedType: resolved.unresolved,
     };
-    fieldTypeLayers.set(field, resolved.layers);
-    fieldResolvedTypes.set(field, resolved);
     fields.push(field);
   }
 }
@@ -301,7 +362,7 @@ function base64OctetLength(value: string): number | undefined {
 
 interface EffectiveIntervalConstraint { expression: string; minimum: bigint; maximum: bigint; }
 function inheritedIntervals(
-  layers: YangStatement[], keyword: "range" | "length", minimum: bigint, maximum: bigint, decimalDigits?: number,
+  expressions: readonly string[], minimum: bigint, maximum: bigint, decimalDigits?: number,
 ): EffectiveIntervalConstraint[] {
   let inheritedMinimum = minimum;
   let inheritedMaximum = maximum;
@@ -313,8 +374,8 @@ function inheritedIntervals(
       ? (/^[+-]?\d+$/.test(endpoint) ? BigInt(endpoint) : undefined)
       : decimalScaled(endpoint, decimalDigits);
   };
-  for (const layer of [...layers].reverse()) for (const statement of childrenOf(layer, keyword)) {
-    const expression = statement.argument ?? "";
+  // The caller passes base-most first so derived restrictions narrow them.
+  for (const expression of expressions) {
     constraints.push({ expression, minimum: inheritedMinimum, maximum: inheritedMaximum });
     const intervals = expression.split("|").map(part => {
       // RFC 7950 range syntax allows whitespace around the ".." separator.
@@ -348,16 +409,14 @@ function inIntervals(value: bigint, expression: string, decimalDigits?: number, 
 function validateType(field: FormField, value: unknown, errors: FormError[]): boolean | undefined {
   if (field.unresolvedType || (field.control === "unsupported" && field.yangType !== "union")) return undefined;
   if (field.yangType === "union") {
-    const resolved = fieldResolvedTypes.get(field);
-    if (!resolved?.unionTypes?.length) return undefined;
+    const members = field.restrictions.unionMembers ?? [];
+    if (!members.length) return undefined;
     let indeterminate = false;
-    for (const member of resolved.unionTypes) {
+    for (const member of members) {
       const candidate: FormField = {
-        ...field, yangType: member.name, control: CONTROL_BY_TYPE[member.name] ?? "unsupported",
-        options: optionsFromType(member), unresolvedType: member.unresolved,
+        ...field, yangType: member.name, control: member.control,
+        options: member.options, unresolvedType: member.unresolved, restrictions: member.restrictions,
       };
-      fieldTypeLayers.set(candidate, member.layers);
-      fieldResolvedTypes.set(candidate, member);
       const branchErrors: FormError[] = [];
       const result = validateType(candidate, value, branchErrors);
       if (result === true) return true;
@@ -387,7 +446,7 @@ function validateType(field: FormField, value: unknown, errors: FormError[]): bo
     if (typeof value !== "string") { errors.push({ code: "type.binary", message: `${field.label} must be base64 text.` }); return false; }
     const octets = base64OctetLength(value);
     if (octets === undefined) { errors.push({ code: "type.binary.base64", message: `${field.label} must use canonical base64 encoding.` }); return false; }
-    for (const constraint of inheritedIntervals(fieldTypeLayers.get(field) ?? [], "length", 0n, (1n << 64n) - 1n)) {
+    for (const constraint of inheritedIntervals([...field.restrictions.lengths].reverse(), 0n, (1n << 64n) - 1n)) {
       if (!inIntervals(BigInt(octets), constraint.expression, undefined, [constraint.minimum, constraint.maximum])) {
         errors.push({ code: "constraint.length", message: `${field.label} has a decoded length outside ${constraint.expression} octets.` }); return false;
       }
@@ -397,21 +456,21 @@ function validateType(field: FormField, value: unknown, errors: FormError[]): bo
   if (field.yangType === "string") {
     if (typeof value !== "string") { errors.push({ code: "type.string", message: `${field.label} must be text.` }); return false; }
     const length = BigInt([...value].length);
-    for (const constraint of inheritedIntervals(fieldTypeLayers.get(field) ?? [], "length", 0n, (1n << 64n) - 1n)) {
+    for (const constraint of inheritedIntervals([...field.restrictions.lengths].reverse(), 0n, (1n << 64n) - 1n)) {
       if (!inIntervals(length, constraint.expression, undefined, [constraint.minimum, constraint.maximum])) { errors.push({ code: "constraint.length", message: `${field.label} has a length outside ${constraint.expression}.` }); return false; }
     }
     if (typeof value === "string") {
-      for (const layer of fieldTypeLayers.get(field) ?? []) for (const patternStatement of childrenOf(layer, "pattern")) {
+      for (const patternRestriction of field.restrictions.patterns) {
         // RFC 7950 section 9.4.6.2: `modifier invert-match` inverts the
         // satisfaction of this one pattern (not the whole conjunction).
-        const invert = childOf(patternStatement, "modifier")?.argument === "invert-match";
-        const pattern = compileXsdPattern(patternStatement.argument ?? "");
+        const invert = patternRestriction.invertMatch;
+        const pattern = compileXsdPattern(patternRestriction.expression);
         if (!pattern) continue; // pending patterns surface through unsupportedPattern
         const matched = pattern.test(value);
         if (invert ? matched : !matched) {
           errors.push({ code: "constraint.pattern", message: invert
-            ? `${field.label} matches the forbidden pattern '${patternStatement.argument ?? ""}'.`
-            : `${field.label} does not match pattern '${patternStatement.argument ?? ""}'.` });
+            ? `${field.label} matches the forbidden pattern '${patternRestriction.expression}'.`
+            : `${field.label} does not match pattern '${patternRestriction.expression}'.` });
           return false;
         }
       }
@@ -427,15 +486,14 @@ function validateType(field: FormField, value: unknown, errors: FormError[]): bo
     const integer = BigInt(text);
     const [minimum, maximum] = intBounds(field.yangType)!;
     if (integer < minimum || integer > maximum) { errors.push({ code: "constraint.range", message: `${field.label} is outside the ${field.yangType} range.` }); return false; }
-    for (const constraint of inheritedIntervals(fieldTypeLayers.get(field) ?? [], "range", minimum, maximum)) {
+    for (const constraint of inheritedIntervals([...field.restrictions.ranges].reverse(), minimum, maximum)) {
       if (!inIntervals(integer, constraint.expression, undefined, [constraint.minimum, constraint.maximum])) { errors.push({ code: "constraint.range", message: `${field.label} must be within ${constraint.expression}.` }); return false; }
     }
     return true;
   }
   if (field.yangType === "decimal64") {
-    const layers = fieldTypeLayers.get(field) ?? [];
-    const digits = Number(layers.map(layer => childOf(layer, "fraction-digits")?.argument).find(Boolean));
-    if (!Number.isInteger(digits) || digits < 1 || digits > 18 || typeof value !== "string" && typeof value !== "number") {
+    const digits = field.restrictions.fractionDigits;
+    if (digits === undefined || digits < 1 || digits > 18 || typeof value !== "string" && typeof value !== "number") {
       errors.push({ code: "type.decimal64", message: `${field.label} must be a decimal value.` }); return false;
     }
     const scaled = decimalScaled(String(value), digits);
@@ -445,7 +503,7 @@ function validateType(field: FormField, value: unknown, errors: FormError[]): bo
     }
     const decimalMinimum = -(1n << 63n);
     const decimalMaximum = (1n << 63n) - 1n;
-    for (const constraint of inheritedIntervals(layers, "range", decimalMinimum, decimalMaximum, digits)) {
+    for (const constraint of inheritedIntervals([...field.restrictions.ranges].reverse(), decimalMinimum, decimalMaximum, digits)) {
       if (!inIntervals(scaled, constraint.expression, digits, [constraint.minimum, constraint.maximum])) { errors.push({ code: "constraint.range", message: `${field.label} must be within ${constraint.expression}.` }); return false; }
     }
     return true;
@@ -453,9 +511,8 @@ function validateType(field: FormField, value: unknown, errors: FormError[]): bo
   return undefined;
 }
 
-// Keep the parsed type chain out of the serializable/UI-facing field object.
-const fieldTypeLayers = new WeakMap<FormField, YangStatement[]>();
-const fieldResolvedTypes = new WeakMap<FormField, ResolvedType>();
+// The parsed type chain surfaces through the field's serializable restriction
+// descriptor; copies and proxies keep validating.
 
 /** Validate requiredness and the built-in type/restrictions we can evaluate safely. */
 export function validateFormValue(
@@ -482,7 +539,6 @@ export function validateFormValue(
       if (field.maxElements !== undefined && value.length > field.maxElements) errors.push({ code: "constraint.max-elements", message: `${field.label} allows at most ${field.maxElements} value(s).` });
       if (new Set(value.map(item => JSON.stringify(item))).size !== value.length) errors.push({ code: "constraint.unique", message: `${field.label} cannot contain duplicate values.` });
       const single = { ...field, multiple: false };
-      fieldTypeLayers.set(single, fieldTypeLayers.get(field) ?? []);
       let unknown = false;
       for (const item of value) {
         const valid = validateType(single, item, errors);
@@ -498,10 +554,9 @@ export function validateFormValue(
   // A cross-reference type has no generic value check of its own; when the
   // context-backed cross-reference check ran, it is the value's verdict.
   if (result === undefined && (field.yangType === "leafref" || field.yangType === "identityref") && !crossReferencePending) result = true;
-  const hasPattern = (fieldTypeLayers.get(field) ?? []).some(layer => childrenOf(layer, "pattern").length > 0);
+  const hasPattern = field.restrictions.patterns.length > 0;
   const unsupportedPattern = hasPattern && (field.yangType !== "string"
-    || (fieldTypeLayers.get(field) ?? []).some(layer => childrenOf(layer, "pattern")
-      .some(patternStatement => !compileXsdPattern(patternStatement.argument ?? ""))));
+    || field.restrictions.patterns.some(patternRestriction => !compileXsdPattern(patternRestriction.expression)));
   const pending = [...field.constraints];
   if (crossReferencePending) {
     pending.push({ kind: "unsupported", expression: `${field.yangType} requires cross-reference/schema validation`, source: field.source });
@@ -541,6 +596,27 @@ export interface FormCrossReference {
 function validateCrossReference(field: FormField, value: unknown, errors: FormError[], crossReference?: FormCrossReference): boolean {
   if (field.yangType !== "leafref" && field.yangType !== "identityref") return false;
   if (!crossReference) return true;
+  if (field.multiple) {
+    // Leaf-lists of leafref/identityref: every entry is checked against the
+    // cross-reference context (RFC 7950 §9.10, §9.9).
+    if (!Array.isArray(value)) {
+      errors.push({ code: "type.array", message: `${field.label} must be a list of values.` });
+      return false;
+    }
+    let pending = false;
+    value.forEach((item, index) => {
+      const before = errors.length;
+      const verdict = validateCrossReference({ ...field, multiple: false }, item, errors, crossReference);
+      if (verdict) pending = true;
+      else for (const failure of errors.slice(before)) failure.message = `${failure.message} (entry ${index + 1})`;
+    });
+    return pending;
+  }
+  return validateSingleCrossReference(field, value, errors, crossReference);
+}
+
+function validateSingleCrossReference(field: FormField, value: unknown, errors: FormError[], crossReference: FormCrossReference): boolean {
+  if (field.yangType !== "leafref" && field.yangType !== "identityref") return false;
   if (field.yangType === "leafref") {
     if (!crossReference.anchor) return true;
     const schemaNode = findSchemaNodeByPath(crossReference.schema, field.path);
@@ -569,8 +645,8 @@ function validateCrossReference(field: FormField, value: unknown, errors: FormEr
   // from one of the type's declared bases. Values may be module-qualified
   // ("module:name") or plain identity names; XML namespace prefixes are not
   // resolvable here and stay indeterminate through the unqualified case.
-  const bases = (fieldTypeLayers.get(field) ?? [])
-    .flatMap(layer => childrenOf(layer, "base").map(base => resolveBaseRef(base.argument ?? "", field.module, crossReference.schema)))
+  const bases = field.restrictions.bases
+    .map(base => resolveBaseRef(base, field.module, crossReference.schema))
     .filter((base): base is string => Boolean(base));
   if (!bases.length) return true;
   const text = typeof value === "string" ? value.trim() : "";
@@ -661,22 +737,11 @@ export function canonicalFormOf(field: FormField, value: unknown): string | unde
 }
 
 function inheritedFractionDigits(field: FormField): string | undefined {
-  for (const layer of fieldTypeLayers.get(field) ?? []) {
-    const digits = childOf(layer, "fraction-digits")?.argument;
-    if (digits !== undefined) return digits;
-  }
-  return undefined;
+  return field.restrictions.fractionDigits !== undefined ? String(field.restrictions.fractionDigits) : undefined;
 }
 
 /** RFC 6991 canonical bits order: ascending bit position, declaration order as the default position. */
 function sortByBitPosition(field: FormField, selected: string[]): string[] {
-  const positions = new Map(field.options.map((option, index) => {
-    for (const layer of fieldTypeLayers.get(field) ?? []) {
-      const bit = childrenOf(layer, "bit").find(statement => statement.argument === option.value);
-      const explicit = bit && childOf(bit, "position")?.argument;
-      if (bit) return [option.value, explicit !== undefined ? Number(explicit) : index] as const;
-    }
-    return [option.value, index] as const;
-  }));
+  const positions = new Map(field.restrictions.bits.map(bit => [bit.name, bit.position] as const));
   return selected.slice().sort((left, right) => (positions.get(left) ?? 0) - (positions.get(right) ?? 0));
 }

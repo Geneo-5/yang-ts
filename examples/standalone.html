@@ -5311,7 +5311,7 @@ var YangEngine = (() => {
     return schemaNode;
   }
   function findSchemaNodeByPath(schema, path) {
-    const parts = path.split("/").filter(Boolean);
+    const parts = path.split("/").filter(Boolean).map((part) => part.replace(/\[[^\]]*\]$/, ""));
     const usable = (nodes) => nodes.flatMap((node) => node.kind === "choice" ? usable(node.children) : node.kind === "case" ? node.children : [node]);
     let level = usable(schema.roots);
     let found;
@@ -6143,6 +6143,36 @@ var YangEngine = (() => {
     }
     return out;
   }
+  function restrictionsFromType(resolved) {
+    const ranges = [];
+    const lengths = [];
+    const patterns = [];
+    const bases = [];
+    let fractionDigits;
+    for (const layer of resolved.layers) {
+      for (const statement of childrenOf(layer, "range")) ranges.push(statement.argument ?? "");
+      for (const statement of childrenOf(layer, "length")) lengths.push(statement.argument ?? "");
+      for (const statement of childrenOf(layer, "pattern")) {
+        patterns.push({ expression: statement.argument ?? "", invertMatch: childOf(statement, "modifier")?.argument === "invert-match" });
+      }
+      const digits = childOf(layer, "fraction-digits")?.argument;
+      if (fractionDigits === void 0 && digits !== void 0) fractionDigits = Number(digits);
+      for (const statement of childrenOf(layer, "base")) bases.push(statement.argument ?? "");
+    }
+    const bitsLayer = [...resolved.layers].reverse().find((layer) => layer.argument === "bits");
+    const bits = bitsLayer ? childrenOf(bitsLayer, "bit").map((bit, index) => {
+      const explicit = childOf(bit, "position")?.argument;
+      return { name: bit.argument ?? "", position: explicit !== void 0 ? Number(explicit) : index };
+    }) : [];
+    const unionMembers = resolved.unionTypes?.map((member) => ({
+      name: member.name,
+      control: CONTROL_BY_TYPE[member.name] ?? "unsupported",
+      options: optionsFromType(member),
+      unresolved: member.unresolved,
+      restrictions: restrictionsFromType(member)
+    }));
+    return { ranges, lengths, patterns, ...fractionDigits !== void 0 ? { fractionDigits } : {}, bases, bits, ...unionMembers ? { unionMembers } : {} };
+  }
   function optionsFromType(type) {
     const optionList = (keyword) => {
       let baseIndex = -1;
@@ -6224,12 +6254,11 @@ var YangEngine = (() => {
         ...childOf(node, "min-elements")?.argument ? { minElements: Number(childOf(node, "min-elements").argument) } : {},
         ...childOf(node, "max-elements")?.argument ? { maxElements: Number(childOf(node, "max-elements").argument) } : {},
         options: optionsFromType(resolved),
+        restrictions: restrictionsFromType(resolved),
         constraints,
         source: node,
         unresolvedType: resolved.unresolved
       };
-      fieldTypeLayers.set(field, resolved.layers);
-      fieldResolvedTypes.set(field, resolved);
       fields.push(field);
     }
   }
@@ -6289,7 +6318,7 @@ var YangEngine = (() => {
     if (padding === 1 && (alphabet.indexOf(value[value.length - 2] ?? "") & 3) !== 0) return void 0;
     return value.length / 4 * 3 - padding;
   }
-  function inheritedIntervals(layers, keyword, minimum, maximum, decimalDigits) {
+  function inheritedIntervals(expressions, minimum, maximum, decimalDigits) {
     let inheritedMinimum = minimum;
     let inheritedMaximum = maximum;
     const constraints = [];
@@ -6298,8 +6327,7 @@ var YangEngine = (() => {
       if (endpoint === "max") return inheritedMaximum;
       return decimalDigits === void 0 ? /^[+-]?\d+$/.test(endpoint) ? BigInt(endpoint) : void 0 : decimalScaled(endpoint, decimalDigits);
     };
-    for (const layer of [...layers].reverse()) for (const statement of childrenOf(layer, keyword)) {
-      const expression = statement.argument ?? "";
+    for (const expression of expressions) {
       constraints.push({ expression, minimum: inheritedMinimum, maximum: inheritedMaximum });
       const intervals = expression.split("|").map((part) => {
         const [lowText = "", highText] = part.trim().split("..");
@@ -6331,19 +6359,18 @@ var YangEngine = (() => {
   function validateType(field, value, errors) {
     if (field.unresolvedType || field.control === "unsupported" && field.yangType !== "union") return void 0;
     if (field.yangType === "union") {
-      const resolved = fieldResolvedTypes.get(field);
-      if (!resolved?.unionTypes?.length) return void 0;
+      const members = field.restrictions.unionMembers ?? [];
+      if (!members.length) return void 0;
       let indeterminate = false;
-      for (const member of resolved.unionTypes) {
+      for (const member of members) {
         const candidate = {
           ...field,
           yangType: member.name,
-          control: CONTROL_BY_TYPE[member.name] ?? "unsupported",
-          options: optionsFromType(member),
-          unresolvedType: member.unresolved
+          control: member.control,
+          options: member.options,
+          unresolvedType: member.unresolved,
+          restrictions: member.restrictions
         };
-        fieldTypeLayers.set(candidate, member.layers);
-        fieldResolvedTypes.set(candidate, member);
         const branchErrors = [];
         const result = validateType(candidate, value, branchErrors);
         if (result === true) return true;
@@ -6387,7 +6414,7 @@ var YangEngine = (() => {
         errors.push({ code: "type.binary.base64", message: `${field.label} must use canonical base64 encoding.` });
         return false;
       }
-      for (const constraint of inheritedIntervals(fieldTypeLayers.get(field) ?? [], "length", 0n, (1n << 64n) - 1n)) {
+      for (const constraint of inheritedIntervals([...field.restrictions.lengths].reverse(), 0n, (1n << 64n) - 1n)) {
         if (!inIntervals(BigInt(octets), constraint.expression, void 0, [constraint.minimum, constraint.maximum])) {
           errors.push({ code: "constraint.length", message: `${field.label} has a decoded length outside ${constraint.expression} octets.` });
           return false;
@@ -6401,20 +6428,20 @@ var YangEngine = (() => {
         return false;
       }
       const length = BigInt([...value].length);
-      for (const constraint of inheritedIntervals(fieldTypeLayers.get(field) ?? [], "length", 0n, (1n << 64n) - 1n)) {
+      for (const constraint of inheritedIntervals([...field.restrictions.lengths].reverse(), 0n, (1n << 64n) - 1n)) {
         if (!inIntervals(length, constraint.expression, void 0, [constraint.minimum, constraint.maximum])) {
           errors.push({ code: "constraint.length", message: `${field.label} has a length outside ${constraint.expression}.` });
           return false;
         }
       }
       if (typeof value === "string") {
-        for (const layer of fieldTypeLayers.get(field) ?? []) for (const patternStatement of childrenOf(layer, "pattern")) {
-          const invert = childOf(patternStatement, "modifier")?.argument === "invert-match";
-          const pattern = compileXsdPattern(patternStatement.argument ?? "");
+        for (const patternRestriction of field.restrictions.patterns) {
+          const invert = patternRestriction.invertMatch;
+          const pattern = compileXsdPattern(patternRestriction.expression);
           if (!pattern) continue;
           const matched = pattern.test(value);
           if (invert ? matched : !matched) {
-            errors.push({ code: "constraint.pattern", message: invert ? `${field.label} matches the forbidden pattern '${patternStatement.argument ?? ""}'.` : `${field.label} does not match pattern '${patternStatement.argument ?? ""}'.` });
+            errors.push({ code: "constraint.pattern", message: invert ? `${field.label} matches the forbidden pattern '${patternRestriction.expression}'.` : `${field.label} does not match pattern '${patternRestriction.expression}'.` });
             return false;
           }
         }
@@ -6437,7 +6464,7 @@ var YangEngine = (() => {
         errors.push({ code: "constraint.range", message: `${field.label} is outside the ${field.yangType} range.` });
         return false;
       }
-      for (const constraint of inheritedIntervals(fieldTypeLayers.get(field) ?? [], "range", minimum, maximum)) {
+      for (const constraint of inheritedIntervals([...field.restrictions.ranges].reverse(), minimum, maximum)) {
         if (!inIntervals(integer, constraint.expression, void 0, [constraint.minimum, constraint.maximum])) {
           errors.push({ code: "constraint.range", message: `${field.label} must be within ${constraint.expression}.` });
           return false;
@@ -6446,9 +6473,8 @@ var YangEngine = (() => {
       return true;
     }
     if (field.yangType === "decimal64") {
-      const layers = fieldTypeLayers.get(field) ?? [];
-      const digits = Number(layers.map((layer) => childOf(layer, "fraction-digits")?.argument).find(Boolean));
-      if (!Number.isInteger(digits) || digits < 1 || digits > 18 || typeof value !== "string" && typeof value !== "number") {
+      const digits = field.restrictions.fractionDigits;
+      if (digits === void 0 || digits < 1 || digits > 18 || typeof value !== "string" && typeof value !== "number") {
         errors.push({ code: "type.decimal64", message: `${field.label} must be a decimal value.` });
         return false;
       }
@@ -6463,7 +6489,7 @@ var YangEngine = (() => {
       }
       const decimalMinimum = -(1n << 63n);
       const decimalMaximum = (1n << 63n) - 1n;
-      for (const constraint of inheritedIntervals(layers, "range", decimalMinimum, decimalMaximum, digits)) {
+      for (const constraint of inheritedIntervals([...field.restrictions.ranges].reverse(), decimalMinimum, decimalMaximum, digits)) {
         if (!inIntervals(scaled, constraint.expression, digits, [constraint.minimum, constraint.maximum])) {
           errors.push({ code: "constraint.range", message: `${field.label} must be within ${constraint.expression}.` });
           return false;
@@ -6473,8 +6499,6 @@ var YangEngine = (() => {
     }
     return void 0;
   }
-  var fieldTypeLayers = /* @__PURE__ */ new WeakMap();
-  var fieldResolvedTypes = /* @__PURE__ */ new WeakMap();
   function validateFormValue(field, value, crossReference) {
     const errors = [];
     if (absent(value)) {
@@ -6495,7 +6519,6 @@ var YangEngine = (() => {
         if (field.maxElements !== void 0 && value.length > field.maxElements) errors.push({ code: "constraint.max-elements", message: `${field.label} allows at most ${field.maxElements} value(s).` });
         if (new Set(value.map((item) => JSON.stringify(item))).size !== value.length) errors.push({ code: "constraint.unique", message: `${field.label} cannot contain duplicate values.` });
         const single = { ...field, multiple: false };
-        fieldTypeLayers.set(single, fieldTypeLayers.get(field) ?? []);
         let unknown = false;
         for (const item of value) {
           const valid = validateType(single, item, errors);
@@ -6509,8 +6532,8 @@ var YangEngine = (() => {
     }
     const crossReferencePending = validateCrossReference(field, value, errors, crossReference);
     if (result === void 0 && (field.yangType === "leafref" || field.yangType === "identityref") && !crossReferencePending) result = true;
-    const hasPattern = (fieldTypeLayers.get(field) ?? []).some((layer) => childrenOf(layer, "pattern").length > 0);
-    const unsupportedPattern = hasPattern && (field.yangType !== "string" || (fieldTypeLayers.get(field) ?? []).some((layer) => childrenOf(layer, "pattern").some((patternStatement) => !compileXsdPattern(patternStatement.argument ?? ""))));
+    const hasPattern = field.restrictions.patterns.length > 0;
+    const unsupportedPattern = hasPattern && (field.yangType !== "string" || field.restrictions.patterns.some((patternRestriction) => !compileXsdPattern(patternRestriction.expression)));
     const pending = [...field.constraints];
     if (crossReferencePending) {
       pending.push({ kind: "unsupported", expression: `${field.yangType} requires cross-reference/schema validation`, source: field.source });
@@ -6527,6 +6550,24 @@ var YangEngine = (() => {
   function validateCrossReference(field, value, errors, crossReference) {
     if (field.yangType !== "leafref" && field.yangType !== "identityref") return false;
     if (!crossReference) return true;
+    if (field.multiple) {
+      if (!Array.isArray(value)) {
+        errors.push({ code: "type.array", message: `${field.label} must be a list of values.` });
+        return false;
+      }
+      let pending = false;
+      value.forEach((item, index) => {
+        const before = errors.length;
+        const verdict = validateCrossReference({ ...field, multiple: false }, item, errors, crossReference);
+        if (verdict) pending = true;
+        else for (const failure of errors.slice(before)) failure.message = `${failure.message} (entry ${index + 1})`;
+      });
+      return pending;
+    }
+    return validateSingleCrossReference(field, value, errors, crossReference);
+  }
+  function validateSingleCrossReference(field, value, errors, crossReference) {
+    if (field.yangType !== "leafref" && field.yangType !== "identityref") return false;
     if (field.yangType === "leafref") {
       if (!crossReference.anchor) return true;
       const schemaNode = findSchemaNodeByPath(crossReference.schema, field.path);
@@ -6552,7 +6593,7 @@ var YangEngine = (() => {
       }
       return false;
     }
-    const bases = (fieldTypeLayers.get(field) ?? []).flatMap((layer) => childrenOf(layer, "base").map((base) => resolveBaseRef(base.argument ?? "", field.module, crossReference.schema))).filter((base) => Boolean(base));
+    const bases = field.restrictions.bases.map((base) => resolveBaseRef(base, field.module, crossReference.schema)).filter((base) => Boolean(base));
     if (!bases.length) return true;
     const text = typeof value === "string" ? value.trim() : "";
     if (!text) {
@@ -6626,21 +6667,10 @@ var YangEngine = (() => {
     }
   }
   function inheritedFractionDigits(field) {
-    for (const layer of fieldTypeLayers.get(field) ?? []) {
-      const digits = childOf(layer, "fraction-digits")?.argument;
-      if (digits !== void 0) return digits;
-    }
-    return void 0;
+    return field.restrictions.fractionDigits !== void 0 ? String(field.restrictions.fractionDigits) : void 0;
   }
   function sortByBitPosition(field, selected) {
-    const positions = new Map(field.options.map((option, index) => {
-      for (const layer of fieldTypeLayers.get(field) ?? []) {
-        const bit = childrenOf(layer, "bit").find((statement) => statement.argument === option.value);
-        const explicit = bit && childOf(bit, "position")?.argument;
-        if (bit) return [option.value, explicit !== void 0 ? Number(explicit) : index];
-      }
-      return [option.value, index];
-    }));
+    const positions = new Map(field.restrictions.bits.map((bit) => [bit.name, bit.position]));
     return selected.slice().sort((left, right) => (positions.get(left) ?? 0) - (positions.get(right) ?? 0));
   }
 

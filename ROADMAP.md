@@ -78,9 +78,9 @@ Open defects (several return *valid* where the result is unknown — highest pri
 - [x] `unique` resolves each sub-path into (namespace, name) steps from the declaring module's prefix map, traverses direct children only, excludes entries missing a referenced leaf (§7.8.3) and checks every `unique` statement separately (fixed 2026-11-26, `tests/stage7-p0.test.ts`).
 - [x] Validation evaluates the accessible tree, not the raw document (fixed 2026-11-26, `tests/stage7-p1.test.ts`): every matching root is validated through its own `buildAccessibleTree` datastore document — declared defaults are injected (`§7.6.1`), so `must` and leafref resolution see with-defaults content, and `includeState: false` hides `config false` subtrees instead of failing their mandatory nodes; the when-probe now mutates the internal accessible copy, never the caller's document.
 - [ ] Mandatory descendants of absent non-presence containers are not enforced.
-- [ ] `FormField` validation depends on a `WeakMap` keyed by object identity: copies, clones and reactive proxies silently lose range/length/pattern/fraction-digits. Replace with a serializable restriction descriptor.
-- [ ] Form paths carry `[*]` for lists while `findSchemaNodeByPath` does not strip it, so leafref cross-reference checks under lists always stay `pending`.
-- [ ] Leaf-lists of leafref/identityref with a cross-reference context always report an error (the array is treated as a scalar); union leaf-lists are always `indeterminate`.
+- [x] `FormField` validation no longer depends on a `WeakMap` keyed by object identity (fixed 2026-11-26, `tests/stage7-p1.test.ts`): every field carries a serializable `restrictions` descriptor (`ranges`, `lengths`, `patterns` with `invert-match`, `fractionDigits`, `bases`, `bits` with positions, precomputed `unionMembers`), so shallow copies, clones and reactive proxies keep validating range/length/pattern/fraction-digits.
+- [x] `findSchemaNodeByPath` strips one trailing `[*]` predicate per path segment, so form fields under lists reach their schema node and leafref cross-reference checks no longer stay `pending` (fixed 2026-11-26, `tests/stage7-p1.test.ts`).
+- [x] Leaf-lists of leafref/identityref are validated entry by entry against the cross-reference context instead of erroring on the array; union leaf-lists validate through the precomputed union member descriptors (including their restrictions) instead of staying `indeterminate`; per-entry errors carry an `(entry N)` suffix (fixed 2026-11-26, `tests/stage7-p1.test.ts`).
 - [ ] `createFormModel` is a parallel, parse-tree-based path that ignores `uses`, augments, features, deviations and choice exclusivity (mandatory leaves in a case are marked `required` regardless of the active case). Rebuild it on `CompiledYangSchema`.
 - [ ] `evaluateCandidates`: location uses `node.path` (which contains choice/case segments) and the leaf's namespace for every ancestor, so augmented nodes and nodes under choices are never found; no way to target a specific list entry; the caller's document is mutated without `try/finally`; only constraints declared on the node itself are considered, not sibling constraints that depend on it.
 
@@ -111,9 +111,9 @@ New stage collecting the review findings by priority. Each item is closed by a f
 
 **P1 — correctness of secondary paths**
 - [x] Parser: string tokens vs `;`/`{`, escapes, indentation stripping, empty arguments (Stage 0) — closed 2026-11-26 by regressions in `tests/stage7-p1.test.ts` against RFC 7950 §6.1.3: quoted arguments compare token kinds; escapes `\n \t \" \\` transformed, other backslashes rejected; multi-line double-quoted strings strip trailing whitespace and indentation up to the opening quote's column (tabs = 8 spaces); empty-string arguments kept distinguishable; adjacent quoted strings without `+` rejected while unquoted word lists (`key a b c`) still join with spaces; end-of-input errors report the end of the source; statement nesting capped at depth 200.
-- [ ] Submodule compilation context (Stage 2).
-- [ ] Validate on the accessible tree (defaults, config/state) (Stage 5).
-- [ ] `FormField` restriction descriptor; `[*]` path mismatch; leaf-list cross-references (Stage 5).
+- [x] Submodule compilation context (Stage 2) — closed 2026-11-26, see Stage 2.
+- [x] Validate on the accessible tree (defaults, config/state) (Stage 5) — closed 2026-11-26, see Stage 5.
+- [x] `FormField` restriction descriptor; `[*]` path mismatch; leaf-list cross-references (Stage 5) — closed 2026-11-26 by regressions in `tests/stage7-p1.test.ts` against RFC 7950 §6.2.1/§9.9/§9.10: fields carry a serializable `restrictions` descriptor so copies and proxies keep range/length/pattern/fraction-digits (a `WeakMap` lost them); `findSchemaNodeByPath` strips `[*]` per segment; leaf-lists of leafref/identityref validate entry by entry with `(entry N)` errors and union leaf-lists pick up member restrictions.
 - [ ] `evaluateCandidates` location, entry targeting and non-mutation (Stage 5).
 - [ ] `refine` `mandatory`; `augment` under `uses`; typedef/grouping scoping and index (Stage 2).
 - [ ] RESTCONF loader paths and submodule lists (Stage 6).
@@ -144,9 +144,9 @@ Static-export constraints that shape the design (verify against the current Next
 - `basePath`/`assetPrefix` must be configurable for sites served under a sub-path of the device or gateway.
 
 **Dependencies on earlier stages (blockers).** Do not build the adapters before these Stage 7 items close, because React state management triggers exactly the failure modes they describe:
-- [ ] Serializable `FormField` restriction descriptor (P1): React state, props and proxies copy objects, and the current `WeakMap` silently drops restrictions.
-- [ ] Validation and candidate evaluation on the accessible tree without mutating the caller's document (P0/P1).
-- [ ] Leafref via typedef, validation under `choice`/`case`, `unique`, own-prefix XPath, cross-module groupings (P0).
+- [x] Serializable `FormField` restriction descriptor (P1) — closed 2026-11-26, see Stage 5.
+- [ ] Validation and candidate evaluation on the accessible tree without mutating the caller's document (P0/P1): validation is done (`validateDataTree` via `buildAccessibleTree`, 2026-11-26); candidate evaluation still pending (`evaluateCandidates`).
+- [x] Leafref via typedef, validation under `choice`/`case`, `unique`, own-prefix XPath, cross-module groupings (P0) — all closed 2026-11-26, see the per-stage items.
 - [ ] RESTCONF loader fixes: `/data/` URL shape, nested submodule lists, RFC 7895 `schema`, `AbortSignal` (P1).
 - [ ] Curated named exports and `sideEffects`-safe entry points (P3), so the Next.js bundle only contains what the page imports.
 - [ ] Budgets and worker-based cancellation for untrusted modules from a device (P2).

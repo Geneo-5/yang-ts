@@ -181,10 +181,12 @@ export function schemaNodeForElement(schema: CompiledYangSchema, element: Elemen
 
 /**
  * Resolve a bare schema path ("/top/list/leaf") to its compiled schema node.
- * Choice and case names are transparent to schema paths.
+ * Choice and case names are transparent to schema paths, and list segments
+ * tolerate the form-model's `[*]` (or `[key='v']`) predicate suffixes.
  */
 export function findSchemaNodeByPath(schema: CompiledYangSchema, path: string): CompiledSchemaNode | undefined {
-  const parts = path.split("/").filter(Boolean);
+  const parts = path.split("/").filter(Boolean)
+    .map(part => part.replace(/\[[^\]]*\]$/, ""));
   const usable = (nodes: readonly CompiledSchemaNode[]): CompiledSchemaNode[] =>
     nodes.flatMap(node => node.kind === "choice"
       ? usable(node.children)

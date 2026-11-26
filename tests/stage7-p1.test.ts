@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  childOf, compileYangModules, moduleNamespacePrefixes, parseYang, resolveModuleSet, validateDataTree, YangSyntaxError,
+  canonicalFormOf, childOf, compileYangModules, createFormModel, moduleNamespacePrefixes,
+  parseYang, resolveModuleSet, validateFormValue, validateDataTree, YangSyntaxError,
 } from "../src/index.js";
 import type { CompiledSchemaNode, CompiledYangSchema } from "../src/index.js";
 import { DOMParser } from "@xmldom/xmldom";
@@ -256,5 +257,114 @@ describe("Stage 7 P1 – validation over the accessible tree", () => {
     validateDataTree(schema, document);
     const after = Array.from(document.documentElement!.childNodes).map(child => child.nodeName).sort().join(",");
     expect(after).toBe(before);
+  });
+});
+
+describe("Stage 7 P1 – form restrictions descriptor and cross references", () => {
+  const compileOne = async (text: string) => {
+    const resolved = await resolveModuleSet([parseYang(text)], { async loadModule() { return undefined; } });
+    const schema = compileYangModules(resolved);
+    expect(schema.diagnostics).toEqual([]);
+    return schema;
+  };
+
+  it("keeps type restrictions through copied fields via a serializable descriptor", async () => {
+    const schema = await compileOne(`module forms {
+      namespace "urn:forms"; prefix f;
+      container box {
+        leaf code { type int32 { range "0..100"; } }
+        leaf code-name { type string { length "1..3"; pattern "[a-z]+"; } }
+        leaf precision { type decimal64 { fraction-digits 1; } }
+      }
+    }`);
+    const model = createFormModel(parseYang(`module forms {
+      namespace "urn:forms"; prefix f;
+      container box {
+        leaf code { type int32 { range "0..100"; } }
+        leaf code-name { type string { length "1..3"; pattern "[a-z]+"; } }
+        leaf precision { type decimal64 { fraction-digits 1; } }
+      }
+    }`));
+    const box = model.fields.filter(field => field.path.startsWith("/box/"));
+    expect(box.length).toBe(3);
+    const [code, codeName, precision] = box;
+    expect(() => JSON.stringify(code.restrictions)).not.toThrow();
+    // A shallow copy must not silently lose range/length/pattern/digits.
+    expect(validateFormValue({ ...code! }, 300).status).toBe("invalid");
+    expect(validateFormValue({ ...codeName! }, "abcd").status).toBe("invalid");
+    expect(validateFormValue({ ...codeName! }, "ABC").status).toBe("invalid");
+    expect(canonicalFormOf({ ...precision! }, "3.1")).toBe("3.1");
+    void schema;
+  });
+
+  it("strips [*] from form paths so list-entry leafrefs cross-reference", async () => {
+    const source = `module forms {
+      namespace "urn:forms"; prefix f;
+      container devices {
+        list device {
+          key name;
+          leaf name { type string; }
+          leaf peer { type leafref { path "../name"; } }
+        }
+      }
+    }`;
+    const resolved = await resolveModuleSet([parseYang(source)], { async loadModule() { return undefined; } });
+    const schema = compileYangModules(resolved);
+    const model = createFormModel(parseYang(source));
+    const peer = model.fields.find(field => field.path === "/devices/device[*]/peer");
+    expect(peer).toBeDefined();
+    const document = new DOMParser().parseFromString(
+      `<devices xmlns="urn:forms"><device><name>a</name></device></devices>`, "application/xml");
+    // Leafref paths evaluate from the field's own node, so probe with a
+    // placeholder `peer` element inside the list entry it would occupy.
+    const entry = Array.from(document.getElementsByTagNameNS("urn:forms", "device"))[0]!;
+    const anchor = document.createElement("peer");
+    entry.appendChild(anchor);
+    const context = { schema, anchor };
+    expect(validateFormValue(peer!, "a", context).status).toBe("valid");
+    const dangling = validateFormValue(peer!, "zz", context);
+    expect(dangling.status).toBe("invalid");
+    expect(dangling.errors.map(error => error.code)).toEqual(["constraint.leafref"]);
+  });
+
+  it("validates leaf-list cross-reference values entry by entry", async () => {
+    const source = `module forms {
+      namespace "urn:forms"; prefix f;
+      container devices {
+        list device {
+          key name;
+          leaf name { type string; }
+          leaf-list peers { type leafref { path "/f:devices/device/name"; } }
+        }
+      }
+    }`;
+    const resolved = await resolveModuleSet([parseYang(source)], { async loadModule() { return undefined; } });
+    const schema = compileYangModules(resolved);
+    const model = createFormModel(parseYang(source));
+    const peers = model.fields.find(field => field.path === "/devices/device[*]/peers");
+    expect(peers).toBeDefined();
+    const document = new DOMParser().parseFromString(
+      `<devices xmlns="urn:forms"><device><name>a</name><peers>a</peers></device></devices>`, "application/xml");
+    const anchor = Array.from(document.getElementsByTagNameNS("urn:forms", "device"))[0]!;
+    const context = { schema, anchor };
+    expect(validateFormValue(peers!, ["a"], context).status).toBe("valid");
+    const dangling = validateFormValue(peers!, ["a", "zz"], context);
+    expect(dangling.status).toBe("invalid");
+    expect(dangling.errors.map(error => error.code)).toEqual(["constraint.leafref"]);
+  });
+
+  it("validates union leaf-lists member by member instead of staying indeterminate", async () => {
+    const source = `module forms {
+      namespace "urn:forms"; prefix f;
+      container box {
+        leaf-list mixed { type union { type int32; type string { length "1..2"; } } }
+      }
+    }`;
+    const model = createFormModel(parseYang(source));
+    const mixed = model.fields.find(field => field.path === "/box/mixed")!;
+    expect(mixed.restrictions.unionMembers?.length).toBe(2);
+    expect(validateFormValue(mixed, ["7", "ab"])).toMatchObject({ status: "valid", errors: [] });
+    const rejected = validateFormValue(mixed, ["toolong"]);
+    expect(rejected.status).toBe("invalid");
   });
 });
