@@ -13,7 +13,7 @@ npm test
 npm audit --omit=dev
 ```
 
-Running `npm test` before the first build fails in the bundle-smoke suite by design; the other suites do not need `dist/`.
+Running `npm test` works on a clean checkout: a `pretest` hook builds `dist/` first. `tests/real-browser.test.ts` additionally needs `npx playwright install chromium` (dev-time only) and announces its own skip when it is absent.
 
 Coverage as of 2026-11-26: parser, module resolver, compiler, type boundaries/canonical forms, XPath adapter and function library, accessible trees, constraints, data-tree validation, candidates, cross-references, the RESTCONF loader and the browser-readiness source audit all have test files. Full statement validation remains uncovered. A review of the sources (see `ROADMAP.md`, Stage 7) found defects in several of these layers; the corresponding cases are not yet written, so a green run does not mean the listed defects are absent.
 
@@ -60,7 +60,7 @@ Maintain a matrix with four states: **implemented**, **partial**, **unsupported*
 Every release follows the same gates, in order; a release with any red gate does not ship.
 
 1. `npm run build` — `tsc` must be clean; `dist/index.js` and `dist/index.d.ts` are the only shipped artifacts (the build also regenerates `examples/standalone.html`).
-2. `npm test` — the full suite (parser, module-set with budgets/cancellation, compiler, boundary and canonical corpora, XPath/constraints, validation, candidates, cross-references, RESTCONF adapter, browser-readiness audit, bundle smoke). The audit and the smoke suite now run against the freshly built `dist`.
+2. `npm test` — the full suite (parser, module-set with budgets/cancellation, compiler, boundary and canonical corpora, XPath/constraints + differential fuzz, validation, candidates, cross-references, RESTCONF adapter, public API, browser-readiness audit, real browser, bundle smoke). The pretest build keeps the audit and the smoke suite against the freshly built `dist`.
 3. `npm audit --omit=dev` — zero known vulnerabilities in runtime dependencies.
 4. Update `CONFORMANCE.md` rows for anything the release changes (a row without its covering test regresses to `untested`; a row with an open defect stays `partial`), and `ROADMAP.md` for stage status.
 5. Visual check: serve the repo root over localhost (e.g. `python3 -m http.server`) and open `examples/browser-usage.html` in a current browser; the oven RPC preview must render and validate through `dist/index.js`. This is the manual leg of browser testing; until a real-browser suite exists it is the only one.

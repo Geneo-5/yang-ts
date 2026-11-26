@@ -16,11 +16,12 @@ A stage returns to **done** only when every defect listed under it is closed by 
 - Fixtures: Sysrepo `oven.yang`; RFC 8343 interfaces, RFC 8344 IP augment and import closure; IETF interface extension drafts with `when` over `if:type`.
 
 Open defects:
-- [ ] A quoted string whose value is exactly `;` or `{` terminates the argument/statement (the parser compares token values, not `kind`), so `default ";";` fails to parse.
-- [ ] Double-quoted escapes: the backslash is dropped, so `\n` and `\t` become `n` and `t` (RFC 7950 §6.1.3). Unknown escapes should be errors.
-- [ ] Multi-line double-quoted strings keep file indentation and trailing whitespace; RFC 7950 §6.1.3 requires stripping both. This pollutes form `help` text.
-- [ ] An empty-string argument (`default "";`) is dropped and is indistinguishable from "no argument"; several arguments without `+` are silently joined instead of rejected.
-- [ ] Error locations: EOF errors report line 1 / the keyword instead of the end of input. No maximum nesting depth (recursive descent).
+Closed 2026-11-26 by the Stage 7 P1 parser item (regressions in `tests/stage7-p1.test.ts`):
+- [x] Quoted strings are compared by token kind, so a literal `";"` or `"{"` no longer terminates the statement.
+- [x] Double-quoted escapes `\n \t \" \\` transform per RFC 7950 section 6.1.3 and unknown escapes are rejected.
+- [x] Multi-line double-quoted strings strip trailing whitespace and indentation up to the opening quote's column.
+- [x] Empty-string arguments stay distinguishable; adjacent quoted strings without `+` are rejected.
+- [x] EOF errors report the end of the source; parser nesting is capped at depth 200.
 
 ## Stage 1 — Module set and dependency resolution (done, defects open)
 
@@ -29,8 +30,8 @@ Open defects:
 
 Open defects:
 - [x] `ModuleSetBudget.maxDepth` is enforced on import and include chains since 2026-11-26 (single `budget-exceeded` diagnostic, refusing mode), regression-tested in `tests/stage7-p0.test.ts`.
-- [ ] Deadline and abort are only checked before each load; synchronous parsing of a large document cannot be interrupted.
-- [ ] Several revisions of one module can end up in the set and then compile as duplicate roots.
+- [x] Several revisions of one module are diagnosed instead of compiling as duplicate roots: `resolveModuleSet` selects the newest unpinned revision and reports `ambiguous-revision` for duplicate source revisions (`tests/module-set.test.ts` §51, closed 2026-11-26).
+- [ ] Deadline and abort are only checked before each load; synchronous parsing of a large document cannot be interrupted (worker isolation remains the host's responsibility — see the P2 boundaries).
 
 ## Stage 2 — Semantic compiler and effective schema (partial)
 
@@ -52,7 +53,7 @@ Open defects:
 - [x] `pattern` with `modifier invert-match` inverts only its own pattern in the conjunction (fixed 2026-11-26, `tests/stage7-p0.test.ts`).
 - [x] Patterns outside the proven-safe XSD/JS subset stay `pending` (fixed 2026-11-26): divergent escapes (`\d \D \w \W \s \S \p \P \i \c`), backreferences, `(?` groups, class subtraction, `[]` forms and out-of-class `^`/`$` never compile; shared logic lives in `src/types/xsd-pattern.ts` (test: `tests/stage7-p0.test.ts`).
 - [ ] Unparsable `range`/`length` endpoints are treated as unbounded (constraint silently satisfied).
-- [ ] Type and builtin-name logic is still duplicated (three builtin lists); extract a shared `types/` module. The pattern compiler is now shared (`src/types/xsd-pattern.ts`, first `types/` module).
+- [x] Type and builtin-name logic is single-sourced: `src/types/builtins.ts` owns `BUILTIN_TYPES` and `RESTRICTION_BUILTINS` (RFC 7950 §9/§9.2.1), locked by `tests/types-builtins.test.ts` (2026-11-26); the pattern compiler remains shared in `src/types/xsd-pattern.ts`.
 - [ ] Canonical forms for identityref and instance-identifier are not represented.
 
 ## Stage 4 — XPath 1.0 and YANG evaluation context (partial)
@@ -64,8 +65,8 @@ Open defects:
 - [x] Identityref values are resolved as `module-name:identity`; XML instances use arbitrary prefixes bound by namespace, so `ianaift:ethernetCsmacd` does not match (closed 2026-11-26, `tests/stage7-p1.test.ts`): `derived-from`/`derived-from-or-self` iterate the node-set and qualify each member's value through its own in-scope `xmlns` bindings (`xmlNamespaceForPrefix`), and form-level identityref checks resolve prefixes through the anchor element — a prefix bound to a namespace outside the schema stays invalid.
 - [x] `enum-value` uses a schema-wide name→value table and throws on ambiguous names instead of resolving the argument node's own type (closed 2026-11-26, `tests/stage7-p1.test.ts`): RFC 7950 §10.5.1 semantics — the first node-set member's own enumeration type (through the typedef chain) decides the integer value; empty sets and non-enum nodes return NaN instead of consulting schema-wide names.
 - [x] `buildAccessibleTree`: the datastore context node is now the datastore document with the data root as document element (RFC 6.4.1, fixed 2026-11-26), so absolute YANG paths resolve. Wrapper documents and inactive-case defaults closed 2026-11-26, `tests/stage7-p1.test.ts`: a wrapper document element (e.g. NETCONF `<data>`) is accepted and one accessible root per matching child — including each entry of a top-level list — is copied under a synthetic datastore element standing in for the §6.4.1 virtual root, so relative paths span all roots and cross-root references reach sibling roots (absolute paths still anchor at the document node, i.e. above the wrapper); case defaults follow RFC 7950 §7.9.3 — a case's defaults apply when the case itself is present or it is the choice's `default` case with nothing else present, so inactive cases never inject.
-- [ ] Module-level compiled-expression caches are keyed without schema identity and grow without bound.
-- [ ] `qualifyYangXPathNodeTests` is a heuristic token scanner; it needs a differential/fuzz corpus against the evaluator's own parser.
+- [x] Compiled-expression caches are schema-scoped (`WeakMap<CompiledYangSchema, …>`) and the pattern text cache is bounded (cleared past 2048 entries), regression-tested by the cross-schema collision case in `tests/module-budgets.test.ts` (2026-11-26).
+- [x] `qualifyYangXPathNodeTests` has a seeded differential/fuzz corpus (`tests/differential.test.ts`, 2026-11-26): pure-prefix-insertion invariant, bare-vs-prefixed spelling agreement over 300 generated expressions, curated tricky tokens, mutation-tested; see the Stage 7 P2 item.
 - [ ] `instance-identifier` `deref` and metadata annotations remain unsupported (see `CONFORMANCE.md`).
 
 ## Stage 5 — Validation and conditional UI introspection (partial)
@@ -90,11 +91,11 @@ Delivered: browser-readiness source audit, conformance matrix and versioning pol
 
 Open defects:
 - [x] Real-browser run in place (P3, 2026-11-26): `tests/real-browser.test.ts` drives `examples/standalone.html` in headless Chromium (Playwright, devDependency only) so the bundled engine runs with the browser's own DOM. The Node suites keep `@xmldom/xmldom` for the DOM.
-- [ ] `npm test` fails on a clean checkout (bundle-smoke requires `dist/`), while README and `TESTING.md` order `npm test` before `npm run build`.
-- [ ] Tests are not type-checked (`tsconfig` includes only `src`).
+- [x] `npm test` is self-sufficient via a `pretest` build (closed 2026-11-26, `package.json`); README and `TESTING.md` updated to match.
+- [x] Tests are type-checked: `npm run typecheck` runs both `tsconfig.json` (src) and `tsconfig.tests.json` (src + tests, `@types/node`; closed 2026-11-26, latent type errors fixed in the same pass).
 - [x] RESTCONF loader requests the library under the RFC 8040 `/data/` subtree by default (absolute URLs and pre-qualified `data/`/`operations/` resources pass through), reads the RFC 8525 nested `submodule` lists (with a fallback to flat rows for RFC 7895 payloads), accepts the RFC 7895 `schema` leaf as a source URL before the `yang?module=` probe, and forwards an `AbortSignal` to every request (`yangLibraryInventory`, fixed 2026-11-26, `tests/restconf-loader.test.ts`).
-- [ ] Public surface: `export *` makes every helper semver-locked; `capabilities` still reports `xpath: "planned"` and `moduleResolution: "planned"`.
-- [ ] Documentation drift: README ("parser foundation stage"), `ARCHITECTURE.md` ("zero dependencies", planned `types/`, `features/`, `ui/` layout that does not exist) and `CONFORMANCE.md` (e.g. resource budgets "implemented" while `maxDepth` is unenforced) disagree with the code and with each other.
+- [x] Public surface curated (closed 2026-11-26, `tests/public-api.test.ts`): `src/index.ts` re-exports exactly the documented API with honest `capabilities` values; internal helpers live behind `src/internal.ts`.
+- [x] Documentation drift removed (2026-11-26): README's Status and form-model claims, `ARCHITECTURE.md`'s layout and debt list, `CONFORMANCE.md` rows and this file now agree with the code; the resource-budgets row states the enforced `maxDepth`.
 
 ## Stage 7 — Correctness and hardening debt (open)
 
@@ -126,10 +127,10 @@ New stage collecting the review findings by priority. Each item is closed by a f
 - [x] Differential testing against libyang (development only) and an XPath-rewrite fuzz corpus — closed 2026-11-26 for the in-repo half, by `tests/differential.test.ts`: a seeded (mulberry32, reproducible) fuzz corpus of 300 grammar-generated expressions, each evaluated in two spellings — unprefixed through `compileYangXPath` and explicitly `if:`-prefixed through the imported-namespace map — asserting the rewrite is a pure prefix insertion (stripping the auto prefix restores the source byte for byte), both spellings compile, and every accessor (select/number/string/boolean) agrees regardless of spelling; a curated corpus asserts the nearest WRONG rewrite characters (qualifying `string`, `current`, functions, axes, operators `div`/`mod`/`and`/`or`, `@`) never appear, and quoted literals containing the reserved auto prefix force it aside without breaking evaluation. The corpus was exercised against a mutation (dropping the operator guard) and fails as intended. The libyang half stays deferred: yanglint/libyang is not available in the development environment and is never a browser runtime option (see `ARCHITECTURE.md`); when a development CI can install it, `TESTING.md` §9 keeps the triage policy (differences resolved against RFC semantics).
 
 **P3 — project hygiene**
-- [ ] Align `capabilities`, README, `ARCHITECTURE.md`, `CONFORMANCE.md` and this file; make `CONFORMANCE.md` rows downgrade to *partial* until their stage defects close.
+- [x] Documentation aligned (2026-11-26): README's Status and form-model claims, `ARCHITECTURE.md`'s module layout and debt list, `TESTING.md` and this file agree with the code; `CONFORMANCE.md` keeps every row with an open stage defect at *partial* (resource budgets, groupings/uses, deviations, identity/feature evaluation, union, leafref/identityref and instance-identifier integrity, canonical forms, structural checks, forms, instance-identifier deref) with the concrete open defect named in its stage section.
 - [x] Curate `src/index.ts` into named exports; move helpers to an internal entry point — closed 2026-11-26 by `tests/public-api.test.ts` (red first: the barrel exported everything). The published surface is exactly the documented API (core pipeline, form helper, data-tree validation, the network-free RESTCONF helpers and their types) with `capabilities` reporting honest values (`parser`/`moduleResolution`/`xpath` implemented, `validation` partial); internal helpers (XPath rewrite/tooling, AST walkers, YANG Library inventory, the built-in type registry) live in `src/internal.ts` for tests and deep imports, and the smoke suite pins that `dist/index.d.ts` still names everything the examples import.
 - [x] Real-browser test run; type-check tests; make `npm test` self-sufficient; add `prepack` — closed 2026-11-26. `npm run typecheck` runs both `tsc --noEmit` sources and `tsconfig.tests.json` (src + tests, `@types/node`, one documented xmldom→dom cast in `tests/dom.ts`); a sweep fixed the latent type errors it exposed (hunt-down xmldom typing bridges in every suite, `loadModule` missing on a loader stub, vitest-4 incompatible `expect(value, message)`/`toMatch` message arguments). `npm test` is self-sufficient through a `pretest` build, and `prepack` builds before publishing. The real-browser run is `tests/real-browser.test.ts`: Playwright headless Chromium loads `examples/standalone.html` over a local server (page renders the oven form without page errors; the engine compiles and validates a data tree inside the page using the browser's own DOMParser), and the suite announces a clear skip when `playwright install chromium` was not run on a dev machine. Playwright is a devDependency only, never a runtime dependency.
-- [ ] Extract shared `types/` code and remove the duplicated pattern/builtin logic.
+- [x] Shared `types/` code extracted and the duplicated builtin logic removed (closed 2026-11-26 — `src/types/builtins.ts`, `tests/types-builtins.test.ts`, first committed in the same review; `src/types/xsd-pattern.ts` was already shared).
 
 ## Stage 8 — Next.js static-export integration (planned)
 
@@ -148,8 +149,8 @@ Static-export constraints that shape the design (verify against the current Next
 - [x] Validation and candidate evaluation on the accessible tree without mutating the caller's document (P0/P1) — both closed 2026-11-26, see Stage 5.
 - [x] Leafref via typedef, validation under `choice`/`case`, `unique`, own-prefix XPath, cross-module groupings (P0) — all closed 2026-11-26, see the per-stage items.
 - [x] RESTCONF loader fixes: `/data/` URL shape, nested submodule lists, RFC 7895 `schema`, `AbortSignal` (P1) — closed 2026-11-26, see Stage 6.
-- [ ] Curated named exports and `sideEffects`-safe entry points (P3), so the Next.js bundle only contains what the page imports.
-- [ ] Budgets and worker-based cancellation for untrusted modules from a device (P2).
+- [x] Curated named exports with `sideEffects: false` (P3, closed 2026-11-26 — `tests/public-api.test.ts`), so the Next.js bundle only contains what the page imports.
+- [x] Budgets beyond loading plus cooperative cancellation for untrusted modules (P2, closed 2026-11-26 — `tests/module-budgets.test.ts`); a single XPath cannot be interrupted synchronously — long-running stores need the host's worker isolation (documented boundary).
 
 **8.1 Build-time precompilation (optional, recommended).**
 - [ ] Serializable schema: a stable JSON form of `CompiledYangSchema` (no `YangStatement` object graph or DOM references) with a version number, so compilation can happen at build time and the browser only loads the result.

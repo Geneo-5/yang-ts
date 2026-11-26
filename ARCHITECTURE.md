@@ -27,7 +27,7 @@ scripts/              build-example.mjs (bundles examples/standalone.html)
 - `validation/`: `validateDataTree` (keys, unique, mandatory, cardinality, leafref, instance-identifier, `must`/`when`) and `evaluateCandidates` (finite-domain candidate evaluation with reasons).
 - `forms/`: `createFormModel`, `validateFormValue`, `canonicalFormOf`.
 - `restconf/`: request/path builders (RFC 8040, RFC 8527 NMDA) and an optional YANG Library module loader. Neither is part of the compiler core; nothing in the package sends a request except through a caller-supplied `fetch`.
-- Not built as separate packages (earlier plans listed `types/`, `features/`, `constraints/`, `ui/`): type logic lives inside `compiler.ts`, `forms/form-model.ts` and `xpath/yang-functions.ts`; feature evaluation lives inside `compiler.ts`; constraints are in `xpath/` and `validation/`; there is no `ui/` layer beyond `forms/` and `validation/candidates.ts`.
+- `types/`: `builtins.ts` (single-sourced RFC 7950 §9 built-in registry and restriction compatibility) and `xsd-pattern.ts` (shared pattern translation and the untrusted-pattern guards). Feature evaluation stays in `compiler.ts`; constraints are in `xpath/` and `validation/`; there is no `ui/` layer beyond `forms/` and `validation/candidates.ts`.
 
 ## Planned optional entry points (ROADMAP Stage 8)
 
@@ -43,11 +43,9 @@ Static export has no server runtime, so the RESTCONF API is cross-origin unless 
 ## Known architectural debt
 
 - **Two schema stacks.** `createFormModel` walks the parsed statement tree with its own type resolution, while everything else uses `CompiledYangSchema`. The form path ignores `uses`, augments, features, deviations and choice exclusivity, and its `[*]` list paths do not match schema paths. Target: rebuild forms on the compiled schema.
-- **Duplicated type/pattern logic.** Pattern compilation (`compilePattern`, `compileXsdPattern`), the builtin type lists and typedef lookup exist in several files. Target: a shared `types/` module (also the right place for XSD-to-JS pattern translation and canonical forms).
-- **Identity-keyed side tables.** Form field restrictions live in `WeakMap`s keyed by object identity; copies, clones and reactive proxies of a `FormField` lose them. Target: a serializable restriction descriptor on the field.
-- **Module-level caches.** Compiled-XPath and pattern caches are global, keyed without schema identity, and unbounded. Target: schema-scoped `WeakMap` caches.
-- **Public surface.** `export *` exposes every helper and makes it semver-locked. Target: curated named exports; internals behind a separate entry point.
-- **Raw-document validation.** Validation and candidate evaluation run over the raw instance document instead of the RFC 7950 accessible tree.
+- **Range/length endpoints that do not parse.** Unparsable `range`/`length` endpoints are treated as unbounded (constraint silently satisfied) instead of failing closed.
+
+Closed in the 2026-11-26 review: form restrictions are now a serializable field descriptor (no identity-keyed side tables), compiled-XPath caches are schema-scoped and the pattern text cache is bounded, the public barrel is curated (`src/index.ts` vs `src/internal.ts`), and validation/candidate evaluation run on the accessible tree. Type logic was single-sourced under `types/`; differential testing of the XPath rewrite runs as a seeded fuzz corpus.
 
 ## RFC 7950 scope, staged
 
