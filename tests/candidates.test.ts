@@ -2,6 +2,7 @@ import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
 import { compileYangModules, evaluateCandidates, parseYang, resolveModuleSet } from "../src/index.js";
 import { finiteDomainOf } from "../src/internal.js";
+import { CompiledSchemaNode, CompiledYangSchema } from "../src/index.js";
 import { parseXml } from "./dom.js";
 
 const instance = (xml: string) => parseXml(xml);
@@ -174,5 +175,56 @@ describe("candidate probing on the accessible tree", () => {
     const alpha = result.candidates.find(candidate => candidate.value === "alpha")!;
     expect(alpha.status).toBe("allowed");
     expect(alpha.reasons).toEqual([]);
+  });
+});
+
+
+/** Stage 7b P1 (ROADMAP §48 remainder): if-feature on enum/bit values (RFC 7950 §9.6.4/§9.7.4). */
+describe("feature-gated enum and bit values", () => {
+  const compileWith = async (text: string, features?: string[]) =>
+    compileYangModules(
+      await resolveModuleSet([parseYang(text)], { async loadModule() { return undefined; } }),
+      { ...(features ? { enabledFeatures: new Set(features) } : {}) },
+    );
+
+  const schemaModule = `module gated-values {
+    namespace "urn:gv"; prefix v;
+    feature exotic;
+    container rack {
+      leaf mode {
+        type enumeration { enum auto; enum legacy { if-feature exotic; } enum turbo; }
+      }
+      leaf mask {
+        type bits { bit plain { position 0; } bit fancy { position 1; if-feature exotic; } }
+      }
+    }
+  }`;
+
+  it("drops enum values whose if-feature is disabled", async () => {
+    const schema = await compileWith(schemaModule);
+    expect(schema.diagnostics).toEqual([]);
+    const leaf = schema.roots.find(node => node.name === "rack")!.children.find(node => node.name === "mode")!;
+    // Pre-fix the gated `legacy` value stayed a candidate although `exotic`
+    // is disabled.
+    expect(finiteDomainOf(leaf).values).toEqual(["auto", "turbo"]);
+  });
+
+  it("keeps enum values whose if-feature is enabled", async () => {
+    const schema = await compileWith(schemaModule, ["gated-values:exotic"]);
+    const leaf = schema.roots.find(node => node.name === "rack")!.children.find(node => node.name === "mode")!;
+    expect(finiteDomainOf(leaf).values).toEqual(["auto", "legacy", "turbo"]);
+  });
+
+  it("drops bit values whose if-feature is disabled and keeps positions", async () => {
+    const schema = await compileWith(schemaModule);
+    const leaf = schema.roots.find(node => node.name === "rack")!.children.find(node => node.name === "mask")!;
+    const domain = finiteDomainOf(leaf);
+    // Pre-fix the gated `fancy` bit stayed in the domain.
+    expect(domain.values).toEqual(["plain"]);
+    expect(domain.positions?.get("plain")).toBe(0);
+    // Candidate probing only offers the surviving bits.
+    const result = evaluateCandidates(schema, instance(
+      `<rack xmlns="urn:gv"><mask>plain</mask></rack>`), "/rack/mask");
+    expect(result.candidates.map(candidate => candidate.value)).toEqual(["plain"]);
   });
 });

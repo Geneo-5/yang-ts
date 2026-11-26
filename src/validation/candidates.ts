@@ -76,9 +76,12 @@ export function finiteDomainOf(node: CompiledSchemaNode): FiniteDomain {
     }
     return values;
   };
-  const enums = values("enumeration", "enum");
+  // RFC 7950 §9.6.4/§9.7.4: values whose `if-feature` is disabled left the
+  // effective schema at compile time; they are not candidate/option values.
+  const disabledValues = new Set(node.featureDisabledValues ?? []);
+  const enums = values("enumeration", "enum").filter(value => !disabledValues.has(value));
   if (enums.length) return { domain: "enum", values: enums };
-  const bits = values("bits", "bit");
+  const bits = values("bits", "bit").filter(value => !disabledValues.has(value));
   if (bits.length) {
     // RFC 7950 §9.7.4: a bit without an explicit `position` is one greater
     // than its predecessor (0 for the first); canonical form joins selections

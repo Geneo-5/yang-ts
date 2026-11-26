@@ -4695,6 +4695,35 @@ var YangEngine = (() => {
       };
     };
     for (const module of modules) for (const source of [module, ...submodulesFor(module)]) validateCardinality(source);
+    const featureDisabledValuesOf = (declaring, typeStatement, resolvedType) => {
+      const documentOfName = (name2) => modules.find((module) => module.argument === name2) ?? submodules.find((submodule) => submodule.argument === name2) ?? declaring;
+      const layers = [
+        { statement: typeStatement, document: declaring },
+        ...resolvedType.chain.map((typedef, index) => ({
+          statement: childOf(typedef, "type"),
+          document: documentOfName(resolvedType.chainModules?.[index] ?? declaring.argument ?? "")
+        }))
+      ];
+      const kind = resolvedType.name === "enumeration" ? "enum" : "bit";
+      let baseIndex = -1;
+      for (let index = layers.length - 1; index >= 0; index--) {
+        if (layers[index].statement?.argument === resolvedType.name) {
+          baseIndex = index;
+          break;
+        }
+      }
+      if (baseIndex < 0) return [];
+      const disabled = [];
+      for (const value of childrenOf(layers[baseIndex].statement, kind)) {
+        const requirements = childrenOf(value, "if-feature").map((feature) => ({
+          module: layers[baseIndex].document.argument ?? "",
+          expression: feature.argument ?? "",
+          source: feature
+        }));
+        if (requirements.length && !featureRequirementsEnabled(requirements)) disabled.push(value.argument ?? "");
+      }
+      return disabled;
+    };
     const makeNode = (statement, owner, parentPath, inheritedConfig, groupingStack = [], inheritedWhen = [], inheritedFeatures = [], instantiatingModule = owner, sourceModule = owner) => {
       expandedNodes++;
       const maxSchemaNodes = options.budget?.maxSchemaNodes;
@@ -4845,6 +4874,10 @@ var YangEngine = (() => {
         source: statement,
         children: []
       };
+      if (resolvedType && (resolvedType.name === "enumeration" || resolvedType.name === "bits")) {
+        const gated = featureDisabledValuesOf(sourceModule, typeStatement, resolvedType);
+        if (gated.length) node.featureDisabledValues = gated;
+      }
       const kindScopesSymbols = ["container", "list", "grouping", "rpc", "action", "notification", "input", "output"].includes(kind);
       const childGroupingStack = kindScopesSymbols ? [...groupingStack, { statement, document: sourceModule }] : groupingStack;
       node.children = normalizeChoiceChildren(
@@ -6342,9 +6375,10 @@ var YangEngine = (() => {
       }
       return values2;
     };
-    const enums = values("enumeration", "enum");
+    const disabledValues = new Set(node.featureDisabledValues ?? []);
+    const enums = values("enumeration", "enum").filter((value) => !disabledValues.has(value));
     if (enums.length) return { domain: "enum", values: enums };
-    const bits = values("bits", "bit");
+    const bits = values("bits", "bit").filter((value) => !disabledValues.has(value));
     if (bits.length) {
       let baseIndex = -1;
       for (let index = layers.length - 1; index >= 0; index--) {

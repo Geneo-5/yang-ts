@@ -86,6 +86,8 @@ export interface CompiledSchemaNode {
   featureRequirements: readonly { module: string; expression: string }[];
   properties: Record<string, YangStatement[]>;
   deviations: YangStatement[];
+  /** RFC 7950 §9.6.4/§9.7.4: enum/bit values whose own `if-feature` is disabled. */
+  featureDisabledValues?: readonly string[];
   source: YangStatement;
   children: CompiledSchemaNode[];
 }
@@ -432,6 +434,43 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
 
   /** A `when` statement and the schema path of the node it constrains (RFC 7950 §7.21.5 context). */
   type WhenOrigin = { statement: YangStatement; holder: string };
+  /**
+   * Names of enum/bit values whose own `if-feature` evaluates false (RFC 7950
+   * §9.6.4/§9.7.4). The value's document is the layer that declares it: the
+   * node's own type belongs to `declaring`, typedef layers to their entry in
+   * `chainModules`.
+   */
+  const featureDisabledValuesOf = (
+    declaring: YangModule,
+    typeStatement: YangStatement | undefined,
+    resolvedType: { name?: string; chain: readonly YangStatement[]; chainModules?: readonly string[] },
+  ): string[] => {
+    const documentOfName = (name: string): YangModule =>
+      modules.find(module => module.argument === name) ?? submodules.find(submodule => submodule.argument === name) ?? declaring;
+    const layers: { statement: YangStatement | undefined; document: YangModule }[] = [
+      { statement: typeStatement, document: declaring },
+      ...resolvedType.chain.map((typedef, index) => ({
+        statement: childOf(typedef, "type"),
+        document: documentOfName(resolvedType.chainModules?.[index] ?? declaring.argument ?? ""),
+      })),
+    ];
+    const kind = resolvedType.name === "enumeration" ? "enum" : "bit";
+    let baseIndex = -1;
+    for (let index = layers.length - 1; index >= 0; index--) {
+      if (layers[index]!.statement?.argument === resolvedType.name) { baseIndex = index; break; }
+    }
+    if (baseIndex < 0) return [];
+    const disabled: string[] = [];
+    for (const value of childrenOf(layers[baseIndex]!.statement!, kind)) {
+      const requirements = childrenOf(value, "if-feature").map(feature => ({
+        module: layers[baseIndex]!.document.argument ?? "",
+        expression: feature.argument ?? "",
+        source: feature,
+      }));
+      if (requirements.length && !featureRequirementsEnabled(requirements)) disabled.push(value.argument ?? "");
+    }
+    return disabled;
+  };
   const makeNode = (
     statement: YangStatement, owner: YangModule, parentPath: string, inheritedConfig: boolean,
     groupingStack: readonly ScopeLevel[] = [], inheritedWhen: readonly WhenOrigin[] = [],
@@ -591,6 +630,12 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
       deviations: [],
       source: statement, children: [],
     };
+    // RFC 7950 §9.6.4/§9.7.4: a value carries no feature requirements for the
+    // enabled set — record the gated names so value domains stay honest.
+    if (resolvedType && (resolvedType.name === "enumeration" || resolvedType.name === "bits")) {
+      const gated = featureDisabledValuesOf(sourceModule, typeStatement, resolvedType);
+      if (gated.length) node.featureDisabledValues = gated;
+    }
     // Nested nodes belong to the instantiating module too: only the grouping's
     // defining module resolves their type/prefix references, not their
     // namespace. Inherited when/if-feature keep propagating from the parent.
