@@ -37,6 +37,7 @@ export {
 } from "./forms/form-model.js";
 export {
   createRestconfModuleLoader,
+  yangLibraryInventory,
 } from "./restconf/library-loader.js";
 export {
   findSchemaLibraryMismatches,

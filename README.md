@@ -152,6 +152,7 @@ After building, serve the repository root over HTTP and open [`examples/browser-
 This is a pre-1.0 engine, not a conformance-tested YANG implementation. Where an area is only partly implemented, the engine reports `indeterminate`/`pending` instead of a pass; the correctness review of 2026-11-26 closed the review findings (leafrefs through typedefs, `choice`/`case` validation, `unique` semantics, identityref XML prefixes, partial-pattern handling — see `CONFORMANCE.md`).
 
 - [CONFORMANCE.md](./CONFORMANCE.md) records the status of each RFC area and its known gaps; it is the authority on what is implemented.
+- [GUIDE.md](./GUIDE.md) is the end-to-end usage guide (pipeline, validation, forms, RFC 7951 JSON, RESTCONF, precompilation, untrusted-source safety).
 - [ROADMAP.md](./ROADMAP.md) lists the open defects by stage and the priority order for fixing them.
 - `capabilities` in the bundle reports possession of a feature layer, not conformance; `validation` is `partial` (see `CONFORMANCE.md` for the exact rows).
 - The optional YANG Library loader (`createRestconfModuleLoader`) has open issues with URL shape and submodule lists; see the roadmap before relying on it against a real server.

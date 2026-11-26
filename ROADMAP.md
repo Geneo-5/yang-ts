@@ -226,6 +226,11 @@ Static-export constraints that shape the design (verify against the current Next
 
 Exit: the example app builds with `next build` into a static `out/`, runs from a static host (including under a `basePath`), discovers or loads a schema, validates and edits data against a RESTCONF API, and passes the Playwright suite; every blocker listed above is closed; `CONFORMANCE.md` has rows for the JSON bridge and the client with their covering tests.
 
+## Stage 8b — Usage documentation (planned)
+
+- [x] A user guide (`GUIDE.md`) that explains how to USE the project end to end with runnable snippets: install and imports, parse → resolve → compile, reading compiled schemas and diagnostics, instance validation (`valid`/`invalid`/`indeterminate`), candidate evaluation, the form helper, the RFC 7951 JSON adapter, RESTCONF request builders, precompilation and browser loading with the revision audit, untrusted-source safety, and honest pointers to `examples/` and `CONFORMANCE.md` for the limits. A regression test keeps the guide honest (`tests/documentation.test.ts` verifies every engine API the guide calls exists in the public barrel).
+  CLOSED: `GUIDE.md` (11 sections, FR) documents install/imports, parse → resolve → compile → validate, all 13 validation issue codes, candidates, the form helper with its known limits, the RFC 7951 adapter, RESTCONF module loading/revision audit/requests/RPC/NMDA, untrusted-source budgets, precompile CLI and serialized-schema loading — every snippet verified against the real signatures. Guarded by `tests/documentation.test.ts` (4 tests). RED pre-fix: "GUIDE.md is the usage guide — expected undefined to be defined" (4/4 failing) plus "it is linked from the README" failing. `yangLibraryInventory`, previously internal-only, was promoted to the public barrel because `findSchemaLibraryMismatches` needs it end to end (`tests/public-api.test.ts` curation updated).
+
 ## Principles
 
 - Syntax recognition is not semantic support; unsupported constructs must be explicit.
