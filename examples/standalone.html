@@ -4093,9 +4093,13 @@ var YangEngine = (() => {
       if (!end || end.kind !== "symbol" || end.value !== ";" && end.value !== "{") throw new YangSyntaxError("Expected ';' or '{'", end ?? eof);
       const children = [];
       if (end.value === "{") {
-        while (peek() && peek().value !== "}") children.push(statement(depth + 1));
+        while (peek() && !(peek().kind === "symbol" && peek().value === "}")) {
+          children.push(statement(depth + 1));
+        }
         const close = take();
-        if (!close) throw new YangSyntaxError("Unterminated statement block", eof);
+        if (!close || close.kind !== "symbol" || close.value !== "}") {
+          throw new YangSyntaxError("Unterminated statement block", close ?? eof);
+        }
       }
       return { keyword: key.value, ...hasArgument ? { argument } : {}, children, location: { offset: key.offset, line: key.line, column: key.column } };
     }

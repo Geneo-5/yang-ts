@@ -116,9 +116,16 @@ export function parseYang(source: string): YangModule {
     if (!end || end.kind !== "symbol" || (end.value !== ";" && end.value !== "{")) throw new YangSyntaxError("Expected ';' or '{'", end ?? eof);
     const children: YangStatement[] = [];
     if (end.value === "{") {
-      while (peek() && peek()!.value !== "}") children.push(statement(depth + 1));
+      // The block close is a `}` SYMBOL: a quoted string whose value is "}"
+      // must never close a block (RFC 7950 §6.1.3) — it is diagnosed as a
+      // statement keyword by the recursion instead of silently vanishing.
+      while (peek() && !(peek()!.kind === "symbol" && peek()!.value === "}")) {
+        children.push(statement(depth + 1));
+      }
       const close = take();
-      if (!close) throw new YangSyntaxError("Unterminated statement block", eof);
+      if (!close || close.kind !== "symbol" || close.value !== "}") {
+        throw new YangSyntaxError("Unterminated statement block", close ?? eof);
+      }
     }
     return { keyword: key.value, ...(hasArgument ? { argument } : {}), children, location: { offset: key.offset, line: key.line, column: key.column } };
   }

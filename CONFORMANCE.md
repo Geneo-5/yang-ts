@@ -10,7 +10,7 @@ Last updated: 2026-11-26, after a full source review and the closure of the Stag
 | --- | --- | --- | --- |
 | Statement grammar, arguments, comments, adjacent-string concatenation, source locations | implemented | `tests/parser.test.ts`, `tests/stage7-p1.test.ts` | RFC 7950 §6.1.3 (2026-11-26): quoted arguments may contain `;`/`{`/`}`; escapes `\n \t \" \\` transformed, any other character after a backslash rejected; multi-line double-quoted strings strip trailing whitespace and continuation-line indentation up to the opening quote's column (tabs count as 8 spaces); empty-string arguments kept; quoted strings concatenate only with `+`; unquoted word lists (e.g. `key a b c`) still join into one argument. |
 | Real-world fixture corpus | implemented | `tests/yang-fixtures.test.ts` | Sysrepo oven, RFC 8343 interfaces, RFC 8344 IP augments, IETF interface extensions with `when`/`if:type`. |
-| Malformed-syntax diagnostics with line/column | implemented | `tests/parser.test.ts`, `tests/stage7-p1.test.ts` | End-of-input errors report the end of the source (string, unterminated block, missing `;`/`{`, missing keyword); statement nesting capped at depth 200 (2026-11-26). |
+| Malformed-syntax diagnostics with line/column | implemented | `tests/parser.test.ts`, `tests/stage7-p1.test.ts` | End-of-input errors report the end of the source (string, unterminated block, missing `;`/`{`, missing keyword); statement nesting capped at depth 200 (2026-11-26). Block closes are token-kind checked: a quoted `"}"` in statement position is diagnosed, never silently dropped (2026-11-26). |
 
 ## Module resolution (RFC 7950 §5.1–§5.6)
 

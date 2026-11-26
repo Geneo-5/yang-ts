@@ -160,7 +160,7 @@ Evidence: *(probed)* = reproduced by running the sources (type-checked copy of `
 - [ ] Safe defaults: every budget is opt-in (`maxSchemaNodes`, loading limits, signals). Provide a preset or documented values for untrusted modules; add an XPath step/time budget; regex execution relies on the pending guards only; `resolveModuleSet` checks its deadline between loads only.
 - [ ] Conservative pattern subset: `\d`, `\w`, `\s` and `\p{…}` are always `pending`, so leaves constrained by them (for example through the zone suffix of the `ietf-inet-types` address patterns) end `indeterminate`. A real XML Schema → JavaScript translator (Unicode classes, `u` flag semantics, character-class subtraction) would let them validate.
 - [ ] An independent oracle (libyang/yanglint) as a development-only differential check is still absent.
-- [ ] *(read)* Parser leniency: the statement loop compares token *values*, so a quoted string `"}"` in statement-start position closes the block instead of being a syntax error.
+- [x] Parser leniency (RFC 7950 §6.1.3): the block loop compared token *values*, so a quoted string `"}"` in statement-start position stopped the child loop and was accepted as the block close with no kind check — the quoted statement silently vanished and the parse succeeded (probed). The loop now stops only on a `}` *symbol* and the close token itself is kind- and value-checked, so the quoted statement is diagnosed (`Expected statement keyword`) instead of dropped; quoted arguments containing `;`/`{`/`}` keep parsing (fixed 2026-11-26, `tests/stage7-p1.test.ts`, red first: the parse silently succeeded).
 
 ## Stage 8 — Next.js static-export integration (planned)
 

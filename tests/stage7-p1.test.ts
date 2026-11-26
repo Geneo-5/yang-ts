@@ -142,6 +142,23 @@ describe("Stage 7 P1 – parser string tokens (RFC 7950 §6.1.3)", () => {
     expect(statementOf(`default '}';`, "default")?.argument).toBe("}");
   });
 
+  it("never lets a quoted '}' token close a block (RFC 7950 §6.1.3)", () => {
+    // Pre-fix the block loop compared token VALUES, so the quoted "}" string
+    // stopped the child loop, was taken as the block close with no kind check,
+    // and the parse silently succeeded while dropping the quoted statement.
+    // Pre-fix the block loop compared token VALUES: the quoted "}" string at
+    // keyword position stopped the child loop and was accepted as the block
+    // close with NO kind check — the quoted statement silently vanished and
+    // the parse succeeded (probed: tree kept only description "").
+    expect(() => parseYang(`module m { namespace "urn:m"; prefix m; container c { description "d"; "}" } }`)).toThrow(YangSyntaxError);
+    // The sibling still belongs to the container, not to an early-closed block.
+    const parsed = parseYang(`module m { namespace "urn:m"; prefix m; container c { description "d"; leaf z { type "string" ; } } }`);
+    const container = parsed.children.find(child => child.keyword === "container")!;
+    expect(container.children.map(child => child.keyword)).toEqual(["description", "leaf"]);
+    const leaf = container.children.find(child => child.keyword === "leaf")!;
+    expect(leaf.argument).toBe("z");
+  });
+
   it("transforms escaped characters in double-quoted strings", () => {
     expect(statementOf(`description "a\\nb";`, "description")?.argument).toBe("a\nb");
     expect(statementOf(`description "a\\tb";`, "description")?.argument).toBe("a\tb");
