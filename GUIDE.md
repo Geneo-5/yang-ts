@@ -352,8 +352,30 @@ Les hooks: `useYangSchema()` (état loading/ready/error), `useFormModel(options?
 (validation d'arbre complète), `useCandidates(document, path)` (candidats
 contextuels du §4) et `useRestconfResource(client, path, { resource })` (GET
 RFC 8040 avec donnees brutes JSON, état loading/ready/error, `refetch()`,
-abandon à démontage). La couche worker et le flux d'édition optimiste restent
-à venir (§210/§211 de la roadmap).
+abandon à démontage). Le flux d'édition optimiste reste à venir (§211 de la
+roadmap).
+
+## 6.1 Worker (§210)
+
+La validation et la compilation peuvent sortir du fil principal:
+`createYangRunner({ worker, parseXml })` délègue à un module worker; sans
+`worker`, le même gestionnaire tourne sur le fil appelant (réponses
+identiques). Les schémas traversent la frontière en données pures (structured
+clone) et le XML d'instance passe en texte, parsé par le parser de l'hôte.
+
+```ts
+import { createYangRunner, spawnYangWorker, YangTaskCancelledError } from "yang-browser-engine/react";
+
+const runner = createYangRunner({ worker: spawnYangWorker(), parseXml: (text) => new DOMParser().parseFromString(text, "application/xml") });
+const task = runner.compile([source1, source2], { enabledFeatures: ["acme-router:turbo"] });
+const { schema, diagnostics } = await task; // plain data
+task.cancel(); // → rejette avec YangTaskCancelledError
+const verdict = await runner.validate(schema, instanceXml, { deadlineMs: 5000 });
+```
+
+`runner.validate/candidates/formModel` retournent des données sérialisables;
+les tâches longues ne s'interrompent que là où le moteur vérifie les signaux
+(visites de validation) — cf. §10 de la roadmap pour la limite XPath sync.
 
 ```ts
 const model = useFormModel({ module: "acme-router" });

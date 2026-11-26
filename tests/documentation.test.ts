@@ -58,7 +58,8 @@ describe("usage guide", () => {
   it("documents the React hooks of yang-browser-engine/react (§208)", () => {
     expect(markdown).toBeDefined();
     if (!markdown) return;
-    for (const hook of ["YangProvider", "useYangSchema", "useFormModel", "useFieldValidation", "useDataValidation", "useCandidates", "useRestconfResource"]) {
+    for (const hook of ["YangProvider", "useYangSchema", "useFormModel", "useFieldValidation", "useDataValidation", "useCandidates", "useRestconfResource",
+      "createYangRunner", "spawnYangWorker", "YangTaskCancelledError"]) {
       expect(new RegExp(`\\b${hook}\\b`).test(markdown), `GUIDE.md must mention '${hook}'`).toBe(true);
       // The sub-path barrel decides existence; the core barrel stays React-free.
       expect(hook in reactApi, `'${hook}' must exist in yang-browser-engine/react`).toBe(true);

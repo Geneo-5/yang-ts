@@ -7,3 +7,17 @@ export {
   useFormModel, useFieldValidation, useDataValidation, useCandidates, useRestconfResource,
   type RestconfResourceState, type RestconfResourceOptions,
 } from "./hooks.js";
+export {
+  createYangRunner,
+  type YangRunner, type YangRunnerOptions, type YangRunnerTask, type YangWorkerTransport,
+} from "./runner.js";
+export { spawnYangWorker } from "./spawn.js";
+export {
+  handleYangTask, YangTaskCancelledError, compileSources,
+  type YangTaskEnvironment,
+} from "./worker-core.js";
+export {
+  YANG_WORKER_REQUEST_KINDS,
+  type YangWorkerRequest, type YangWorkerReply,
+  type YangCompileRequest, type YangCompileResult, type YangWorkerSchemaPayload,
+} from "./worker-protocol.js";
