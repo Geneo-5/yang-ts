@@ -39,7 +39,7 @@ Defects found by the review, all closed 2026-11-26 by the Stage 7 P1 parser item
 Open defects:
 - [x] `ModuleSetBudget.maxDepth` is enforced on import and include chains since 2026-11-26 (single `budget-exceeded` diagnostic, refusing mode), regression-tested in `tests/stage7-p0.test.ts`.
 - [x] Revisions: `resolveModuleSet` selects the newest unpinned revision per load and reports `ambiguous-revision` for duplicate sources of one revision; differently pinned imports pulling two revisions of one module report one `duplicate-revision` and the compile keeps the newest revision per name (closed 2026-11-26, `tests/module-set.test.ts` — see Stage 7b P0/P1).
-- [ ] Deadline and abort are only checked before each load; synchronous parsing of a large document cannot be interrupted (worker isolation remains the host's responsibility — see the P2 boundaries).
+- [x] `parseYang` now accepts `{ signal }` and checks `signal.aborted` after tokenizing and at the end of each statement; `resolveModuleSet` passes `constraints.signal` through `parseDocument` → `selectDocument` so that a cancelled signal interrupts a large synchronous parse mid-flight (closed 2026-11-27, `tests/parser.test.ts`). Worker isolation is no longer required for parse cancellation.
 
 ## Stage 2 — Semantic compiler and effective schema (partial)
 
