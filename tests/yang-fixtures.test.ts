@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { childOf, childrenOf, parseYang } from "../src/index.js";
+import { parseYang } from "../src/index.js";
+import { childOf, childrenOf } from "../src/internal.js";
 
 const fixtures = new URL("./fixtures/yang/", import.meta.url);
 function load(path: string) {

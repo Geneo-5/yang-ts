@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { compileYangModules, isIdentityDerivedFrom, parseYang, resolveModuleSet, YangModule } from "../src/index.js";
+import { compileYangModules, parseYang, resolveModuleSet } from "../src/index.js";
+import { isIdentityDerivedFrom } from "../src/internal.js";
+import type { YangModule } from "../src/index.js";
 
 function fixture(path: string): YangModule {
   return parseYang(readFileSync(fileURLToPath(new URL(`./fixtures/yang/${path}`, import.meta.url)), "utf8"));

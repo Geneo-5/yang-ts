@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { childOf, parseYang, YangSyntaxError } from "../src/index.js";
+import { parseYang, YangSyntaxError } from "../src/index.js";
+import { childOf } from "../src/internal.js";
 
 describe("YANG statement parser", () => {
   it("parses nested statements, comments, and quoted arguments", () => {

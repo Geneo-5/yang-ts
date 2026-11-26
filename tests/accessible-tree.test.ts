@@ -1,6 +1,7 @@
 import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
-import { buildAccessibleTree, compileYangModules, compileYangXPath, createYangFunctionLibrary, parseYang, resolveModuleSet } from "../src/index.js";
+import { buildAccessibleTree, compileYangModules, parseYang, resolveModuleSet } from "../src/index.js";
+import { compileYangXPath, createYangFunctionLibrary } from "../src/internal.js";
 import { parseXml } from "./dom.js";
 
 const schema = compileYangModules(await resolveModuleSet([

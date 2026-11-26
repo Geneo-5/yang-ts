@@ -119,7 +119,7 @@ This is a pre-1.0 foundation, not a conformance-tested YANG implementation. Wher
 
 - [CONFORMANCE.md](./CONFORMANCE.md) records the status of each RFC area and its known gaps; it is the authority on what is implemented.
 - [ROADMAP.md](./ROADMAP.md) lists the open defects by stage and the priority order for fixing them.
-- `capabilities` in the bundle reports possession of a feature layer, not conformance, and some of its values currently lag the implementation.
+- `capabilities` in the bundle reports possession of a feature layer, not conformance; `validation` is `partial` (see `CONFORMANCE.md` for the exact rows).
 - The optional YANG Library loader (`createRestconfModuleLoader`) has open issues with URL shape and submodule lists; see the roadmap before relying on it against a real server.
 - Resource budgets cover module loading only; treat compilation and validation of untrusted modules as unbounded in time and memory.
 

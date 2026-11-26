@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { compileYangModules, createRestconfModuleLoader, parseYang, resolveModuleSet, yangLibraryEntries } from "../src/index.js";
+import { compileYangModules, createRestconfModuleLoader, parseYang, resolveModuleSet } from "../src/index.js";
+import { yangLibraryEntries } from "../src/internal.js";
 
 const OVEN = `module oven {
   namespace "urn:oven"; prefix o;

@@ -23,7 +23,7 @@ scripts/              build-example.mjs (bundles examples/standalone.html)
 ```
 
 - `yang/`: source-located statement AST, module dependency resolver with resource budgets, and the compiler that produces the effective schema IR (`CompiledYangSchema`): data/RPC/action/notification trees, groupings/uses/refine, augments, deviations, identities, `if-feature` filtering.
-- `xpath/`: `compileYangXPath` (unprefixed-name qualification, `current()`), `createYangFunctionLibrary` (`derived-from*`, `deref`, `re-match`, `enum-value`, `bit-is-set`), `buildAccessibleTree` (RFC 7950 §6.4.1 contexts) and `createConstraintEvaluator` (`must`/`when`).
+- `xpath/`: `compileYangXPath` (unprefixed-name qualification, `current()`), `createYangFunctionLibrary` (`derived-from*`, `deref`, `re-match`, `enum-value`, `bit-is-set`), `buildAccessibleTree` (RFC 7950 §6.4.1 contexts) and `createConstraintEvaluator` (`must`/`when`). Only `buildAccessibleTree` and `createConstraintEvaluator` are on the public barrel (`src/index.ts`); compile/rewrite helpers are reachable via `src/internal.ts`.
 - `validation/`: `validateDataTree` (keys, unique, mandatory, cardinality, leafref, instance-identifier, `must`/`when`) and `evaluateCandidates` (finite-domain candidate evaluation with reasons).
 - `forms/`: `createFormModel`, `validateFormValue`, `canonicalFormOf`.
 - `restconf/`: request/path builders (RFC 8040, RFC 8527 NMDA) and an optional YANG Library module loader. Neither is part of the compiler core; nothing in the package sends a request except through a caller-supplied `fetch`.

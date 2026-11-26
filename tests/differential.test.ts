@@ -1,6 +1,6 @@
 import { DOMParser, XMLSerializer } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
-import { compileYangXPath, qualifyYangXPathNodeTests } from "../src/index.js";
+import { compileYangXPath, qualifyYangXPathNodeTests } from "../src/internal.js";
 import { parseXml, serializeNode } from "./dom.js";
 
 const NAMESPACE = "urn:example:if";

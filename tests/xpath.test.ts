@@ -1,6 +1,7 @@
 import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
-import { compileYangModules, compileYangXPath, createYangFunctionLibrary, parseYang, qualifyYangXPathNodeTests, resolveModuleSet } from "../src/index.js";
+import { compileYangModules, parseYang, resolveModuleSet } from "../src/index.js";
+import { compileYangXPath, createYangFunctionLibrary, qualifyYangXPathNodeTests } from "../src/internal.js";
 import { parseXml } from "./dom.js";
 
 describe("browser-compatible YANG XPath 1.0 adapter", () => {

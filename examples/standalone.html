@@ -3893,20 +3893,13 @@ var YangEngine = (() => {
   // src/index.ts
   var index_exports = {};
   __export(index_exports, {
-    YANG_FUNCTION_NAMESPACE: () => YANG_FUNCTION_NAMESPACE,
     YangSyntaxError: () => YangSyntaxError,
-    accessibleDataRoot: () => accessibleDataRoot,
     buildAccessibleTree: () => buildAccessibleTree,
     canonicalFormOf: () => canonicalFormOf,
     capabilities: () => capabilities,
-    childOf: () => childOf,
-    childrenOf: () => childrenOf,
-    compileModuleExpression: () => compileModuleExpression,
     compileYangModules: () => compileYangModules,
-    compileYangXPath: () => compileYangXPath,
     createConstraintEvaluator: () => createConstraintEvaluator,
     createFormModel: () => createFormModel,
-    createLeafrefResolver: () => createLeafrefResolver,
     createRestconfAddRequest: () => createRestconfAddRequest,
     createRestconfDatastoreRequest: () => createRestconfDatastoreRequest,
     createRestconfDeleteRequest: () => createRestconfDeleteRequest,
@@ -3916,31 +3909,17 @@ var YangEngine = (() => {
     createRestconfRpcRequest: () => createRestconfRpcRequest,
     createRestconfSetRequest: () => createRestconfSetRequest,
     createRestconfUpdateRequest: () => createRestconfUpdateRequest,
-    createYangFunctionLibrary: () => createYangFunctionLibrary,
     evaluateCandidates: () => evaluateCandidates,
-    findSchemaNodeByPath: () => findSchemaNodeByPath,
-    finiteDomainOf: () => finiteDomainOf,
-    flattenDataChildren: () => flattenDataChildren,
-    isIdentityDerivedFrom: () => isIdentityDerivedFrom,
-    leafrefPathStatementOf: () => leafrefPathStatementOf,
-    matchSchemaChild: () => matchSchemaChild,
-    moduleNamespacePrefixes: () => moduleNamespacePrefixes,
     nodeToRestconfDataPath: () => nodeToRestconfDataPath,
     nodeToRestconfDatastorePath: () => nodeToRestconfDatastorePath,
     nodeToXPath: () => nodeToXPath,
     parseYang: () => parseYang,
-    qualifyYangXPathNodeTests: () => qualifyYangXPathNodeTests,
     readRestconfData: () => readRestconfData,
     readRestconfRpcOutput: () => readRestconfRpcOutput,
     resolveModuleSet: () => resolveModuleSet,
     restconfRpcPath: () => restconfRpcPath,
-    schemaNodeChainByPath: () => schemaNodeChainByPath,
-    schemaNodeForElement: () => schemaNodeForElement,
     validateDataTree: () => validateDataTree,
-    validateFormValue: () => validateFormValue,
-    xmlNamespaceForPrefix: () => xmlNamespaceForPrefix,
-    yangLibraryEntries: () => yangLibraryEntries,
-    yangLibraryInventory: () => yangLibraryInventory
+    validateFormValue: () => validateFormValue
   });
 
   // src/yang/ast.ts
@@ -5182,86 +5161,6 @@ var YangEngine = (() => {
     return false;
   }
 
-  // src/xpath/xpath.ts
-  var import_xpath = __toESM(require_xpath(), 1);
-  function isNameStart(character) {
-    return Boolean(character && /[A-Za-z_]/.test(character));
-  }
-  function isNamePart(character) {
-    return Boolean(character && /[A-Za-z0-9_.-]/.test(character));
-  }
-  function qualifyYangXPathNodeTests(expression, namespacePrefix) {
-    const replacements = [];
-    let index = 0;
-    while (index < expression.length) {
-      const character = expression[index];
-      if (character === "'" || character === '"') {
-        const quote = character;
-        index++;
-        while (index < expression.length && expression[index] !== quote) index++;
-        index++;
-        continue;
-      }
-      if (!isNameStart(character)) {
-        index++;
-        continue;
-      }
-      const start = index++;
-      while (isNamePart(expression[index])) index++;
-      const end = index;
-      let previous = start - 1;
-      while (previous >= 0 && /\s/.test(expression[previous])) previous--;
-      let next = end;
-      while (next < expression.length && /\s/.test(expression[next])) next++;
-      const token = expression.slice(start, end);
-      const previousCharacter = expression[previous];
-      const nextCharacter = expression[next];
-      const isAxisStep = previousCharacter === ":" && expression.slice(0, previous + 1).endsWith("::");
-      const isPrefixedName = nextCharacter === ":" || previousCharacter === ":" && !isAxisStep;
-      const isFunctionOrAxis = nextCharacter === "(" || expression.slice(next, next + 2) === "::";
-      const isVariableOrAttribute = previousCharacter === "$" || previousCharacter === "@";
-      const isOperator = ["and", "or", "div", "mod"].includes(token) && previous >= 0 && /[A-Za-z0-9_.\])'\"]/.test(previousCharacter);
-      if (!isPrefixedName && !isFunctionOrAxis && !isVariableOrAttribute && !isOperator) replacements.push({ start, end });
-    }
-    return replacements.reduceRight(
-      (qualified, replacement) => `${qualified.slice(0, replacement.start)}${namespacePrefix}:${qualified.slice(replacement.start)}`,
-      expression
-    );
-  }
-  function unusedPrefix(expression) {
-    let suffix = 0;
-    let prefix = "__yang_ns";
-    while (new RegExp(`(?:^|[^A-Za-z0-9_.-])${prefix}\\s*:`).test(expression)) prefix = `__yang_ns${++suffix}`;
-    return prefix;
-  }
-  function compileYangXPath(expression, moduleNamespace, importedNamespaces = {}) {
-    const prefix = unusedPrefix(expression);
-    const qualifiedSource = qualifyYangXPathNodeTests(expression, prefix);
-    const parsed = (0, import_xpath.parse)(qualifiedSource);
-    const namespaces = { ...importedNamespaces, [prefix]: moduleNamespace };
-    const evaluationOptions = (options) => ({
-      node: options.node,
-      namespaces,
-      functions: {
-        // RFC 7950 section 10.1: current() returns the original context node even
-        // inside predicates, where the evaluator's own contextNode has advanced.
-        current: () => options.node,
-        ...options.functions ?? {}
-      },
-      allowAnyNamespaceForNoPrefix: false
-    });
-    const evaluate = (options) => parsed.evaluate(evaluationOptions(options));
-    return {
-      source: expression,
-      qualifiedSource,
-      evaluate,
-      evaluateBoolean: (options) => evaluate(options).booleanValue(),
-      evaluateNumber: (options) => evaluate(options).numberValue(),
-      evaluateString: (options) => evaluate(options).stringValue(),
-      select: (options) => parsed.select(evaluationOptions(options))
-    };
-  }
-
   // src/xpath/accessible-tree.ts
   function buildAccessibleTree(schema, instance, options) {
     if (options.context !== "datastore-config" && options.context !== "datastore-state" && !options.operation) {
@@ -5416,6 +5315,86 @@ var YangEngine = (() => {
       level = found.children;
     }
     return chain;
+  }
+
+  // src/xpath/xpath.ts
+  var import_xpath = __toESM(require_xpath(), 1);
+  function isNameStart(character) {
+    return Boolean(character && /[A-Za-z_]/.test(character));
+  }
+  function isNamePart(character) {
+    return Boolean(character && /[A-Za-z0-9_.-]/.test(character));
+  }
+  function qualifyYangXPathNodeTests(expression, namespacePrefix) {
+    const replacements = [];
+    let index = 0;
+    while (index < expression.length) {
+      const character = expression[index];
+      if (character === "'" || character === '"') {
+        const quote = character;
+        index++;
+        while (index < expression.length && expression[index] !== quote) index++;
+        index++;
+        continue;
+      }
+      if (!isNameStart(character)) {
+        index++;
+        continue;
+      }
+      const start = index++;
+      while (isNamePart(expression[index])) index++;
+      const end = index;
+      let previous = start - 1;
+      while (previous >= 0 && /\s/.test(expression[previous])) previous--;
+      let next = end;
+      while (next < expression.length && /\s/.test(expression[next])) next++;
+      const token = expression.slice(start, end);
+      const previousCharacter = expression[previous];
+      const nextCharacter = expression[next];
+      const isAxisStep = previousCharacter === ":" && expression.slice(0, previous + 1).endsWith("::");
+      const isPrefixedName = nextCharacter === ":" || previousCharacter === ":" && !isAxisStep;
+      const isFunctionOrAxis = nextCharacter === "(" || expression.slice(next, next + 2) === "::";
+      const isVariableOrAttribute = previousCharacter === "$" || previousCharacter === "@";
+      const isOperator = ["and", "or", "div", "mod"].includes(token) && previous >= 0 && /[A-Za-z0-9_.\])'\"]/.test(previousCharacter);
+      if (!isPrefixedName && !isFunctionOrAxis && !isVariableOrAttribute && !isOperator) replacements.push({ start, end });
+    }
+    return replacements.reduceRight(
+      (qualified, replacement) => `${qualified.slice(0, replacement.start)}${namespacePrefix}:${qualified.slice(replacement.start)}`,
+      expression
+    );
+  }
+  function unusedPrefix(expression) {
+    let suffix = 0;
+    let prefix = "__yang_ns";
+    while (new RegExp(`(?:^|[^A-Za-z0-9_.-])${prefix}\\s*:`).test(expression)) prefix = `__yang_ns${++suffix}`;
+    return prefix;
+  }
+  function compileYangXPath(expression, moduleNamespace, importedNamespaces = {}) {
+    const prefix = unusedPrefix(expression);
+    const qualifiedSource = qualifyYangXPathNodeTests(expression, prefix);
+    const parsed = (0, import_xpath.parse)(qualifiedSource);
+    const namespaces = { ...importedNamespaces, [prefix]: moduleNamespace };
+    const evaluationOptions = (options) => ({
+      node: options.node,
+      namespaces,
+      functions: {
+        // RFC 7950 section 10.1: current() returns the original context node even
+        // inside predicates, where the evaluator's own contextNode has advanced.
+        current: () => options.node,
+        ...options.functions ?? {}
+      },
+      allowAnyNamespaceForNoPrefix: false
+    });
+    const evaluate = (options) => parsed.evaluate(evaluationOptions(options));
+    return {
+      source: expression,
+      qualifiedSource,
+      evaluate,
+      evaluateBoolean: (options) => evaluate(options).booleanValue(),
+      evaluateNumber: (options) => evaluate(options).numberValue(),
+      evaluateString: (options) => evaluate(options).stringValue(),
+      select: (options) => parsed.select(evaluationOptions(options))
+    };
   }
 
   // src/types/xsd-pattern.ts
@@ -5586,7 +5565,6 @@ var YangEngine = (() => {
       return compiled.select({ node: element }).filter((child) => child.nodeType === 1 && child.textContent === value);
     };
   }
-  var YANG_FUNCTION_NAMESPACE = "urn:ietf:params:xml:ns:yang:1";
   var requireString = (value, name2) => {
     if (!value) throw new Error(`Function ${name2} is missing an argument`);
     return value.stringValue();
@@ -6972,6 +6950,116 @@ var YangEngine = (() => {
     return selected.slice().sort((left, right) => (positions.get(left) ?? 0) - (positions.get(right) ?? 0));
   }
 
+  // src/restconf/library-loader.ts
+  var jsonHeaders = { accept: "application/yang-data+json" };
+  function asRecord(value) {
+    return value !== null && typeof value === "object" ? value : void 0;
+  }
+  function firstRecord(object, keys) {
+    for (const key of keys) {
+      const record = asRecord(object[key]);
+      if (record) return record;
+    }
+    return void 0;
+  }
+  function normalizeEntry(row) {
+    const object = asRecord(row);
+    if (!object) return void 0;
+    const name2 = typeof object["name"] === "string" ? object["name"] : void 0;
+    if (!name2) return void 0;
+    const revision = typeof object["revision"] === "string" && object["revision"] ? object["revision"] : void 0;
+    const namespace = typeof object["namespace"] === "string" ? object["namespace"] : void 0;
+    const conformance = object["conformance-type"] === "import" ? "import" : object["conformance-type"] === "implement" ? "implement" : void 0;
+    const rawLocation = object["location"];
+    const location = rawLocation === void 0 ? void 0 : typeof rawLocation === "string" ? rawLocation : Array.isArray(rawLocation) ? rawLocation.filter((item) => typeof item === "string") : void 0;
+    const schema = typeof object["schema"] === "string" && object["schema"] ? object["schema"] : void 0;
+    return {
+      name: name2,
+      ...revision ? { revision } : {},
+      ...namespace ? { namespace } : {},
+      ...conformance ? { conformance } : {},
+      ...location ? { location } : {},
+      ...schema ? { schema } : {}
+    };
+  }
+  function rowsToEntries(rows) {
+    const list = Array.isArray(rows) ? rows : rows !== void 0 ? [rows] : [];
+    return list.map(normalizeEntry).filter((entry) => entry !== void 0);
+  }
+  function yangLibraryInventory(payload) {
+    const object = asRecord(payload);
+    if (!object) throw new Error("YANG Library payload is not a JSON object");
+    const modulesState = firstRecord(object, ["ietf-yang-library:modules-state", "modules-state"]);
+    if (modulesState) return { modules: rowsToEntries(modulesState["module"]), submodules: [] };
+    const yangLibrary = firstRecord(object, ["ietf-yang-library:yang-library", "yang-library"]);
+    if (yangLibrary) {
+      const sets = yangLibrary["module-set"];
+      const setList = Array.isArray(sets) ? sets : sets !== void 0 ? [sets] : [];
+      return setList.reduce((inventory, set) => {
+        const record = asRecord(set);
+        if (!record) return inventory;
+        return {
+          modules: [...inventory.modules, ...rowsToEntries(record["module"])],
+          submodules: [...inventory.submodules, ...rowsToEntries(record["submodule"])]
+        };
+      }, { modules: [], submodules: [] });
+    }
+    if (object["module"]) return { modules: rowsToEntries(object["module"]), submodules: rowsToEntries(object["submodule"]) };
+    throw new Error("YANG Library payload has no module list (expected modules-state or yang-library module-set)");
+  }
+  function joinUrl(base, path) {
+    return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+  }
+  function dataResource(resource) {
+    if (/^[\w+.-]+:\/\//.test(resource) || /^(data|operations)\/+/.test(resource)) return resource;
+    return `data/${resource}`;
+  }
+  function createRestconfModuleLoader(options) {
+    const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
+    if (!fetchImpl) throw new Error("No fetch implementation available: pass fetchImpl in RestconfLoaderOptions");
+    let entriesPromise;
+    const inventory = () => {
+      entriesPromise ?? (entriesPromise = (async () => {
+        if (options.libraryPayload !== void 0) return yangLibraryInventory(options.libraryPayload);
+        const resource = options.libraryResource ?? "ietf-yang-library:modules-state";
+        const url = /^[\w+.-]+:\/\//.test(resource) ? resource : joinUrl(options.baseUrl, dataResource(resource));
+        const response = await fetchImpl(url, { headers: jsonHeaders, ...options.signal ? { signal: options.signal } : {} });
+        if (!response.ok) throw new Error(`YANG Library request failed: ${response.status} for ${url}`);
+        return yangLibraryInventory(await response.json());
+      })());
+      return entriesPromise;
+    };
+    const sourceText = async (module) => {
+      const locations = module.location === void 0 ? [] : Array.isArray(module.location) ? module.location : [module.location];
+      const url = locations[0] ?? module.schema ?? options.schemaUrlTemplate?.({ name: module.name, ...module.revision ? { revision: module.revision } : {}, ...module.namespace ? { namespace: module.namespace } : {} }) ?? joinUrl(options.baseUrl, `yang?module=${encodeURIComponent(module.name)}${module.revision ? `&revision=${encodeURIComponent(module.revision)}` : ""}`);
+      const response = await fetchImpl(url, { headers: { accept: "application/yang" }, ...options.signal ? { signal: options.signal } : {} });
+      if (!response.ok) throw new Error(`Schema request failed: ${response.status} for ${url}`);
+      return response.text();
+    };
+    const find = async (kind, name2, revision) => {
+      const pool = await inventory();
+      const rows = kind === "module" ? pool.modules : [...pool.submodules, ...pool.modules];
+      const candidates = rows.filter((entry) => entry.name === name2 && (revision === void 0 || entry.revision === revision || entry.revision === void 0));
+      if (candidates.length === 0) return void 0;
+      if (revision !== void 0) {
+        const pinned = candidates.find((entry) => entry.revision === revision);
+        if (pinned) return pinned;
+        if (candidates.length > 1) return void 0;
+      }
+      return candidates.sort((a, b) => (b.revision ?? "").localeCompare(a.revision ?? ""))[0];
+    };
+    return {
+      async loadModule(name2, revision) {
+        const entry = await find("module", name2, revision);
+        return entry ? sourceText(entry) : void 0;
+      },
+      async loadSubmodule(name2, revision) {
+        const entry = await find("submodule", name2, revision);
+        return entry ? sourceText(entry) : void 0;
+      }
+    };
+  }
+
   // src/restconf/paths.ts
   function xpathPrefix(context, targetModule) {
     if (targetModule === context.argument) {
@@ -7130,125 +7218,12 @@ var YangEngine = (() => {
     return wrapper && typeof wrapper === "object" && !Array.isArray(wrapper) ? wrapper : void 0;
   }
 
-  // src/restconf/library-loader.ts
-  var jsonHeaders = { accept: "application/yang-data+json" };
-  function asRecord(value) {
-    return value !== null && typeof value === "object" ? value : void 0;
-  }
-  function firstRecord(object, keys) {
-    for (const key of keys) {
-      const record = asRecord(object[key]);
-      if (record) return record;
-    }
-    return void 0;
-  }
-  function normalizeEntry(row) {
-    const object = asRecord(row);
-    if (!object) return void 0;
-    const name2 = typeof object["name"] === "string" ? object["name"] : void 0;
-    if (!name2) return void 0;
-    const revision = typeof object["revision"] === "string" && object["revision"] ? object["revision"] : void 0;
-    const namespace = typeof object["namespace"] === "string" ? object["namespace"] : void 0;
-    const conformance = object["conformance-type"] === "import" ? "import" : object["conformance-type"] === "implement" ? "implement" : void 0;
-    const rawLocation = object["location"];
-    const location = rawLocation === void 0 ? void 0 : typeof rawLocation === "string" ? rawLocation : Array.isArray(rawLocation) ? rawLocation.filter((item) => typeof item === "string") : void 0;
-    const schema = typeof object["schema"] === "string" && object["schema"] ? object["schema"] : void 0;
-    return {
-      name: name2,
-      ...revision ? { revision } : {},
-      ...namespace ? { namespace } : {},
-      ...conformance ? { conformance } : {},
-      ...location ? { location } : {},
-      ...schema ? { schema } : {}
-    };
-  }
-  function rowsToEntries(rows) {
-    const list = Array.isArray(rows) ? rows : rows !== void 0 ? [rows] : [];
-    return list.map(normalizeEntry).filter((entry) => entry !== void 0);
-  }
-  function yangLibraryInventory(payload) {
-    const object = asRecord(payload);
-    if (!object) throw new Error("YANG Library payload is not a JSON object");
-    const modulesState = firstRecord(object, ["ietf-yang-library:modules-state", "modules-state"]);
-    if (modulesState) return { modules: rowsToEntries(modulesState["module"]), submodules: [] };
-    const yangLibrary = firstRecord(object, ["ietf-yang-library:yang-library", "yang-library"]);
-    if (yangLibrary) {
-      const sets = yangLibrary["module-set"];
-      const setList = Array.isArray(sets) ? sets : sets !== void 0 ? [sets] : [];
-      return setList.reduce((inventory, set) => {
-        const record = asRecord(set);
-        if (!record) return inventory;
-        return {
-          modules: [...inventory.modules, ...rowsToEntries(record["module"])],
-          submodules: [...inventory.submodules, ...rowsToEntries(record["submodule"])]
-        };
-      }, { modules: [], submodules: [] });
-    }
-    if (object["module"]) return { modules: rowsToEntries(object["module"]), submodules: rowsToEntries(object["submodule"]) };
-    throw new Error("YANG Library payload has no module list (expected modules-state or yang-library module-set)");
-  }
-  function yangLibraryEntries(payload) {
-    return yangLibraryInventory(payload).modules;
-  }
-  function joinUrl(base, path) {
-    return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
-  }
-  function dataResource(resource) {
-    if (/^[\w+.-]+:\/\//.test(resource) || /^(data|operations)\/+/.test(resource)) return resource;
-    return `data/${resource}`;
-  }
-  function createRestconfModuleLoader(options) {
-    const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
-    if (!fetchImpl) throw new Error("No fetch implementation available: pass fetchImpl in RestconfLoaderOptions");
-    let entriesPromise;
-    const inventory = () => {
-      entriesPromise ?? (entriesPromise = (async () => {
-        if (options.libraryPayload !== void 0) return yangLibraryInventory(options.libraryPayload);
-        const resource = options.libraryResource ?? "ietf-yang-library:modules-state";
-        const url = /^[\w+.-]+:\/\//.test(resource) ? resource : joinUrl(options.baseUrl, dataResource(resource));
-        const response = await fetchImpl(url, { headers: jsonHeaders, ...options.signal ? { signal: options.signal } : {} });
-        if (!response.ok) throw new Error(`YANG Library request failed: ${response.status} for ${url}`);
-        return yangLibraryInventory(await response.json());
-      })());
-      return entriesPromise;
-    };
-    const sourceText = async (module) => {
-      const locations = module.location === void 0 ? [] : Array.isArray(module.location) ? module.location : [module.location];
-      const url = locations[0] ?? module.schema ?? options.schemaUrlTemplate?.({ name: module.name, ...module.revision ? { revision: module.revision } : {}, ...module.namespace ? { namespace: module.namespace } : {} }) ?? joinUrl(options.baseUrl, `yang?module=${encodeURIComponent(module.name)}${module.revision ? `&revision=${encodeURIComponent(module.revision)}` : ""}`);
-      const response = await fetchImpl(url, { headers: { accept: "application/yang" }, ...options.signal ? { signal: options.signal } : {} });
-      if (!response.ok) throw new Error(`Schema request failed: ${response.status} for ${url}`);
-      return response.text();
-    };
-    const find = async (kind, name2, revision) => {
-      const pool = await inventory();
-      const rows = kind === "module" ? pool.modules : [...pool.submodules, ...pool.modules];
-      const candidates = rows.filter((entry) => entry.name === name2 && (revision === void 0 || entry.revision === revision || entry.revision === void 0));
-      if (candidates.length === 0) return void 0;
-      if (revision !== void 0) {
-        const pinned = candidates.find((entry) => entry.revision === revision);
-        if (pinned) return pinned;
-        if (candidates.length > 1) return void 0;
-      }
-      return candidates.sort((a, b) => (b.revision ?? "").localeCompare(a.revision ?? ""))[0];
-    };
-    return {
-      async loadModule(name2, revision) {
-        const entry = await find("module", name2, revision);
-        return entry ? sourceText(entry) : void 0;
-      },
-      async loadSubmodule(name2, revision) {
-        const entry = await find("submodule", name2, revision);
-        return entry ? sourceText(entry) : void 0;
-      }
-    };
-  }
-
   // src/index.ts
   var capabilities = {
-    parser: "statement-grammar",
-    moduleResolution: "planned",
-    xpath: "planned",
-    validation: "partial-form-types",
+    parser: "implemented",
+    moduleResolution: "implemented",
+    xpath: "implemented",
+    validation: "partial",
     browserOnlyRuntime: true
   };
   return __toCommonJS(index_exports);

@@ -1,6 +1,7 @@
 import { DOMParser } from "@xmldom/xmldom";
 import { describe, expect, it } from "vitest";
-import { compileYangModules, evaluateCandidates, finiteDomainOf, parseYang, resolveModuleSet } from "../src/index.js";
+import { compileYangModules, evaluateCandidates, parseYang, resolveModuleSet } from "../src/index.js";
+import { finiteDomainOf } from "../src/internal.js";
 import { parseXml } from "./dom.js";
 
 const instance = (xml: string) => parseXml(xml);

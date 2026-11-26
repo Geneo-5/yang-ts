@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildAccessibleTree, canonicalFormOf, childOf, compileYangModules, compileYangXPath, createFormModel, evaluateCandidates, moduleNamespacePrefixes,
+  buildAccessibleTree, canonicalFormOf, compileYangModules, createFormModel, evaluateCandidates,
   parseYang, resolveModuleSet, validateFormValue, validateDataTree, YangSyntaxError,
 } from "../src/index.js";
+import { childOf, compileYangXPath, moduleNamespacePrefixes } from "../src/internal.js";
 import type { CompiledSchemaNode, CompiledYangSchema } from "../src/index.js";
 import { parseXml, serializeNode } from "./dom.js";
 

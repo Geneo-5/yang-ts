@@ -63,13 +63,20 @@ describe("browser smoke suite over the built bundle", () => {
     expect(types, "dist/index.d.ts must be built").toBe(true);
     const source = readFileSync(fileURLToPath(new URL("../src/index.ts", import.meta.url)), "utf8");
     const declaration = readFileSync(fileURLToPath(new URL("../dist/index.d.ts", import.meta.url)), "utf8");
-    const exported = [...source.matchAll(/^export \* from "\.\/(.+)\.js";$/gm)].map(match => match[1]);
-    expect(exported.length).toBeGreaterThanOrEqual(12);
-    for (const module of exported) {
-      expect(declaration.length, `dist/index.d.ts should re-export ${module}`).toBeGreaterThan(0);
+    const exports = [...source.matchAll(/^export (?:type )?\{[\s\S]*?\} from "\.\/(.+)";$/gm)].map(match => match[1]);
+    expect(exports.length).toBeGreaterThanOrEqual(12);
+    for (const module of exports.slice(0, 5)) {
+      expect(declaration.length, "dist/index.d.ts should be non-empty").toBeGreaterThan(0);
     }
-    for (const module of ["validation/validate-instance", "validation/candidates", "restconf/library-loader"]) {
+    for (const module of ["validation/validate-instance", "validation/candidates", "restconf/library-loader", "restconf/paths"]) {
       expect(declaration).toContain(module);
+    }
+    // The curated names the docs and examples rely on:
+    for (const name of ["parseYang", "resolveModuleSet", "compileYangModules", "createFormModel", "validateFormValue",
+      "canonicalFormOf", "validateDataTree", "evaluateCandidates", "buildAccessibleTree", "createConstraintEvaluator",
+      "createRestconfModuleLoader", "createRestconfRpcRequest", "nodeToRestconfDataPath", "capabilities", "CompiledYangSchema"]) {
+      expect(source).toContain(name);
+      expect(declaration).toContain(name);
     }
   });
 });
