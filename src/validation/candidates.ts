@@ -2,7 +2,7 @@ import { YangStatement } from "../yang/ast.js";
 import { childOf, childrenOf } from "../yang/parser.js";
 import { CompiledSchemaNode, CompiledYangSchema } from "../yang/compiler.js";
 import { createConstraintEvaluator, ConstraintEvaluation, compileModuleExpression } from "../xpath/evaluate-constraints.js";
-import { schemaNodeChainByPath, flattenDataChildren } from "../xpath/accessible-tree.js";
+import { buildAccessibleTree, schemaNodeChainByPath, flattenDataChildren } from "../xpath/accessible-tree.js";
 
 export type CandidateStatus = "allowed" | "blocked" | "indeterminate";
 export type CandidateDomain = "enum" | "bits" | "boolean" | "none";
@@ -44,6 +44,8 @@ export interface CandidateOptions {
 export interface FiniteDomain {
   domain: CandidateDomain;
   values: string[];
+  /** RFC 7950 §9.7.4 bit positions (explicit or implied) for `bits` domains. */
+  positions?: ReadonlyMap<string, number>;
 }
 
 /**
@@ -77,7 +79,24 @@ export function finiteDomainOf(node: CompiledSchemaNode): FiniteDomain {
   const enums = values("enumeration", "enum");
   if (enums.length) return { domain: "enum", values: enums };
   const bits = values("bits", "bit");
-  if (bits.length) return { domain: "bits", values: bits };
+  if (bits.length) {
+    // RFC 7950 §9.7.4: a bit without an explicit `position` is one greater
+    // than its predecessor (0 for the first); canonical form joins selections
+    // ordered by position.
+    let baseIndex = -1;
+    for (let index = layers.length - 1; index >= 0; index--) {
+      if (layers[index]!.argument === "bits") { baseIndex = index; break; }
+    }
+    const positions = new Map<string, number>();
+    let next = 0;
+    for (const bit of childrenOf(layers[baseIndex]!, "bit")) {
+      const declared = childOf(bit, "position")?.argument;
+      if (declared !== undefined && /^\d+$/.test(declared)) next = Number(declared);
+      positions.set(bit.argument ?? "", next);
+      next++;
+    }
+    return { domain: "bits", values: bits, positions };
+  }
   if (layers[layers.length - 1]!.argument === "boolean") return { domain: "boolean", values: ["true", "false"] };
   return { domain: "none", values: [] };
 }
@@ -224,9 +243,11 @@ export function evaluateCandidates(
   const dataNodes = chain.filter(node => node.kind !== "choice" && node.kind !== "case");
   const segments = parsePathSegments(path);
 
-  // Evaluate on a private clone: no candidate value, no placeholder ever
-  // reaches the caller's document, not even via an exceptional constraint.
-  const working = instance.cloneNode(true) as Document;
+  // Evaluate on the accessible tree buildAccessibleTree produces a fresh
+  // document from the instance (defaults materialized, caller's document
+  // untouched): no candidate value, no placeholder ever reaches the caller's
+  // document, not even via an exceptional constraint.
+  const working = buildAccessibleTree(schema, instance, { context: "datastore-config" }).document;
   const evaluator = createConstraintEvaluator(schema);
   const located = locateElement(working, dataNodes, segments);
   if (!located.element && !located.parent) {
@@ -280,8 +301,13 @@ export function evaluateCandidates(
         }],
       };
     }
+    // RFC 6991: the canonical bits lexical form joins the selection ordered
+    // by bit position (matching canonicalFormOf), not alphabetically.
     const tested = domain.domain === "bits"
-      ? Array.from(new Set([...bitsSelection, value])).sort().join(" ")
+      ? Array.from(new Set([...bitsSelection, value]))
+        .sort((left, right) => (domain.positions?.get(left) ?? Number.MAX_SAFE_INTEGER)
+          - (domain.positions?.get(right) ?? Number.MAX_SAFE_INTEGER))
+        .join(" ")
       : value;
     context!.textContent = tested;
     let status: CandidateStatus = "allowed";

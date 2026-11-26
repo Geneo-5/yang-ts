@@ -129,3 +129,50 @@ describe("contextual candidate evaluation", () => {
     expect(evaluateCandidates(schema, instance(`<box xmlns="urn:plain"/>`), "/box/missing").domain).toBe("none");
   });
 });
+
+/** Stage 7b P1 (ROADMAP §154): candidate probing must see defaults and respect bits order. */
+describe("candidate probing on the accessible tree", () => {
+  it("sees declared defaults of absent siblings when probing candidates", async () => {
+    const schema = await compileModule(`module cand-defaults {
+      namespace "urn:cand"; prefix c;
+      container top {
+        leaf mode {
+          type enumeration { enum auto; enum manual; }
+          must "../lanes = '1'";
+        }
+        leaf lanes { type string; default "1"; }
+      }
+    }`);
+    // lanes is absent from the document: the accessible tree injects its
+    // declared default so the must is met for both candidates. Pre-fix the
+    // raw clone kept lanes missing and every candidate was blocked.
+    const result = evaluateCandidates(schema, instance(
+      `<top xmlns="urn:cand"><mode>manual</mode></top>`), "/top/mode");
+    expect(result.candidates.map(candidate => [candidate.value, candidate.status])).toEqual([
+      ["auto", "allowed"], ["manual", "allowed"],
+    ]);
+  });
+
+  it("orders joined bits by bit position, like canonicalFormOf", async () => {
+    const schema = await compileModule(`module cand-bits {
+      namespace "urn:candbits"; prefix b;
+      container flags {
+        leaf mask {
+          type bits {
+            bit alpha { position 2; }
+            bit bravo { position 1; }
+            bit charlie { position 0; }
+          }
+          must "current() = 'bravo alpha'";
+        }
+      }
+    }`);
+    const result = evaluateCandidates(schema, instance(
+      `<flags xmlns="urn:candbits"><mask>bravo</mask></flags>`), "/flags/mask", { bitsSelection: ["bravo"] });
+    // Candidate alpha joins the selection as 'bravo alpha' (positions 1, 2);
+    // pre-fix the join was alphabetical ('alpha bravo') and the must blocked it.
+    const alpha = result.candidates.find(candidate => candidate.value === "alpha")!;
+    expect(alpha.status).toBe("allowed");
+    expect(alpha.reasons).toEqual([]);
+  });
+});

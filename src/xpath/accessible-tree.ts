@@ -141,6 +141,9 @@ export function accessibleDataRoot(rootNode: CompiledSchemaNode, source: Element
   const copy = document.createElementNS(rootNode.namespace, rootNode.name);
   if (wrapper) copyNamespaceDeclarations(wrapper, copy);
   copyNamespaceDeclarations(source, copy);
+  // A leaf/list/anydata root carries no children to scope-copy: its own value
+  // is the text content, and expressions such as `../sibling = 'x'` read it.
+  if (["leaf", "leaf-list", "anydata", "anyxml"].includes(rootNode.kind)) copy.textContent = source.textContent;
   copyScope(rootNode.children, source, copy, scope, document);
   return copy;
 }

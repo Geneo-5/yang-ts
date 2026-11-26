@@ -115,3 +115,23 @@ describe("RFC 7950 accessible tree construction", () => {
     expect(evaluate("count(deref(pool/node)) = 2")).toBe(true);
   });
 });
+
+const rootsSchema = compileYangModules(await resolveModuleSet([
+  parseYang(`module gated {
+    namespace "urn:gated"; prefix g;
+    leaf active { type boolean; }
+    leaf-list tag { type string; }
+  }`),
+], { async loadModule() { return undefined; } }));
+
+describe("top-level leaves under a transport wrapper", () => {
+  it("keeps a top-level leaf's text in the accessible tree", () => {
+    const tree = buildAccessibleTree(rootsSchema, parseXml(
+      `<gated xmlns="urn:gated"><active>true</active><tag>lan</tag></gated>`), { context: "datastore-config" });
+    // Pre-fix a leaf/leaf-list root under a wrapper lost its text: only its
+    // (nonexistent) children were scoped into the copy, so expressions such as
+    // `../active = 'true'` evaluated against empty content.
+    expect(tree.document.getElementsByTagName("active")[0]!.textContent).toBe("true");
+    expect(tree.document.getElementsByTagName("tag")[0]!.textContent).toBe("lan");
+  });
+});

@@ -5304,6 +5304,7 @@ var YangEngine = (() => {
     const copy = document2.createElementNS(rootNode.namespace, rootNode.name);
     if (wrapper) copyNamespaceDeclarations(wrapper, copy);
     copyNamespaceDeclarations(source, copy);
+    if (["leaf", "leaf-list", "anydata", "anyxml"].includes(rootNode.kind)) copy.textContent = source.textContent;
     copyScope(rootNode.children, source, copy, scope, document2);
     return copy;
   }
@@ -6325,7 +6326,24 @@ var YangEngine = (() => {
     const enums = values("enumeration", "enum");
     if (enums.length) return { domain: "enum", values: enums };
     const bits = values("bits", "bit");
-    if (bits.length) return { domain: "bits", values: bits };
+    if (bits.length) {
+      let baseIndex = -1;
+      for (let index = layers.length - 1; index >= 0; index--) {
+        if (layers[index].argument === "bits") {
+          baseIndex = index;
+          break;
+        }
+      }
+      const positions = /* @__PURE__ */ new Map();
+      let next = 0;
+      for (const bit of childrenOf(layers[baseIndex], "bit")) {
+        const declared = childOf(bit, "position")?.argument;
+        if (declared !== void 0 && /^\d+$/.test(declared)) next = Number(declared);
+        positions.set(bit.argument ?? "", next);
+        next++;
+      }
+      return { domain: "bits", values: bits, positions };
+    }
     if (layers[layers.length - 1].argument === "boolean") return { domain: "boolean", values: ["true", "false"] };
     return { domain: "none", values: [] };
   }
@@ -6403,7 +6421,7 @@ var YangEngine = (() => {
     if (domain.domain === "none") return { path, domain: domain.domain, candidates: [] };
     const dataNodes = chain.filter((node2) => node2.kind !== "choice" && node2.kind !== "case");
     const segments = parsePathSegments(path);
-    const working = instance.cloneNode(true);
+    const working = buildAccessibleTree(schema, instance, { context: "datastore-config" }).document;
     const evaluator = createConstraintEvaluator(schema);
     const located = locateElement(working, dataNodes, segments);
     if (!located.element && !located.parent) {
@@ -6451,7 +6469,7 @@ var YangEngine = (() => {
           }]
         };
       }
-      const tested = domain.domain === "bits" ? Array.from(/* @__PURE__ */ new Set([...bitsSelection, value])).sort().join(" ") : value;
+      const tested = domain.domain === "bits" ? Array.from(/* @__PURE__ */ new Set([...bitsSelection, value])).sort((left, right) => (domain.positions?.get(left) ?? Number.MAX_SAFE_INTEGER) - (domain.positions?.get(right) ?? Number.MAX_SAFE_INTEGER)).join(" ") : value;
       context.textContent = tested;
       let status = "allowed";
       const reasons = [];
