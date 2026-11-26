@@ -51,8 +51,11 @@ describe("browser readiness audit", () => {
     };
     expect(pkg.sideEffects).toBe(false);
     expect(pkg.type).toBe("module");
-    expect(Object.keys(pkg.exports)).toEqual(["."]);
+    // §208: the React hooks ship under a dedicated sub-path so the core stays
+    // React-free for non-React users (react is an OPTIONAL peer dependency).
+    expect(Object.keys(pkg.exports)).toEqual([".", "./react"]);
     expect(pkg.exports["."]).toMatchObject({ types: "./dist/index.d.ts", import: "./dist/index.js" });
+    expect(pkg.exports["./react"]).toMatchObject({ types: "./dist/react/index.d.ts", import: "./dist/react/index.js" });
     const missing = (pkg.files as string[]).filter(entry => !existsSync(`${root}/${entry}`));
     // `dist` only exists after a build; every other declared file must be checked in.
     expect(missing.filter(entry => entry !== "dist")).toEqual([]);

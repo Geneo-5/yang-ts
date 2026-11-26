@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import * as publicApi from "../src/index.js";
+import * as reactApi from "../src/react/index.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const GUIDE = `${root}/GUIDE.md`;
@@ -30,6 +31,8 @@ const NON_ENGINE_CALLS = new Set([
   "try", "catch", "finally", "else", "switch", "case", "function", "async", "then",
   // chargers and helpers the guide defines itself in its snippets
   "loadModule", "loadSubmodule", "send",
+  // React — a peer dependency's API, not the engine's (§208)
+  "createElement", "useEffect", "useState", "useMemo", "useRef", "useCallback",
 ]);
 
 const extractCodeBlocks = (markdown: string): string[] =>
@@ -51,6 +54,17 @@ describe("usage guide", () => {
     }
   });
 
+  it("documents the React hooks of yang-browser-engine/react (§208)", () => {
+    expect(markdown).toBeDefined();
+    if (!markdown) return;
+    for (const hook of ["YangProvider", "useYangSchema", "useFormModel", "useFieldValidation", "useDataValidation", "useCandidates", "useRestconfResource"]) {
+      expect(new RegExp(`\\b${hook}\\b`).test(markdown), `GUIDE.md must mention '${hook}'`).toBe(true);
+      // The sub-path barrel decides existence; the core barrel stays React-free.
+      expect(hook in reactApi, `'${hook}' must exist in yang-browser-engine/react`).toBe(true);
+      expect(hook in publicApi, `'${hook}' must NOT be in the core barrel (sub-path only)`).toBe(false);
+    }
+  });
+
   it("calls nothing that is not exported (broken-reference audit)", () => {
     expect(markdown).toBeDefined();
     if (!markdown) return;
@@ -60,9 +74,10 @@ describe("usage guide", () => {
         calls.add(match[1]!);
       }
     }
+    const engine = { ...publicApi, ...reactApi };
     for (const call of calls) {
       if (NON_ENGINE_CALLS.has(call)) continue;
-      expect(call in publicApi, `GUIDE.md snippet calls '${call}()' which is not a public engine API`).toBe(true);
+      expect(call in engine, `GUIDE.md snippet calls '${call}()' which is not a public engine API`).toBe(true);
     }
   });
 

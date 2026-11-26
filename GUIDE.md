@@ -132,7 +132,7 @@ Le résultat `YangModuleSet` contient `roots`, `modules`, `submodules` et
 `diagnostics` (codes `missing-module`, `import-cycle`, `include-cycle`,
 `duplicate-revision`, `ambiguous-revision`, `unexpected-document`,
 `invalid-belongs-to`, `budget-exceeded`, `cancelled`). Sans option `budget`, la résolution reste **illimitée**
-: passez toujours un budget en environnement non maîtrisé (voir §8).
+: passez toujours un budget en environnement non maîtrisé (voir §9).
 
 ### 2.2 Compiler le schéma
 
@@ -305,7 +305,44 @@ cases actifs s'évalue côté UI/validateur via `model.choices` ; les champs sou
 `case` restent `pending` sur leurs vérifications croisées `leafref` s'ils sont
 trouvés par chemin nu.
 
-## 6. Arbre accessible et contraintes XPath
+## 6. React (`yang-browser-engine/react`)
+
+Le sous-chemin `yang-browser-engine/react` fournit des hooks **headless** (§208
+de la roadmap) : état sérialisable, sûr sous React strict mode et rendu
+concurrent. React est une **peer dependency optionnelle** — le noyau du
+moteur n'en dépend pas et les projets non-React n'installent rien.
+
+```ts
+import { YangProvider, useYangSchema, useFormModel, useFieldValidation } from "yang-browser-engine/react";
+```
+
+`YangProvider` initialise le moteur **dans un effet** (§209) : le premier
+rendu — serveur ou prérendu — montre un état `loading` et l'hydratation ne
+diverge pas. Deux entrées possibles : `schema` déjà compilé (rendu `ready` dès
+le premier rendu) ou une fabrique `compile: () => Promise<CompiledYangSchema>`
+(effet au montage, résultats périmés ignorés, erreurs exposées en texte).
+
+```ts
+const app = createElement(YangProvider, { schema: compiledSchema },
+  createElement(AppBody));
+```
+
+Les hooks: `useYangSchema()` (état loading/ready/error), `useFormModel(options?)`
+(modèle de formulaire mémorisé du §5, `undefined` pendant le chargement),
+`useFieldValidation(field, value)` (verdict par champ), `useDataValidation(document)`
+(validation d'arbre complète), `useCandidates(document, path)` (candidats
+contextuels du §4) et `useRestconfResource(client, path, { resource })` (GET
+RFC 8040 avec donnees brutes JSON, état loading/ready/error, `refetch()`,
+abandon à démontage). La couche worker et le flux d'édition optimiste restent
+à venir (§210/§211 de la roadmap).
+
+```ts
+const model = useFormModel({ module: "acme-router" });
+const field = model?.fields.at(0);
+const verdict = useFieldValidation(field, "9000");
+```
+
+## 7. Arbre accessible et contraintes XPath
 
 Les expressions `must`/`when` compilent et s'évaluent contre un **arbre
 accessible** : un document annexe où le moteur projette vos données selon le
@@ -334,7 +371,7 @@ tree.contextNode; // le noeud de contexte pour l'évaluation XPath
 Un XPath qui ne peut pas être évalué (fonction manquante, erreur d'arbre)
 produit le statut `indeterminate` avec le motif — jamais un silence.
 
-## 7. Adapter du JSON (RFC 7951) aux documents XML
+## 8. Adapter du JSON (RFC 7951) aux documents XML
 
 Pour parler à un serveur RESTCONF il faut dé/sérialiser le JSON `iana-.+
 yang-data` en arbres XML et revenir. L'adaptateur règle les pièges connus:
@@ -365,7 +402,7 @@ document presque vide suffit ; l'option attend exactement
 portant le **chemin JSON** du membre fautif — le corps du serveur est refusé
 explicitement, jamais interprété approximativement.
 
-## 8. RESTCONF : chargement de schéma, librairie et requêtes
+## 9. RESTCONF : chargement de schéma, librairie et requêtes
 
 ### 8.1 Charger les modules depuis le serveur
 
@@ -480,7 +517,7 @@ tableaux d'enregistrements ordonnés), `formInputToRestconfBody(operation,
 values)` l'objet d'entrée d'un RPC, et `formPathToYangPathSegments(path,
 module, { listKeys, leafListValue })` traduit un `FormField.path` (marqueurs
 `[*]`) en segments pour les constructeurs ci-dessus — refus explicite d'une
-liste sans ses valeurs de clés. Les conventions d'encodage sont celles du §7
+liste sans ses valeurs de clés. Les conventions d'encodage sont celles du §8
 et le test d'aller-retour (`tests/forms-restconf.test.ts`) verrouille
 l'équivalence avec `documentToYangJson`.
 
@@ -619,7 +656,7 @@ stream.streamUrl;          // l'URL découverte
 stream.close();            // libère l'EventSource ; idempotent
 ```
 
-## 9. Sécurité des sources non fiables
+## 10. Sécurité des sources non fiables
 
 Le moteur parse du YANG **venu du réseau**. Trois lignes de défense :
 
@@ -638,7 +675,7 @@ mémoire au-delà des plafonds passés. Les constantes d'aide
 `UNTRUSTED_MODULE_BUDGET` / `UNTRUSTED_SCHEMA_NODE_BUDGET` sont internes :
 utilisez vos propres valeurs explicites.
 
-## 10. Précompiler pour le navigateur (production)
+## 11. Précompiler pour le navigateur (production)
 
 En production le navigateur devrait charger un **artefact sérialisé** plutôt
 que parser des sources YANG à chaque session. La CLI fournie écrit
@@ -671,10 +708,10 @@ localStorage.setItem("yang-schema", JSON.stringify(serializeCompiledSchema(schem
 const cached = deserializeCompiledSchema(JSON.parse(localStorage.getItem("yang-schema")!));
 ```
 
-Pensez à auditer les révisions avec le serveur (§8.2) après chaque rechargement
+Pensez à auditer les révisions avec le serveur (§9.2) après chaque rechargement
 de l'artefact.
 
-## 11. Ce que le projet ne fait pas (et où chercher)
+## 12. Ce que le projet ne fait pas (et où chercher)
 
 - **Pas de couche UI** : ni React hooks ni widgets — `createFormModel`
   produit des données neutres que votre UI consomme (§5) ;
