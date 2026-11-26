@@ -4495,6 +4495,15 @@ var YangEngine = (() => {
       bit: ["position", "status", "description", "reference"],
       augment: ["when", "description", "reference"]
     };
+    const intervalEndpointValid = (endpoint, builtinType, fractionDigits) => {
+      if (endpoint === "min" || endpoint === "max") return true;
+      if (builtinType === "decimal64") {
+        if (!/^[+-]?\d+(\.\d+)?$/.test(endpoint) || fractionDigits === void 0) return false;
+        return (/\.(\d+)$/.exec(endpoint)?.[1]?.length ?? 0) <= Number(fractionDigits);
+      }
+      if (builtinType === "string") return /^\d+$/.test(endpoint);
+      return /^[+-]?\d+$/.test(endpoint);
+    };
     const requiredChildren = {
       module: ["namespace", "prefix"],
       submodule: ["belongs-to"],
@@ -4526,6 +4535,16 @@ var YangEngine = (() => {
             if (!allowed || !builtinType) continue;
             if (!allowed.has(builtinType)) {
               report("invalid-type-restriction", `Restriction '${child.keyword}' is not valid for type '${typeName}' of kind '${builtinType}'`, root, child);
+            } else if (child.keyword === "range" || child.keyword === "length") {
+              for (const interval of (child.argument ?? "").split("|")) {
+                const [lowText = "", highText] = interval.trim().split("..");
+                const high = (highText ?? lowText).trim();
+                for (const endpoint of [lowText.trim(), high]) {
+                  if (!intervalEndpointValid(endpoint, builtinType, childOf(statement, "fraction-digits")?.argument)) {
+                    report("invalid-type-restriction", `Endpoint '${endpoint ?? ""}' of '${child.keyword} ${statement.argument ?? ""}' is not a valid bound for '${builtinType}'`, root, child);
+                  }
+                }
+              }
             }
           }
         }
@@ -6830,11 +6849,19 @@ var YangEngine = (() => {
     };
     for (const expression of expressions) {
       constraints.push({ expression, minimum: inheritedMinimum, maximum: inheritedMaximum });
+      const parseable = (endpoint) => endpoint === "min" || endpoint === "max" || (decimalDigits === void 0 ? /^[+-]?\d+$/.test(endpoint) : decimalScaled(endpoint, decimalDigits) !== void 0);
       const intervals = expression.split("|").map((part) => {
         const [lowText = "", highText] = part.trim().split("..");
         const highTrimmed = (highText ?? lowText).trim();
         return [parse2(lowText.trim()), parse2(highTrimmed)];
       });
+      if (intervals.some((interval, index) => {
+        const endpoints = expression.split("|")[index].trim().split("..");
+        return endpoints.some((endpoint) => !parseable(endpoint.trim()));
+      })) {
+        constraints.push({ expression, minimum: inheritedMinimum, maximum: inheritedMaximum });
+        continue;
+      }
       const lows = intervals.map((interval) => interval[0]).filter((value) => value !== void 0);
       const highs = intervals.map((interval) => interval[1]).filter((value) => value !== void 0);
       if (lows.length) inheritedMinimum = lows.reduce((a, b) => a < b ? a : b);
@@ -6852,6 +6879,9 @@ var YangEngine = (() => {
         if (endpoint === "max") return bounds?.[1];
         return decimalDigits === void 0 ? /^[+-]?\d+$/.test(endpoint) ? BigInt(endpoint) : void 0 : decimalScaled(endpoint, decimalDigits);
       };
+      if (low !== "min" && low !== "max" && parse2(low) === void 0 || high !== "min" && high !== "max" && parse2(high) === void 0) {
+        return false;
+      }
       const lo = parse2(low);
       const hi = parse2(high);
       return (lo === void 0 || value >= lo) && (hi === void 0 || value <= hi);

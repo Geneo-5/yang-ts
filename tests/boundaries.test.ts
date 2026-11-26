@@ -149,3 +149,53 @@ describe("RFC 6991 enumeration, bits and identityref restrictions", () => {
     expect(settled(probe, ["low", "low"]).status).toBe("invalid");
   });
 });
+
+/** Stage 7b P1 (ROADMAP §50): unparsable range/length endpoints fail closed (RFC 7950 §9.2.4/§9.4.4/§9.3.4). */
+describe("unparsable interval endpoints", () => {
+  it("never satisfies an integer range whose endpoint cannot be parsed", () => {
+    const f = field(`module badrange {
+      namespace "urn:bad"; prefix b;
+      leaf probe { type int16 { range "1..100 | FOX"; } }
+    }`);
+    expect(validateFormValue(f, "50").status).toBe("valid");
+    // Pre-fix FOX parsed to an unbounded interval and 5000 validated.
+    expect(validateFormValue(f, "5000").status).toBe("invalid");
+  });
+
+  it("treats a missing high endpoint as invalid syntax", () => {
+    const f = field(`module openrange {
+      namespace "urn:open"; prefix o;
+      leaf probe { type uint8 { range "1.."; } }
+    }`);
+    expect(validateFormValue(f, "20").status).toBe("invalid");
+  });
+
+  it("does not satisfy a length whose endpoint cannot be parsed", () => {
+    const f = field(`module badlength {
+      namespace "urn:badlen"; prefix l;
+      leaf probe { type string { length "0..WAT"; } }
+    }`);
+    expect(validateFormValue(f, "aaaa").status).toBe("invalid");
+  });
+
+  it("keeps decimal64 ranges fail closed", () => {
+    const f = field(`module baddecimal {
+      namespace "urn:baddec"; prefix d;
+      leaf probe { type decimal64 { fraction-digits 2; range "1.00..FOX"; } }
+    }`);
+    expect(validateFormValue(f, "2.50").status).toBe("invalid");
+  });
+
+  it("reports unparsable range endpoints at compile time", async () => {
+    const { compileYangModules, resolveModuleSet } = await import("../src/index.js");
+    const { parseXml } = await import("./dom.js");
+    void parseXml;
+    const schema = compileYangModules(await resolveModuleSet([parseYang(`module badrange2 {
+      namespace "urn:bad2"; prefix b;
+      leaf probe { type int16 { range "1..FOX"; } }
+      leaf text { type string { length "0..WAT"; } }
+    }`)], { async loadModule() { return undefined; } }));
+    expect(schema.diagnostics.map(item => item.code)).toContain("invalid-type-restriction");
+    expect(schema.diagnostics).toHaveLength(2);
+  });
+});

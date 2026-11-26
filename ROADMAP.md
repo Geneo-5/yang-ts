@@ -54,7 +54,7 @@ Delivered: integer boundaries including exact 64-bit BigInt, decimal64 scaled ar
 Open defects:
 - [x] `pattern` with `modifier invert-match` inverts only its own pattern in the conjunction (fixed 2026-11-26, `tests/stage7-p0.test.ts`).
 - [x] Patterns outside the proven-safe XSD/JS subset stay `pending` (fixed 2026-11-26): divergent escapes (`\d \D \w \W \s \S \p \P \i \c`), backreferences, `(?` groups, class subtraction, `[]` forms and out-of-class `^`/`$` never compile; shared logic lives in `src/types/xsd-pattern.ts` (test: `tests/stage7-p0.test.ts`).
-- [ ] Unparsable `range`/`length` endpoints are treated as unbounded (constraint silently satisfied).
+- [x] Unparsable `range`/`length` endpoints: RFC 7950 §9.2.4/§9.4.4 — the compiler now reports every interval endpoint that is not a lexical bound of the restricted built-in (integers, fixed-point decimals for `decimal64`, non-negative integers for `length`, `min`/`max`) as `invalid-type-restriction`; at value level `inIntervals` fails closed (an unusable endpoint matches nothing) and `inheritedIntervals` never lets garbage widen the inherited bounds for derived restrictions (fixed 2026-11-26, `tests/boundaries.test.ts`, five tests red first: `5000` validated against `range "1..100 | FOX"`, and the compile-time check emitted no diagnostic).
 - [x] Type and builtin-name logic is single-sourced: `src/types/builtins.ts` owns `BUILTIN_TYPES` and `RESTRICTION_BUILTINS` (RFC 7950 §9/§9.2.1), locked by `tests/types-builtins.test.ts` (2026-11-26); the pattern compiler remains shared in `src/types/xsd-pattern.ts`.
 - [ ] Canonical forms for identityref and instance-identifier are not represented.
 

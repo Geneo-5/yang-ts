@@ -213,6 +213,21 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
     enum: ["value", "status", "description", "reference"], bit: ["position", "status", "description", "reference"],
     augment: ["when", "description", "reference"],
   };
+  /**
+   * Is `endpoint` a lexical bound for `builtinType` (RFC 7950 §9.2.4 range,
+   * §9.4.4 length)? `min`/`max` are always legal; ranges take signed integers
+   * (plus fixed-point decimals for decimal64 with the declared
+   * `fraction-digits`), lengths take non-negative integers.
+   */
+  const intervalEndpointValid = (endpoint: string, builtinType: string, fractionDigits: string | undefined): boolean => {
+    if (endpoint === "min" || endpoint === "max") return true;
+    if (builtinType === "decimal64") {
+      if (!/^[+-]?\d+(\.\d+)?$/.test(endpoint) || fractionDigits === undefined) return false;
+      return (/\.(\d+)$/.exec(endpoint)?.[1]?.length ?? 0) <= Number(fractionDigits);
+    }
+    if (builtinType === "string") return /^\d+$/.test(endpoint);
+    return /^[+-]?\d+$/.test(endpoint);
+  };
   const requiredChildren: Readonly<Record<string, readonly string[]>> = {
     module: ["namespace", "prefix"], submodule: ["belongs-to"], typedef: ["type"],
     leaf: ["type"], "leaf-list": ["type"], "belongs-to": ["prefix"],
@@ -247,6 +262,20 @@ export function compileYangModules(moduleSet: YangModuleSet, options: YangCompil
           if (!allowed || !builtinType) continue;
           if (!allowed.has(builtinType)) {
             report("invalid-type-restriction", `Restriction '${child.keyword}' is not valid for type '${typeName}' of kind '${builtinType}'`, root, child);
+          } else if (child.keyword === "range" || child.keyword === "length") {
+            // RFC 7950 §9.2.4/§9.3.4/§9.4.4: every interval endpoint must be a
+            // lexical bound of the restricted built-in (or min/max); an
+            // unparsable endpoint is a restriction error, not an unbounded
+            // range.
+            for (const interval of (child.argument ?? "").split("|")) {
+              const [lowText = "", highText] = interval.trim().split("..");
+              const high = (highText ?? lowText).trim();
+              for (const endpoint of [lowText.trim(), high]) {
+                if (!intervalEndpointValid(endpoint, builtinType, childOf(statement, "fraction-digits")?.argument)) {
+                  report("invalid-type-restriction", `Endpoint '${endpoint ?? ""}' of '${child.keyword} ${statement.argument ?? ""}' is not a valid bound for '${builtinType}'`, root, child);
+                }
+              }
+            }
           }
         }
       }

@@ -375,12 +375,24 @@ function inheritedIntervals(
   // The caller passes base-most first so derived restrictions narrow them.
   for (const expression of expressions) {
     constraints.push({ expression, minimum: inheritedMinimum, maximum: inheritedMaximum });
+    const parseable = (endpoint: string): boolean => endpoint === "min" || endpoint === "max"
+      || (decimalDigits === undefined ? /^[+-]?\d+$/.test(endpoint) : decimalScaled(endpoint, decimalDigits) !== undefined);
     const intervals = expression.split("|").map(part => {
       // RFC 7950 range syntax allows whitespace around the ".." separator.
       const [lowText = "", highText] = part.trim().split("..");
       const highTrimmed = (highText ?? lowText).trim();
       return [parse(lowText.trim()), parse(highTrimmed)] as const;
     });
+    // An unparsable endpoint is invalid syntax (RFC 7950 §9.2.4): the
+    // expression's garbage must not widen the inherited bounds for the next
+    // derived restriction.
+    if (intervals.some((interval, index) => {
+      const endpoints = expression.split("|")[index]!.trim().split("..");
+      return endpoints.some(endpoint => !parseable(endpoint.trim()));
+    })) {
+      constraints.push({ expression, minimum: inheritedMinimum, maximum: inheritedMaximum });
+      continue;
+    }
     const lows = intervals.map(interval => interval[0]).filter((value): value is bigint => value !== undefined);
     const highs = intervals.map(interval => interval[1]).filter((value): value is bigint => value !== undefined);
     if (lows.length) inheritedMinimum = lows.reduce((a, b) => a < b ? a : b);
@@ -398,6 +410,13 @@ function inIntervals(value: bigint, expression: string, decimalDigits?: number, 
       if (endpoint === "max") return bounds?.[1];
       return decimalDigits === undefined ? (/^[+-]?\d+$/.test(endpoint) ? BigInt(endpoint) : undefined) : decimalScaled(endpoint, decimalDigits);
     };
+    // An endpoint that is neither min/max nor parseable for the scale makes
+    // the interval unusable: it matches nothing (fail closed) instead of
+    // standing for unbounded and silently satisfying every value.
+    if ((low !== "min" && low !== "max" && parse(low) === undefined)
+      || (high !== "min" && high !== "max" && parse(high) === undefined)) {
+      return false;
+    }
     const lo = parse(low);
     const hi = parse(high);
     return (lo === undefined || value >= lo) && (hi === undefined || value <= hi);
