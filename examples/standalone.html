@@ -3938,7 +3938,8 @@ var YangEngine = (() => {
     schemaNodeForElement: () => schemaNodeForElement,
     validateDataTree: () => validateDataTree,
     validateFormValue: () => validateFormValue,
-    yangLibraryEntries: () => yangLibraryEntries
+    yangLibraryEntries: () => yangLibraryEntries,
+    yangLibraryInventory: () => yangLibraryInventory
   });
 
   // src/yang/ast.ts
@@ -6947,52 +6948,77 @@ var YangEngine = (() => {
     const conformance = object["conformance-type"] === "import" ? "import" : object["conformance-type"] === "implement" ? "implement" : void 0;
     const rawLocation = object["location"];
     const location = rawLocation === void 0 ? void 0 : typeof rawLocation === "string" ? rawLocation : Array.isArray(rawLocation) ? rawLocation.filter((item) => typeof item === "string") : void 0;
-    return { name: name2, ...revision ? { revision } : {}, ...namespace ? { namespace } : {}, ...conformance ? { conformance } : {}, ...location ? { location } : {} };
+    const schema = typeof object["schema"] === "string" && object["schema"] ? object["schema"] : void 0;
+    return {
+      name: name2,
+      ...revision ? { revision } : {},
+      ...namespace ? { namespace } : {},
+      ...conformance ? { conformance } : {},
+      ...location ? { location } : {},
+      ...schema ? { schema } : {}
+    };
   }
   function rowsToEntries(rows) {
     const list = Array.isArray(rows) ? rows : rows !== void 0 ? [rows] : [];
     return list.map(normalizeEntry).filter((entry) => entry !== void 0);
   }
-  function yangLibraryEntries(payload) {
+  function yangLibraryInventory(payload) {
     const object = asRecord(payload);
     if (!object) throw new Error("YANG Library payload is not a JSON object");
     const modulesState = firstRecord(object, ["ietf-yang-library:modules-state", "modules-state"]);
-    if (modulesState) return rowsToEntries(modulesState["module"]);
+    if (modulesState) return { modules: rowsToEntries(modulesState["module"]), submodules: [] };
     const yangLibrary = firstRecord(object, ["ietf-yang-library:yang-library", "yang-library"]);
     if (yangLibrary) {
       const sets = yangLibrary["module-set"];
       const setList = Array.isArray(sets) ? sets : sets !== void 0 ? [sets] : [];
-      return setList.flatMap((set) => rowsToEntries(asRecord(set)?.["module"]));
+      return setList.reduce((inventory, set) => {
+        const record = asRecord(set);
+        if (!record) return inventory;
+        return {
+          modules: [...inventory.modules, ...rowsToEntries(record["module"])],
+          submodules: [...inventory.submodules, ...rowsToEntries(record["submodule"])]
+        };
+      }, { modules: [], submodules: [] });
     }
-    if (object["module"]) return rowsToEntries(object["module"]);
+    if (object["module"]) return { modules: rowsToEntries(object["module"]), submodules: rowsToEntries(object["submodule"]) };
     throw new Error("YANG Library payload has no module list (expected modules-state or yang-library module-set)");
+  }
+  function yangLibraryEntries(payload) {
+    return yangLibraryInventory(payload).modules;
   }
   function joinUrl(base, path) {
     return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+  }
+  function dataResource(resource) {
+    if (/^[\w+.-]+:\/\//.test(resource) || /^(data|operations)\/+/.test(resource)) return resource;
+    return `data/${resource}`;
   }
   function createRestconfModuleLoader(options) {
     const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
     if (!fetchImpl) throw new Error("No fetch implementation available: pass fetchImpl in RestconfLoaderOptions");
     let entriesPromise;
-    const entries = () => {
+    const inventory = () => {
       entriesPromise ?? (entriesPromise = (async () => {
-        if (options.libraryPayload !== void 0) return yangLibraryEntries(options.libraryPayload);
-        const resource = joinUrl(options.baseUrl, options.libraryResource ?? "ietf-yang-library:modules-state");
-        const response = await fetchImpl(resource, { headers: jsonHeaders });
-        if (!response.ok) throw new Error(`YANG Library request failed: ${response.status} for ${resource}`);
-        return yangLibraryEntries(await response.json());
+        if (options.libraryPayload !== void 0) return yangLibraryInventory(options.libraryPayload);
+        const resource = options.libraryResource ?? "ietf-yang-library:modules-state";
+        const url = /^[\w+.-]+:\/\//.test(resource) ? resource : joinUrl(options.baseUrl, dataResource(resource));
+        const response = await fetchImpl(url, { headers: jsonHeaders, ...options.signal ? { signal: options.signal } : {} });
+        if (!response.ok) throw new Error(`YANG Library request failed: ${response.status} for ${url}`);
+        return yangLibraryInventory(await response.json());
       })());
       return entriesPromise;
     };
     const sourceText = async (module) => {
       const locations = module.location === void 0 ? [] : Array.isArray(module.location) ? module.location : [module.location];
-      const url = locations[0] ?? options.schemaUrlTemplate?.({ name: module.name, ...module.revision ? { revision: module.revision } : {}, ...module.namespace ? { namespace: module.namespace } : {} }) ?? joinUrl(options.baseUrl, `yang?module=${encodeURIComponent(module.name)}${module.revision ? `&revision=${encodeURIComponent(module.revision)}` : ""}`);
-      const response = await fetchImpl(url, { headers: { accept: "application/yang" } });
+      const url = locations[0] ?? module.schema ?? options.schemaUrlTemplate?.({ name: module.name, ...module.revision ? { revision: module.revision } : {}, ...module.namespace ? { namespace: module.namespace } : {} }) ?? joinUrl(options.baseUrl, `yang?module=${encodeURIComponent(module.name)}${module.revision ? `&revision=${encodeURIComponent(module.revision)}` : ""}`);
+      const response = await fetchImpl(url, { headers: { accept: "application/yang" }, ...options.signal ? { signal: options.signal } : {} });
       if (!response.ok) throw new Error(`Schema request failed: ${response.status} for ${url}`);
       return response.text();
     };
-    const find = async (name2, revision) => {
-      const candidates = (await entries()).filter((entry) => entry.name === name2 && (revision === void 0 || entry.revision === revision || entry.revision === void 0));
+    const find = async (kind, name2, revision) => {
+      const pool = await inventory();
+      const rows = kind === "module" ? pool.modules : [...pool.submodules, ...pool.modules];
+      const candidates = rows.filter((entry) => entry.name === name2 && (revision === void 0 || entry.revision === revision || entry.revision === void 0));
       if (candidates.length === 0) return void 0;
       if (revision !== void 0) {
         const pinned = candidates.find((entry) => entry.revision === revision);
@@ -7003,11 +7029,11 @@ var YangEngine = (() => {
     };
     return {
       async loadModule(name2, revision) {
-        const entry = await find(name2, revision);
+        const entry = await find("module", name2, revision);
         return entry ? sourceText(entry) : void 0;
       },
       async loadSubmodule(name2, revision) {
-        const entry = await find(name2, revision);
+        const entry = await find("submodule", name2, revision);
         return entry ? sourceText(entry) : void 0;
       }
     };

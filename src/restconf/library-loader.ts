@@ -9,6 +9,8 @@ export interface YangLibraryModuleEntry {
   conformance?: "implement" | "import";
   /** URL for fetching the module's YANG source, if the server advertises one. */
   location?: string | readonly string[];
+  /** RFC 7895 `schema` leaf: URL for the XML-format schema resource. */
+  schema?: string;
 }
 
 const jsonHeaders = { accept: "application/yang-data+json" };
@@ -38,12 +40,52 @@ function normalizeEntry(row: unknown): YangLibraryModuleEntry | undefined {
   const location = rawLocation === undefined ? undefined
     : typeof rawLocation === "string" ? rawLocation
       : Array.isArray(rawLocation) ? rawLocation.filter((item): item is string => typeof item === "string") : undefined;
-  return { name, ...(revision ? { revision } : {}), ...(namespace ? { namespace } : {}), ...(conformance ? { conformance } : {}), ...(location ? { location } : {}) };
+  const schema = typeof object["schema"] === "string" && object["schema"] ? object["schema"] : undefined;
+  return {
+    name, ...(revision ? { revision } : {}), ...(namespace ? { namespace } : {}),
+    ...(conformance ? { conformance } : {}), ...(location ? { location } : {}), ...(schema ? { schema } : {}),
+  };
 }
 
 function rowsToEntries(rows: unknown): YangLibraryModuleEntry[] {
   const list = Array.isArray(rows) ? rows : rows !== undefined ? [rows] : [];
   return list.map(normalizeEntry).filter((entry): entry is YangLibraryModuleEntry => entry !== undefined);
+}
+
+/** Modules and submodules of an ietf-yang-library payload (RFC 7895 / RFC 8525). */
+export interface YangLibraryInventory {
+  modules: YangLibraryModuleEntry[];
+  /** RFC 8525 nested `submodule` lists; empty for RFC 7895 payloads. */
+  submodules: YangLibraryModuleEntry[];
+}
+
+/**
+ * Modules and submodules of an ietf-yang-library payload. Accepts the RFC 7895
+ * `modules-state` shape and the RFC 8525 `yang-library`/`module-set` shape
+ * (whose `module-set` entries carry separate `module` and `submodule` lists),
+ * with or without the `ietf-yang-library` prefix, or an already-unwrapped
+ * module list.
+ */
+export function yangLibraryInventory(payload: unknown): YangLibraryInventory {
+  const object = asRecord(payload);
+  if (!object) throw new Error("YANG Library payload is not a JSON object");
+  const modulesState = firstRecord(object, ["ietf-yang-library:modules-state", "modules-state"]);
+  if (modulesState) return { modules: rowsToEntries(modulesState["module"]), submodules: [] };
+  const yangLibrary = firstRecord(object, ["ietf-yang-library:yang-library", "yang-library"]);
+  if (yangLibrary) {
+    const sets = yangLibrary["module-set"];
+    const setList = Array.isArray(sets) ? sets : sets !== undefined ? [sets] : [];
+    return setList.reduce<YangLibraryInventory>((inventory, set) => {
+      const record = asRecord(set);
+      if (!record) return inventory;
+      return {
+        modules: [...inventory.modules, ...rowsToEntries(record["module"])],
+        submodules: [...inventory.submodules, ...rowsToEntries(record["submodule"])],
+      };
+    }, { modules: [], submodules: [] });
+  }
+  if (object["module"]) return { modules: rowsToEntries(object["module"]), submodules: rowsToEntries(object["submodule"]) };
+  throw new Error("YANG Library payload has no module list (expected modules-state or yang-library module-set)");
 }
 
 /**
@@ -53,18 +95,7 @@ function rowsToEntries(rows: unknown): YangLibraryModuleEntry[] {
  * module list.
  */
 export function yangLibraryEntries(payload: unknown): YangLibraryModuleEntry[] {
-  const object = asRecord(payload);
-  if (!object) throw new Error("YANG Library payload is not a JSON object");
-  const modulesState = firstRecord(object, ["ietf-yang-library:modules-state", "modules-state"]);
-  if (modulesState) return rowsToEntries(modulesState["module"]);
-  const yangLibrary = firstRecord(object, ["ietf-yang-library:yang-library", "yang-library"]);
-  if (yangLibrary) {
-    const sets = yangLibrary["module-set"];
-    const setList = Array.isArray(sets) ? sets : sets !== undefined ? [sets] : [];
-    return setList.flatMap(set => rowsToEntries(asRecord(set)?.["module"]));
-  }
-  if (object["module"]) return rowsToEntries(object["module"]);
-  throw new Error("YANG Library payload has no module list (expected modules-state or yang-library module-set)");
+  return yangLibraryInventory(payload).modules;
 }
 
 export interface RestconfLoaderOptions {
@@ -74,18 +105,28 @@ export interface RestconfLoaderOptions {
   fetchImpl?: typeof fetch;
   /**
    * Datastore resource path of the YANG Library payload; defaults to
-   * `ietf-yang-library:modules-state`. Pass `ietf-yang-library:yang-library`
-   * for servers exposing the RFC 8525 datastore only.
+   * `ietf-yang-library:modules-state`, requested under the RFC 8040 `/data/`
+   * subtree. A pre-qualified path (`data/…`, `operations/…`) or an absolute
+   * URL is used unchanged. Pass `ietf-yang-library:yang-library` for servers
+   * exposing the RFC 8525 datastore only.
    */
   libraryResource?: string;
   /** Schema source template used when an entry carries no `location` URL. */
   schemaUrlTemplate?: (module: { name: string; revision?: string; namespace?: string }) => string;
   /** Supply the library payload directly, e.g. pre-fetched or embedded. */
   libraryPayload?: unknown;
+  /** Abort signal forwarded to every schema/library request. */
+  signal?: AbortSignal;
 }
 
 function joinUrl(base: string, path: string): string {
   return `${base.replace(/\/+$/, "")}/${path.replace(/^\/+/, "")}`;
+}
+
+/** RFC 8040 §3.1: RESTCONF data resources live under the `/data` subtree. */
+function dataResource(resource: string): string {
+  if (/^[\w+.-]+:\/\//.test(resource) || /^(data|operations)\/+/.test(resource)) return resource;
+  return `data/${resource}`;
 }
 
 /**
@@ -98,14 +139,15 @@ export function createRestconfModuleLoader(options: RestconfLoaderOptions): Yang
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
   if (!fetchImpl) throw new Error("No fetch implementation available: pass fetchImpl in RestconfLoaderOptions");
 
-  let entriesPromise: Promise<YangLibraryModuleEntry[]> | undefined;
-  const entries = (): Promise<YangLibraryModuleEntry[]> => {
+  let entriesPromise: Promise<YangLibraryInventory> | undefined;
+  const inventory = (): Promise<YangLibraryInventory> => {
     entriesPromise ??= (async () => {
-      if (options.libraryPayload !== undefined) return yangLibraryEntries(options.libraryPayload);
-      const resource = joinUrl(options.baseUrl, options.libraryResource ?? "ietf-yang-library:modules-state");
-      const response = await fetchImpl(resource, { headers: jsonHeaders });
-      if (!response.ok) throw new Error(`YANG Library request failed: ${response.status} for ${resource}`);
-      return yangLibraryEntries(await response.json());
+      if (options.libraryPayload !== undefined) return yangLibraryInventory(options.libraryPayload);
+      const resource = options.libraryResource ?? "ietf-yang-library:modules-state";
+      const url = /^[\w+.-]+:\/\//.test(resource) ? resource : joinUrl(options.baseUrl, dataResource(resource));
+      const response = await fetchImpl(url, { headers: jsonHeaders, ...(options.signal ? { signal: options.signal } : {}) });
+      if (!response.ok) throw new Error(`YANG Library request failed: ${response.status} for ${url}`);
+      return yangLibraryInventory(await response.json());
     })();
     return entriesPromise;
   };
@@ -113,15 +155,20 @@ export function createRestconfModuleLoader(options: RestconfLoaderOptions): Yang
   const sourceText = async (module: YangLibraryModuleEntry): Promise<YangDocument | undefined> => {
     const locations = module.location === undefined ? [] : Array.isArray(module.location) ? module.location : [module.location];
     const url = locations[0]
+      ?? module.schema
       ?? options.schemaUrlTemplate?.({ name: module.name, ...(module.revision ? { revision: module.revision } : {}), ...(module.namespace ? { namespace: module.namespace } : {}) })
       ?? joinUrl(options.baseUrl, `yang?module=${encodeURIComponent(module.name)}${module.revision ? `&revision=${encodeURIComponent(module.revision)}` : ""}`);
-    const response = await fetchImpl(url, { headers: { accept: "application/yang" } });
+    const response = await fetchImpl(url, { headers: { accept: "application/yang" }, ...(options.signal ? { signal: options.signal } : {}) });
     if (!response.ok) throw new Error(`Schema request failed: ${response.status} for ${url}`);
     return response.text();
   };
 
-  const find = async (name: string, revision?: string): Promise<YangLibraryModuleEntry | undefined> => {
-    const candidates = (await entries()).filter(entry => entry.name === name
+  const find = async (kind: "module" | "submodule", name: string, revision?: string): Promise<YangLibraryModuleEntry | undefined> => {
+    // Submodules live in the RFC 8525 nested `submodule` lists; RFC 7895
+    // payloads list none, so those rows fall back to the flat module rows.
+    const pool = await inventory();
+    const rows = kind === "module" ? pool.modules : [...pool.submodules, ...pool.modules];
+    const candidates = rows.filter(entry => entry.name === name
       && (revision === undefined || entry.revision === revision || entry.revision === undefined));
     if (candidates.length === 0) return undefined;
     if (revision !== undefined) {
@@ -135,11 +182,11 @@ export function createRestconfModuleLoader(options: RestconfLoaderOptions): Yang
 
   return {
     async loadModule(name, revision) {
-      const entry = await find(name, revision);
+      const entry = await find("module", name, revision);
       return entry ? sourceText(entry) : undefined;
     },
     async loadSubmodule(name, revision) {
-      const entry = await find(name, revision);
+      const entry = await find("submodule", name, revision);
       return entry ? sourceText(entry) : undefined;
     },
   };
