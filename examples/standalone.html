@@ -3915,6 +3915,9 @@ var YangEngine = (() => {
     documentToYangJson: () => documentToYangJson,
     evaluateCandidates: () => evaluateCandidates,
     findSchemaLibraryMismatches: () => findSchemaLibraryMismatches,
+    formInputToRestconfBody: () => formInputToRestconfBody,
+    formPathToYangPathSegments: () => formPathToYangPathSegments,
+    formValuesToRestconfBody: () => formValuesToRestconfBody,
     nodeToRestconfDataPath: () => nodeToRestconfDataPath,
     nodeToRestconfDatastorePath: () => nodeToRestconfDatastorePath,
     nodeToXPath: () => nodeToXPath,
@@ -7517,6 +7520,126 @@ var YangEngine = (() => {
     return selected.slice().sort((left, right) => (positions.get(left) ?? 0) - (positions.get(right) ?? 0));
   }
 
+  // src/forms/restconf-body.ts
+  var NUMBER_TYPES = /* @__PURE__ */ new Set(["int8", "int16", "int32", "uint8", "uint16", "uint32"]);
+  function encodeLeaf(field, value) {
+    const single = (input) => {
+      if (field.yangType === "empty") return [null];
+      if (field.yangType === "bits") {
+        const names = Array.isArray(input) ? input.map((item) => String(item)) : String(input).split(/\s+/);
+        return names.filter(Boolean).join(" ");
+      }
+      if (typeof input !== "string" && typeof input !== "number" && typeof input !== "boolean") return void 0;
+      if (field.yangType === "boolean") {
+        if (input === "true" || input === true) return true;
+        if (input === "false" || input === false) return false;
+        return String(input);
+      }
+      if (NUMBER_TYPES.has(field.yangType)) {
+        const number = typeof input === "number" ? input : Number(input);
+        return Number.isNaN(number) ? String(input) : number;
+      }
+      return String(input);
+    };
+    if (field.multiple) {
+      if (value === void 0) return void 0;
+      const list = Array.isArray(value) ? value : [value];
+      return list.map(single);
+    }
+    return single(value);
+  }
+  var stepsOf = (relative) => relative.split("/").filter(Boolean).map((part) => ({ name: part.endsWith("[*]") ? part.slice(0, -3) : part, list: part.endsWith("[*]") }));
+  function buildBody(fields, values, prefix) {
+    const scoped = fields.filter((field) => field.path.startsWith(prefix));
+    const output = {};
+    const containers = /* @__PURE__ */ new Map();
+    for (const field of scoped) {
+      const relative = field.path.slice(prefix.length);
+      const local = stepsOf(relative);
+      if (local.length === 0) continue;
+      if (local[0].list) {
+        const marker = relative.indexOf("[*]");
+        const listPath = `${prefix.slice(0, -1)}/${relative.slice(0, marker + 3)}`;
+        const rawEntries = values[listPath];
+        if (rawEntries === void 0) continue;
+        if (!Array.isArray(rawEntries)) {
+          throw new Error(`List value for '${listPath}' must be an array of entry records`);
+        }
+        if (local.length === 1) continue;
+        const childPrefix = `${prefix.slice(0, -1)}/${relative.slice(0, marker + 3)}/`;
+        output[local[0].name] = rawEntries.map((entry) => {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+            throw new Error(`List entry for '${listPath}' must be a record of child field values`);
+          }
+          return buildBody(scoped, entry, childPrefix);
+        });
+        continue;
+      }
+      if (local.length === 1) {
+        const raw = values[field.path];
+        if (raw === void 0) continue;
+        const encoded = encodeLeaf(field, raw);
+        if (encoded !== void 0) output[local[0].name] = encoded;
+        continue;
+      }
+      const containerName = local[0].name;
+      const grouped = containers.get(containerName) ?? [];
+      grouped.push(field);
+      containers.set(containerName, grouped);
+    }
+    for (const [name2, grouped] of containers) {
+      output[name2] = buildBody(grouped, values, `${prefix}${name2}/`);
+    }
+    return output;
+  }
+  function formValuesToRestconfBody(model, values) {
+    const dataFields = model.fields.filter((field) => field.scope === "data");
+    if (dataFields.length === 0) return {};
+    const topLevel = /* @__PURE__ */ new Map();
+    for (const field of dataFields) {
+      const first = stepsOf(field.path)[0]?.name;
+      if (!first) continue;
+      const grouped = topLevel.get(first) ?? [];
+      grouped.push(field);
+      topLevel.set(first, grouped);
+    }
+    const body = {};
+    for (const [name2, fields] of topLevel) {
+      body[`${model.module}:${name2}`] = buildBody(fields, values, `/${name2}/`);
+    }
+    return body;
+  }
+  function formInputToRestconfBody(operation, values) {
+    return buildBody(operation.inputFields, values, `/${operation.name}/input/`);
+  }
+  function formPathToYangPathSegments(path, module, options = {}) {
+    const steps = stepsOf(path);
+    const listKeys = options.listKeys ?? [];
+    let keyIndex = 0;
+    const segments = steps.map((step, index) => {
+      const segment = { name: step.name, module };
+      if (step.list) {
+        const keys = listKeys[keyIndex];
+        if (keys === void 0) {
+          throw new Error(
+            `List '${step.name}' (step ${index + 1} of '${path}') has no key record: pass one 'listKeys' record per '[*]' step`
+          );
+        }
+        keyIndex++;
+        const resolved = Object.entries(keys).map(([name2, value]) => ({ name: name2, value }));
+        if (resolved.length === 0) {
+          throw new Error(`List '${step.name}' has no key values`);
+        }
+        segment.keys = resolved;
+      }
+      if (options.leafListValue !== void 0 && index === steps.length - 1 && !step.list) {
+        segment.leafListValue = options.leafListValue;
+      }
+      return segment;
+    });
+    return segments;
+  }
+
   // src/restconf/library-loader.ts
   var jsonHeaders = { accept: "application/yang-data+json" };
   function asRecord(value) {
@@ -7708,7 +7831,7 @@ var YangEngine = (() => {
     return { byName, byNamespace };
   }
   var isPlainObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-  var NUMBER_TYPES = /* @__PURE__ */ new Set(["int8", "int16", "int32", "uint8", "uint16", "uint32"]);
+  var NUMBER_TYPES2 = /* @__PURE__ */ new Set(["int8", "int16", "int32", "uint8", "uint16", "uint32"]);
   var splitMemberKey = (key) => {
     const colon = key.indexOf(":");
     if (colon <= 0 || colon === key.length - 1) return { module: void 0, localName: key };
@@ -7884,7 +8007,7 @@ var YangEngine = (() => {
   }
   function encodeScalar(schema, schemaNode, element, modules) {
     const text = element.textContent ?? "";
-    if (NUMBER_TYPES.has(schemaNode.resolvedType ?? "")) {
+    if (NUMBER_TYPES2.has(schemaNode.resolvedType ?? "")) {
       const value = Number(text);
       return Number.isNaN(value) ? text : value;
     }

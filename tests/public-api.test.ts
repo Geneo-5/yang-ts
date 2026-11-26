@@ -12,6 +12,7 @@ const PUBLIC_VALUES = [
   "parseYang", "YangSyntaxError", "resolveModuleSet", "compileYangModules",
   "serializeCompiledSchema", "deserializeCompiledSchema", "CompiledSchemaFormatError",
   "createFormModel", "validateFormValue", "canonicalFormOf",
+  "formValuesToRestconfBody", "formInputToRestconfBody", "formPathToYangPathSegments",
   "validateDataTree", "evaluateCandidates", "buildAccessibleTree", "createConstraintEvaluator",
   "createRestconfModuleLoader", "findSchemaLibraryMismatches", "yangLibraryInventory", "yangJsonToDocument", "documentToYangJson", "YangJsonError",
   "createRestconfGetRequest", "createRestconfDatastoreRequest", "createRestconfNmdaProbeRequest",

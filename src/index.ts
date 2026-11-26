@@ -36,6 +36,11 @@ export {
   canonicalFormOf,
 } from "./forms/form-model.js";
 export {
+  formValuesToRestconfBody,
+  formInputToRestconfBody,
+  formPathToYangPathSegments,
+} from "./forms/restconf-body.js";
+export {
   createRestconfModuleLoader,
   yangLibraryInventory,
 } from "./restconf/library-loader.js";

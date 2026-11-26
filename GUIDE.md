@@ -445,7 +445,19 @@ const send = (request) => fetch(request.path, {
 ```
 
 Les paramètres de requête (RFC 8040 `content`, `depth`, `fields`, `filter`, …)
-passent dans l'argument `query` вариант facultatif de chaque constructeur.
+passent dans l'argument `query` optionnel de chaque constructeur.
+
+Pour produire ces corps directement depuis vos valeurs de formulaire :
+`formValuesToRestconfBody(model, values)` assemble le corps RFC 7951
+module-qualifié (entiers 32 bits en nombres, 64 bits/`decimal64` en chaînes,
+`empty` `[null]`, `bits` séparés par espaces, entrées de liste à partir de
+tableaux d'enregistrements ordonnés), `formInputToRestconfBody(operation,
+values)` l'objet d'entrée d'un RPC, et `formPathToYangPathSegments(path,
+module, { listKeys, leafListValue })` traduit un `FormField.path` (marqueurs
+`[*]`) en segments pour les constructeurs ci-dessus — refus explicite d'une
+liste sans ses valeurs de clés. Les conventions d'encodage sont celles du §7
+et le test d'aller-retour (`tests/forms-restconf.test.ts`) verrouille
+l'équivalence avec `documentToYangJson`.
 
 **NE PAS redéfinir les réponses ici**: lire une réponse se fait avec
 `readRestconfData(response, module, name)`, qui extrait le membre
