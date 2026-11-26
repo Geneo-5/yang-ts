@@ -182,9 +182,17 @@ function dataRequest(
   };
 }
 
-function dataEnvelope(module: string, name: string, data: Record<string, unknown>): Record<string, unknown> {
+/**
+ * RFC 7951 value of one data resource's own node: a record of children for
+ * container/list resources, a scalar (or an array of scalars) when a top-level
+ * leaf or leaf-list is itself the resource (RFC 8040 PUT/PATCH targets any
+ * data resource, not only containers).
+ */
+export type RestconfResourceData = Record<string, unknown> | number | boolean | string | readonly unknown[];
+
+function dataEnvelope(module: string, name: string, data: RestconfResourceData): Record<string, unknown> {
   if (!module || !name) throw new Error("A data resource module and name are required");
-  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("RESTCONF data must be a JSON object");
+  if (data === undefined || data === null) throw new Error("RESTCONF data is required");
   return { [`${module}:${name}`]: data };
 }
 
@@ -196,7 +204,7 @@ export function createRestconfGetRequest(path: readonly YangPathSegment[] = [], 
 /** Create a child resource by POSTing it to its parent resource (RFC 8040 §4.4.1). */
 export function createRestconfAddRequest(
   parentPath: readonly YangPathSegment[],
-  resource: { module: string; name: string; data: Record<string, unknown> },
+  resource: { module: string; name: string; data: RestconfResourceData },
   restconfRoot = "/restconf",
   query?: RestconfQueryParameters,
 ): RestconfDataRequest {
@@ -212,7 +220,7 @@ export function createRestconfDeleteRequest(path: readonly YangPathSegment[], re
 /** Create or replace the target data resource using PUT (RFC 8040 §4.5). */
 export function createRestconfSetRequest(
   path: readonly YangPathSegment[],
-  resource: { module: string; name: string; data: Record<string, unknown> },
+  resource: { module: string; name: string; data: RestconfResourceData },
   restconfRoot = "/restconf",
   query?: RestconfQueryParameters,
 ): RestconfDataRequest {
@@ -226,7 +234,7 @@ export function createRestconfSetRequest(
  */
 export function createRestconfUpdateRequest(
   path: readonly YangPathSegment[],
-  resource: { module: string; name: string; data: Record<string, unknown> },
+  resource: { module: string; name: string; data: RestconfResourceData },
   restconfRoot = "/restconf",
   query?: RestconfQueryParameters,
 ): RestconfDataRequest {

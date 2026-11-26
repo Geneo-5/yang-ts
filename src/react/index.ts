@@ -8,6 +8,12 @@ export {
   type RestconfResourceState, type RestconfResourceOptions,
 } from "./hooks.js";
 export {
+  useOptimisticEdit, validateOptimisticValues,
+  type OptimisticEditOptions, type OptimisticEditOutcome, type OptimisticEditState,
+  type OptimisticLocalVerdict, type OptimisticProblem, type OptimisticServerFailure,
+  type OptimisticSubmitOptions,
+} from "./optimistic.js";
+export {
   createYangRunner,
   type YangRunner, type YangRunnerOptions, type YangRunnerTask, type YangWorkerTransport,
 } from "./runner.js";

@@ -143,6 +143,17 @@ export function formValuesToRestconfBody(model: FormModel, values: FormValues): 
     // §87: with a compiled multi-module schema the model carries `topModules`
     // (top-node → module); a single-module model qualifies with its own name.
     const qualifier = model.topModules?.[name] ?? model.module;
+    // A top-level leaf/leaf-list IS the data resource (RFC 8040 §3.5): encode
+    // its own value — there are no children to recurse into (absent omitted).
+    const selfLeaf = fields.find(field => field.path === `/${name}`);
+    if (selfLeaf) {
+      const raw = values[selfLeaf.path];
+      if (raw !== undefined) {
+        const encoded = encodeLeaf(selfLeaf, raw);
+        if (encoded !== undefined) body[`${qualifier}:${name}`] = encoded;
+      }
+      continue;
+    }
     body[`${qualifier}:${name}`] = buildBody(fields, values, `/${name}/`);
   }
   return body;

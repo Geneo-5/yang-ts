@@ -352,7 +352,7 @@ Les hooks: `useYangSchema()` (état loading/ready/error), `useFormModel(options?
 (validation d'arbre complète), `useCandidates(document, path)` (candidats
 contextuels du §4) et `useRestconfResource(client, path, { resource })` (GET
 RFC 8040 avec donnees brutes JSON, état loading/ready/error, `refetch()`,
-abandon à démontage). Le flux d'édition optimiste reste à venir (roadmap Stage 8.4 : la suite de tests red-first est écrite).
+abandon à démontage). Le flux d'édition optimiste se documente en §6.2 ci-dessous.
 
 ## 6.1 Worker (roadmap Stage 8.4)
 
@@ -381,6 +381,42 @@ const model = useFormModel({ module: "acme-router" });
 const field = model?.fields.at(0);
 const verdict = useFieldValidation(field, "9000");
 ```
+
+## 6.2 Édition optimiste (`useOptimisticEdit`, roadmap Stage 8.4)
+
+Le flux d'édition enchaîne validation locale → décision → `PATCH`/`PUT` →
+réconciliation serveur, chaque étape exposée en données pures :
+
+```ts
+import { useOptimisticEdit } from "yang-browser-engine/react";
+
+const edit = useOptimisticEdit({
+  model, client,
+  resource: { module: "conf", name: "relay" },
+  method: "PATCH",
+});
+
+const outcome = await edit.submit(values, { etag });
+// outcome.kind: "blocked" | "done" | "failed" | "cancelled"
+// edit.status : "idle" → "sending" → "blocked" | "done" | "failed"
+```
+
+Sémantique de fusion : une valeur **absente** de la carte signifie « non
+touchée » — elle ne déclenche jamais d'erreur locale (seul le serveur sait ce
+qui est déjà stocké) ; les entrées de liste sont validées entrée par entrée
+avec le numéro attaché aux problèmes. Un verdict `invalid` bloque **avant** le fil avec
+les raisons en clair ; un verdict `indeterminate` part sur le fil avec ses
+raisons `pending.*` visibles — le serveur reste l'autorité — ou se bloque
+explicitement via `onIndeterminate: "block"`. Le corps vient du contrat du §5
+(`formValuesToRestconfBody`, y compris pour un leaf/leaf-list racine qui EST la
+ressource), PATCH par défaut / PUT à la demande avec `If-Match` par soumission ;
+les erreurs RFC 8040 §7 du serveur reviennent dans `outcome.server`
+(`errorTag`, `errorPath`, `errorMessages`, `httpStatus`), l'`ETag` de réponse
+dans `outcome.etag`, et un corps vide (aucune modification sous la sémantique
+de fusion) bloque explicitement au lieu d'un envoi silencieux.
+
+Pour `validateOptimisticValues(fields, values)` (vérification locale seule),
+mêmes règles, sans envoi.
 
 ## 7. Arbre accessible et contraintes XPath
 

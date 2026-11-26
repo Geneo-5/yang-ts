@@ -42,7 +42,7 @@ Delivered (2026-11-26, tests cited in `CONFORMANCE.md`):
 - `forms/`: RESTCONF body helpers (`formValuesToRestconfBody`, `formInputToRestconfBody`, `formPathToYangPathSegments`) and the case-selection/list-entry binding API.
 - Bin: `yang-browser-engine precompile` writes the versioned serialized schema, verbatim module texts and a manifest for build-time precompilation.
 - `react/`: `YangProvider`/`useYangSchema` and headless hooks (`useFormModel`, `useFieldValidation`, `useDataValidation`, `useCandidates`, `useRestconfResource`), plus worker delegation (`createYangRunner`, `spawnYangWorker`) with a main-thread fallback. React stays an optional peer dependency; the core barrel remains React-free.
-- Remaining (8.4–8.6): the optimistic edit flow (red-first suite in the tree), the `withYangEngine` static-export helper and recipe (8.5), and the `examples/next-static/` app with mock server, Playwright e2e and bundle budget (8.6).
+- Remaining (8.5–8.6): the `withYangEngine` static-export helper and recipe (8.5), and the `examples/next-static/` app with mock server, Playwright e2e and bundle budget (8.6). Stage 8.4 (React bindings, worker, binding API, optimistic edit) closed on 2026-11-26.
 
 Static export has no server runtime, so the RESTCONF API is cross-origin unless the static files are served from the same origin or behind the same reverse proxy; deployment must provide CORS or same-origin hosting. The compiler/form prerequisites (serializable `FormField` restrictions, validation without mutating the caller's document, curated exports, budgets with worker cancellation) closed on 2026-11-26; the remaining Stage 8 items are 8.4 – 8.6.
 
