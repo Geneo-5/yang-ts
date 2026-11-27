@@ -1,13 +1,12 @@
 // Starts both the mock RESTCONF server and a static file server for the
 // Next.js static-export example, then opens the page in the default browser.
+
 import { createServer as createHttpServer } from "node:http";
-import { createServer as createTcpServer } from "node:net";
-import { createReadStream } from "node:fs";
-import { stat, readFile } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { createMockRestconfServer } from "../examples/next-static/mock-restconf.mjs";
 
-const root = resolve(import.meta.dirname, "../examples");
+const root = resolve(import.meta.dirname, "../examples/next-static");
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -18,7 +17,7 @@ const contentTypes = {
 
 async function isPortInUse(port) {
   return new Promise((resolve) => {
-    const s = createTcpServer();
+    const s = createHttpServer();
     s.once("error", () => resolve(true));
     s.once("listening", () => { s.close(); resolve(false); });
     s.listen(port, "127.0.0.1");
@@ -43,20 +42,12 @@ async function main() {
     try {
       const urlPath = decodeURIComponent(new URL(request.url ?? "/", "http://localhost").pathname);
       const relative = urlPath.replace(/^\//, "");
-      
-      // Serve next-static-app.html as the default page (self-contained with embedded engine).
-      if (relative === "" || relative === "index.html" || relative === "next-static-app.html") {
-        const appHtml = await readFile(resolve(root, "next-static-app.html"), "utf8");
-        response.writeHead(200, { "Content-Type": contentTypes[".html"] });
-        response.end(appHtml);
-        return;
-      }
-      
       let target = resolve(root, relative || "index.html");
       if (!target.startsWith(root)) throw new Error("Invalid path");
       const st = await stat(target);
       if (st.isDirectory()) target = resolve(target, "index.html");
       response.writeHead(200, { "Content-Type": contentTypes[extname(target)] ?? "application/octet-stream" });
+      const { createReadStream } = await import("node:fs");
       createReadStream(target).pipe(response);
     } catch {
       response.writeHead(404);
@@ -79,7 +70,7 @@ async function main() {
   console.log(`Static files:  ${staticUrl}`);
   console.log(`Open your browser at: ${staticUrl}`);
   console.log("\nThe app will connect to the mock RESTCONF at http://127.0.0.1:8081/restconf");
-  console.log('(Press Ctrl+C to stop both servers)');
+  console.log("(Press Ctrl+C to stop both servers)");
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

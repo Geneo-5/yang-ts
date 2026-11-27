@@ -44,7 +44,9 @@
     "pretest": "npm run build",
     "test:watch": "vitest",
     "prepack": "npm run build",
-    "dev": "node scripts/dev-server.mjs"
+    "dev": "node scripts/dev-server.mjs",
+    "next-static:build": "cd examples/next-static && npm install && npm run build",
+    "next-static:dev": "node scripts/dev-server.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.6.10",
