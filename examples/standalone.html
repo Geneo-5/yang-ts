@@ -3953,7 +3953,12 @@ var YangEngine = (() => {
 
   // src/yang/parser.ts
   var MAX_STATEMENT_DEPTH = 200;
-  function tokenize(input) {
+  function checkAborted(signal, eof) {
+    if (signal?.aborted) {
+      throw new YangSyntaxError("Parse cancelled", eof);
+    }
+  }
+  function tokenize(input, signal) {
     const out = [];
     let i = 0, line = 1, column = 1;
     const advance = (text) => {
@@ -4077,14 +4082,15 @@ var YangEngine = (() => {
       if (!value) throw new YangSyntaxError(`Unexpected character '${c}'`, start);
       out.push({ ...start, value, kind: "word" });
     }
+    checkAborted(signal, { offset: i, line, column });
     return { tokens: out, eof: { offset: i, line, column } };
   }
-  function parseYang(source) {
-    const { tokens, eof } = tokenize(source);
+  function parseYang(source, options) {
+    const { tokens, eof } = tokenize(source, options?.signal);
     let index = 0;
     const peek = () => tokens[index];
     const take = () => tokens[index++];
-    function statement(depth = 0) {
+    function statement(depth = 0, signal) {
       if (depth > MAX_STATEMENT_DEPTH) {
         throw new YangSyntaxError("Statement nesting too deep (possible infinite recursion)", tokens[index] ?? eof);
       }
@@ -4114,16 +4120,17 @@ var YangEngine = (() => {
       const children = [];
       if (end.value === "{") {
         while (peek() && !(peek().kind === "symbol" && peek().value === "}")) {
-          children.push(statement(depth + 1));
+          children.push(statement(depth + 1, signal));
         }
         const close = take();
         if (!close || close.kind !== "symbol" || close.value !== "}") {
           throw new YangSyntaxError("Unterminated statement block", close ?? eof);
         }
       }
+      checkAborted(signal, { offset: key.offset, line: key.line, column: key.column });
       return { keyword: key.value, ...hasArgument ? { argument } : {}, children, location: { offset: key.offset, line: key.line, column: key.column } };
     }
-    const root = statement();
+    const root = statement(0, options?.signal);
     if (peek()) throw new YangSyntaxError("Unexpected content after module", peek());
     if (root.keyword !== "module" && root.keyword !== "submodule") throw new YangSyntaxError("Expected module or submodule", root.location);
     if (!root.argument) throw new YangSyntaxError("Module name is required", root.location);
@@ -4139,18 +4146,18 @@ var YangEngine = (() => {
   // src/yang/module-set.ts
   var revisionOf = (document2) => childOf(document2, "revision")?.argument;
   var sourceStatements = (module, submodules) => [module, ...submodules];
-  function parseDocument(document2) {
-    return typeof document2 === "string" ? parseYang(document2) : document2;
+  function parseDocument(document2, signal) {
+    return typeof document2 === "string" ? parseYang(document2, signal ? { signal } : {}) : document2;
   }
   function normalizedDocuments(result) {
     if (result === void 0) return [];
     return Array.isArray(result) ? result : [result];
   }
-  function selectDocument(candidates, expectedName, kind, pinnedRevision, owner, statement, diagnostics) {
+  function selectDocument(candidates, expectedName, kind, pinnedRevision, owner, statement, diagnostics, signal) {
     const parsed = [];
     for (const candidate of candidates) {
       try {
-        parsed.push(parseDocument(candidate));
+        parsed.push(parseDocument(candidate, signal));
       } catch (error) {
         diagnostics.push({ code: "invalid-document", message: `Could not parse ${kind} '${expectedName}': ${String(error)}`, sourceModule: owner.argument, sourceLocation: statement.location });
       }
@@ -4253,7 +4260,7 @@ var YangEngine = (() => {
           reportBudget(`Resolution exceeded the ${budget.deadlineMs} ms deadline while loading module '${name2}'`, owner, statement);
           return void 0;
         }
-        const selected = selectDocument(normalizedDocuments(result), name2, "module", pinned, owner, statement, diagnostics);
+        const selected = selectDocument(normalizedDocuments(result), name2, "module", pinned, owner, statement, diagnostics, constraints.signal);
         if (!selected) {
           if (result === void 0 || normalizedDocuments(result).length === 0) report("missing-module", `Module '${name2}' was not found`, owner, statement);
           return void 0;
@@ -4285,7 +4292,7 @@ var YangEngine = (() => {
           reportBudget(`Resolution exceeded the ${budget.deadlineMs} ms deadline while loading submodule '${name2}'`, owner, statement);
           return void 0;
         }
-        const selected = selectDocument(normalizedDocuments(result), name2, "submodule", pinned, owner, statement, diagnostics);
+        const selected = selectDocument(normalizedDocuments(result), name2, "submodule", pinned, owner, statement, diagnostics, constraints.signal);
         if (!selected && (result === void 0 || normalizedDocuments(result).length === 0)) report("missing-submodule", `Submodule '${name2}' was not found`, owner, statement);
         if (selected && childOf(selected, "belongs-to")?.argument !== owner.argument) {
           report("invalid-belongs-to", `Submodule '${name2}' does not belong to module '${owner.argument}'`, owner, statement);

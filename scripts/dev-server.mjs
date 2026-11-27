@@ -3,11 +3,11 @@
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createTcpServer } from "node:net";
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { stat, readFile } from "node:fs/promises";
 import { resolve, extname } from "node:path";
 import { createMockRestconfServer } from "../examples/next-static/mock-restconf.mjs";
 
-const root = resolve(import.meta.dirname, "../examples/next-static/out");
+const root = resolve(import.meta.dirname, "../examples");
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -43,6 +43,15 @@ async function main() {
     try {
       const urlPath = decodeURIComponent(new URL(request.url ?? "/", "http://localhost").pathname);
       const relative = urlPath.replace(/^\//, "");
+      
+      // Serve next-static-app.html as the default page (self-contained with embedded engine).
+      if (relative === "" || relative === "index.html" || relative === "next-static-app.html") {
+        const appHtml = await readFile(resolve(root, "next-static-app.html"), "utf8");
+        response.writeHead(200, { "Content-Type": contentTypes[".html"] });
+        response.end(appHtml);
+        return;
+      }
+      
       let target = resolve(root, relative || "index.html");
       if (!target.startsWith(root)) throw new Error("Invalid path");
       const st = await stat(target);

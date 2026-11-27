@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>YANG Static Console</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 56rem; margin: 1rem auto; padding: 0 1rem; }
+    .console-card { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; margin-top: 1rem; }
+    .url-field { display: block; margin-bottom: 0.5rem; }
+    .url-field input { width: 40rem; margin-left: 0.5rem; }
+    .primary-button { background: #085; color: #fff; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; }
+    .status { color: #085; font-size: 0.85rem; margin: 0.5rem 0; }
+    .fields { display: flex; flex-direction: column; gap: 0.5rem; margin: 0.5rem 0; }
+    .field { display: flex; align-items: center; gap: 0.5rem; }
+    .field span { min-width: 10rem; }
+    .field input[type="number"] { width: 6rem; }
+    .message { color: #a00; background: #fee; padding: 0.5rem; border-radius: 4px; margin-top: 0.5rem; }
+    button { margin: 0.25rem 0.5rem 0.5rem 0; }
+  </style>
+</head>
+<body>
+  <main class="page-shell">
+    <header class="page-header">
+      <p class="eyebrow">YANG Browser Engine · Stage 8.6</p>
+      <h1>Static RESTCONF console</h1>
+      <p>Discover a device model from its YANG Library, validate edits in the browser, then send them to RESTCONF.</p>
+    </header>
+    <section class="console-card" aria-label="YANG console">
+      <label class="url-field">RESTCONF base URL<input id="restconf-url" value="http://127.0.0.1:8081/restconf" /></label>
+      <button id="connect-btn" class="primary-button">Connect and load schema</button>
+      <p class="status" id="status" role="status">Not connected</p>
+      <div id="app"></div>
+    </section>
+  </main>
+  <script>
+    /*__ENGINE__*/
+    (async function() {
+      "use strict";
+      const restconfUrlInput = document.getElementById("restconf-url");
+      const connectBtn = document.getElementById("connect-btn");
+      const statusEl = document.getElementById("status");
+      const appDiv = document.getElementById("app");
+      let currentModel = null;
+      let currentClient = null;
+      let values = {};
+      let etag = undefined;
+
+      connectBtn.addEventListener("click", async function() {
+        const restconfUrl = restconfUrlInput.value.trim();
+        statusEl.textContent = "Discovering YANG Library…";
+        connectBtn.disabled = true;
+        try {
+          const rootUrl = new URL(restconfUrl);
+          const base = `${rootUrl.origin}${rootUrl.pathname.replace(/\/$/, "")}`;
+          const libraryResponse = await fetch(`${base}/data/ietf-yang-library:yang-library`, {
+            headers: { Accept: "application/yang-data+json" },
+          });
+          if (!libraryResponse.ok) throw new Error(`YANG Library returned HTTP ${libraryResponse.status}`);
+          const inventory = YangEngine.yangLibraryInventory(await libraryResponse.json());
+          const implementation = inventory.modules.find(row => row.conformance !== "import" && row.location);
+          const moduleLocation = Array.isArray(implementation?.location) ? implementation.location[0] : implementation?.location;
+          if (!moduleLocation) throw new Error("YANG Library has no implemented module with a source location");
+          const sourceResponse = await fetch(moduleLocation, { headers: { Accept: "application/yang" } });
+          if (!sourceResponse.ok) throw new Error(`YANG module request returned HTTP ${sourceResponse.status}`);
+          const rootModule = YangEngine.parseYang(await sourceResponse.text());
+          const loader = YangEngine.createRestconfModuleLoader({ baseUrl: base, libraryResource: "ietf-yang-library:yang-library" });
+          const moduleSet = await YangEngine.resolveModuleSet([rootModule], loader);
+          if (moduleSet.diagnostics.length) throw new Error(moduleSet.diagnostics.map(item => item.message).join("; "));
+          const schema = YangEngine.compileYangModules(moduleSet);
+          if (schema.diagnostics.length) throw new Error(schema.diagnostics.map(item => item.message).join("; "));
+          const form = YangEngine.createFormModel(schema, { module: rootModule.argument });
+          const restconf = YangEngine.createRestconfClient({ baseUrl: rootUrl.origin });
+          const config = await restconf.send(YangEngine.createRestconfGetRequest([{ module: rootModule.argument, name: "oven" }], rootUrl.pathname));
+          const configBody = await config.json();
+          const current = YangEngine.readRestconfData(configBody, rootModule.argument, "oven");
+          const initialValues = current && typeof current === "object" ? current : {};
+          values = Object.fromEntries(form.fields.filter(field => field.path.startsWith("/oven/")).map(field => [field.name, initialValues[field.name] ?? field.defaultValue ?? ""]));
+          etag = config.headers.get("etag") || undefined;
+          currentModel = form;
+          currentClient = restconf;
+          statusEl.textContent = `Connected · ${moduleSet.modules.length} module(s) · ${form.operations.length} operation(s)`;
+          renderForm();
+        } catch (error) {
+          statusEl.textContent = "Connection failed";
+          showMessage(error instanceof Error ? error.message : String(error));
+        } finally {
+          connectBtn.disabled = false;
+        }
+      });
+
+      function showMessage(msg) {
+        let msgEl = document.getElementById("message");
+        if (!msgEl) {
+          msgEl = document.createElement("p");
+          msgEl.className = "message";
+          msgEl.id = "message";
+          appDiv.parentNode.appendChild(msgEl);
+        }
+        msgEl.textContent = msg;
+      }
+
+      function renderForm() {
+        if (!currentModel) return;
+        const fields = currentModel.fields.filter(field => field.path.startsWith("/oven/"));
+        let html = `<h2>Configuration</h2><div class="fields">`;
+        for (const field of fields) {
+          html += `<label class="field"><span>${field.label}</span>`;
+          if (field.control === "boolean") {
+            html += `<input type="checkbox" data-path="${field.name}" ${values[field.name] ? "checked" : ""} />`;
+          } else {
+            html += `<input type="number" min="0" max="250" data-path="${field.name}" value="${values[field.name] ?? ""}" />`;
+          }
+          html += `<small>${field.help}</small></label>`;
+        }
+        html += `</div><button id="save-btn">Validate and save with PATCH</button>`;
+        
+        const ops = currentModel.operations.filter(operation => operation.kind === "rpc");
+        if (ops.length) {
+          html += `<h2>RPC operations</h2><div class="operation-list">`;
+          for (const op of ops) {
+            html += `<button class="op-btn" data-name="${op.name}">${op.label}</button>`;
+          }
+          html += `</div>`;
+        }
+        
+        appDiv.innerHTML = html;
+        
+        // Attach event listeners
+        document.getElementById("save-btn").addEventListener("click", handleSave);
+        for (const input of appDiv.querySelectorAll('input[data-path]')) {
+          input.addEventListener("change", handleFieldChange);
+        }
+        for (const btn of appDiv.querySelectorAll('.op-btn')) {
+          btn.addEventListener("click", handleRpc);
+        }
+      }
+
+      function handleFieldChange(e) {
+        const path = e.target.dataset.path;
+        values[path] = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+      }
+
+      async function handleSave() {
+        if (!currentModel || !currentClient) return;
+        const fields = currentModel.fields.filter(field => field.path.startsWith("/oven/"));
+        const failures = [];
+        for (const field of fields) {
+          const result = YangEngine.validateFormValue(field, values[field.name]);
+          for (const problem of result.errors) {
+            failures.push(`${field.name}: ${problem.message}`);
+          }
+        }
+        if (failures.length) {
+          showMessage(failures.join(" · "));
+          return;
+        }
+        try {
+          const request = YangEngine.createRestconfUpdateRequest(
+            [{ module: "oven", name: "oven" }],
+            { module: "oven", name: "oven", data: Object.fromEntries(fields.map(field => [field.name, values[field.name]])) },
+            new URL(restconfUrlInput.value).pathname,
+          );
+          const response = await currentClient.send(request, etag ? { headers: { "If-Match": etag } } : {});
+          etag = response.headers.get("etag") || etag;
+          showMessage(`Configuration saved (HTTP ${response.status}).`);
+        } catch (error) {
+          showMessage(error instanceof Error ? error.message : String(error));
+        }
+      }
+
+      async function handleRpc(e) {
+        if (!currentClient) return;
+        const name = e.target.dataset.name;
+        try {
+          const response = await currentClient.send(
+            YangEngine.createRestconfRpcRequest(
+              { name: name, module: "oven" },
+              name === "insert-food" ? { time: "now" } : undefined
+            )
+          );
+          showMessage(`${name} returned HTTP ${response.status}.`);
+        } catch (error) {
+          showMessage(error instanceof Error ? error.message : String(error));
+        }
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -4,7 +4,7 @@
 // file: pages, so the engine is bundled into a classic IIFE script and the
 // YANG source is embedded inline instead of fetched.
 import { build } from "esbuild";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -34,3 +34,24 @@ if (html.includes("/*__ENGINE__*/") || html.includes("/*__YANG__*/")) {
 }
 await writeFile(output, html);
 console.log(`Wrote ${path.relative(root, output)} (${(html.length / 1024).toFixed(0)} kB)`);
+
+// Also generate a Next.js static-export example with the engine embedded inline.
+const nextAppOutput = path.join(root, "examples", "next-static-app.html");
+const { outputFiles: nextFiles } = await build({
+  entryPoints: [path.join(root, "src", "index.ts")],
+  bundle: true,
+  format: "iife",
+  globalName: "YangEngine",
+  target: "es2020",
+  write: false,
+  logLevel: "silent",
+});
+const nextEngine = nextFiles[0].text;
+const nextTemplate = path.join(root, "examples", "next-static-app.template.html");
+let nextHtml = await readFile(nextTemplate, "utf8");
+nextHtml = nextHtml.replace("/*__ENGINE__*/", () => nextEngine);
+if (nextHtml.includes("/*__ENGINE__*/")) {
+  throw new Error("Failed to inject the engine bundle into the Next.js app template");
+}
+await writeFile(nextAppOutput, nextHtml);
+console.log(`Wrote ${path.relative(root, nextAppOutput)} (${(nextHtml.length / 1024).toFixed(0)} kB)`);
